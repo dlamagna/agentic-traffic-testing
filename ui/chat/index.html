@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Chat</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f6f8fa; }
+    h1 { margin-bottom: 8px; }
+    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 900px; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    textarea { width: 100%; min-height: 120px; }
+    input[type="text"] { width: 100%; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > div { flex: 1 1 260px; }
+    button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
+    #output { white-space: pre-wrap; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 120px; }
+    .status { font-size: 14px; color: #555; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Agent Chat Console</h1>
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Agent</label>
+        <label><input type="radio" name="agent" value="a" checked> Agent A</label>
+        <label><input type="radio" name="agent" value="b"> Agent B</label>
+      </div>
+      <div>
+        <label>Scenario (optional)</label>
+        <input id="scenario" type="text" placeholder="agentic_simple / baseline / ...">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Agent A endpoint</label>
+        <input id="endpointA" type="text" value="http://localhost:8101/task">
+      </div>
+      <div>
+        <label>Agent B endpoint</label>
+        <input id="endpointB" type="text" value="http://localhost:8102/subtask">
+      </div>
+    </div>
+
+    <label for="prompt">Message</label>
+    <textarea id="prompt" placeholder="Ask a question or give a task"></textarea>
+
+    <div style="margin-top: 12px;">
+      <button id="sendBtn">Send</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <label>Response</label>
+      <div id="output"></div>
+    </div>
+  </div>
+
+  <script>
+    const promptEl = document.getElementById('prompt');
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+    const scenarioEl = document.getElementById('scenario');
+    const endpointA = document.getElementById('endpointA');
+    const endpointB = document.getElementById('endpointB');
+    const sendBtn = document.getElementById('sendBtn');
+
+    async function sendMessage() {
+      const agent = document.querySelector('input[name="agent"]:checked').value;
+      const text = promptEl.value.trim();
+      const scenario = scenarioEl.value.trim() || null;
+      const url = agent === 'a' ? endpointA.value.trim() : endpointB.value.trim();
+      const field = agent === 'a' ? 'task' : 'subtask';
+
+      if (!text) {
+        statusEl.textContent = 'Please enter a message.';
+        return;
+      }
+
+      statusEl.textContent = 'Sending...';
+      outputEl.textContent = '';
+
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [field]: text, scenario: scenario || undefined })
+        });
+
+        if (!resp.ok) {
+          const err = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${err}`);
+        }
+
+        const data = await resp.json();
+        outputEl.textContent = JSON.stringify(data, null, 2);
+        statusEl.textContent = 'Done';
+      } catch (err) {
+        outputEl.textContent = String(err);
+        statusEl.textContent = 'Error';
+      }
+    }
+
+    sendBtn.addEventListener('click', sendMessage);
+    promptEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
+

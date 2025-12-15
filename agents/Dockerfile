@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+
+ENV PYTHONPATH=/app
+
+EXPOSE 8101 8102
+
+# The specific command is provided per-service in docker-compose.yml
+CMD ["sleep", "infinity"]
+
+

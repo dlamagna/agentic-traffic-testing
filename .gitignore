@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# Env / deps
+/.venv/
+venv/
+.env
+.cache/
+
+# Temp
+tmp/
+
+# Logs & outputs
+logs/
+*.log
+*.out
+*.err
+*.pid
+
+# Data / artifacts
+data/
+datasets/
+models/
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+*.pcap
+*.pcapng
+*.csv
+*.parquet
+
+# Build / dist
+dist/
+build/
+*.tar
+*.gz
+*.zip
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db
+
+# Node
+node_modules/

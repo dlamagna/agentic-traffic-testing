@@ -1,0 +1,99 @@
+version: "3.9"
+
+services:
+  llm-backend:
+    build:
+      context: ..
+      dockerfile: llm/Dockerfile
+    container_name: llm-backend
+    environment:
+      - NODE_NAME=node3_llm
+      - HF_TOKEN=${HF_TOKEN}
+      - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN}}
+    command: ["python3", "-m", "llm.hf_cpu_server"]
+    ports:
+      - "8000:8000"
+    networks:
+      - agent-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
+  agent-a:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-a
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node1_agentA
+      - AGENT_A_PORT=8101
+    depends_on:
+      - llm-backend
+    ports:
+      - "8101:8101"
+    command: ["python", "-m", "agents.agent_a.server"]
+    networks:
+      - agent-net
+
+  agent-b:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB
+      - AGENT_B_PORT=8102
+    depends_on:
+      - llm-backend
+    ports:
+      - "8102:8102"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  mcp-tool-db:
+    build:
+      context: ..
+      dockerfile: tools/mcp_tool_db/Dockerfile
+    container_name: mcp-tool-db
+    environment:
+      - NODE_NAME=node2_toolDB
+      - MCP_TOOL_DB_PORT=8201
+    ports:
+      - "8201:8201"
+    networks:
+      - agent-net
+
+  chat-ui:
+    build:
+      context: ..
+      dockerfile: ui/Dockerfile
+    container_name: chat-ui
+    ports:
+      - "3000:3000"
+    networks:
+      - agent-net
+    depends_on:
+      - agent-a
+      - agent-b
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    driver: bridge
+
+
+

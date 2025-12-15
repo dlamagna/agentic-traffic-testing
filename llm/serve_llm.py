@@ -1,0 +1,118 @@
+"""
+Minimal vLLM-based LLM backend for the testbed.
+
+Targets the model:
+  meta-llama/Llama-3.1-8B-Instruct
+
+This module assumes you have vLLM installed and a GPU available.
+You can also run vLLM via its provided CLI container instead of this script,
+but this gives you a clear declaration of the model we intend to use.
+"""
+
+import argparse
+import json
+from typing import Any, Dict, List
+
+try:
+    from vllm import LLM, SamplingParams  # type: ignore
+except ImportError:  # pragma: no cover - only at runtime without vLLM
+    LLM = None  # type: ignore
+    SamplingParams = None  # type: ignore
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+DEFAULT_MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+
+
+class VLLMBackend:
+    def __init__(self, model: str) -> None:
+        if LLM is None:
+            raise RuntimeError(
+                "vLLM is not installed. Please `pip install vllm` or "
+                "run the official vLLM server container instead."
+            )
+        self._llm = LLM(model=model)
+        self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
+
+    def generate(self, prompt: str) -> str:
+        outputs = self._llm.generate(
+            [prompt],
+            sampling_params=self._default_sampling,
+        )
+        # vLLM returns a list of RequestOutput objects
+        text: str = outputs[0].outputs[0].text
+        return text
+
+
+class LLMRequestHandler(BaseHTTPRequestHandler):
+    backend: VLLMBackend  # type: ignore[assignment]
+
+    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # type: ignore[override]
+        if self.path not in ("/chat", "/completion", "/generate"):
+            self._send_json(404, {"error": "Not found"})
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+        try:
+            data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "Invalid JSON"})
+            return
+
+        prompt = data.get("prompt") or data.get("input")
+        if not isinstance(prompt, str) or not prompt:
+            self._send_json(400, {"error": "Missing 'prompt' field"})
+            return
+
+        try:
+            text = self.backend.generate(prompt)
+        except Exception as exc:  # pragma: no cover - runtime safety
+            self._send_json(500, {"error": f"Generation failed: {exc}"})
+            return
+
+        self._send_json(200, {"output": text})
+
+
+def run_http_server(host: str, port: int, model_name: str) -> None:
+    backend = VLLMBackend(model=model_name)
+    LLMRequestHandler.backend = backend  # type: ignore[assignment]
+
+    server = HTTPServer((host, port), LLMRequestHandler)
+    print(f"[*] vLLM backend serving {model_name} on http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[*] Shutting down vLLM backend.")
+    finally:
+        server.server_close()
+
+
+def main(argv: List[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="LLM backend (vLLM) for agentic traffic testbed")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL_NAME,
+        help="HuggingFace model name (default: %(default)s)",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: %(default)s)")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: %(default)d)")
+    args = parser.parse_args(argv)
+
+    run_http_server(args.host, args.port, args.model)
+
+
+if __name__ == "__main__":
+    main()
+
+
