@@ -7,15 +7,19 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; background: #f6f8fa; }
     h1 { margin-bottom: 8px; }
-    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 900px; }
+    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; }
     textarea { width: 100%; min-height: 120px; }
     input[type="text"] { width: 100%; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .row > div { flex: 1 1 260px; }
     button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
-    #output { white-space: pre-wrap; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 120px; }
     .status { font-size: 14px; color: #555; margin-top: 6px; }
+    .columns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+    .column { flex: 1 1 340px; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 160px; }
+    .col-title { font-weight: 700; margin-bottom: 8px; }
+    .mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #e7f3ff; color: #084298; margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -53,15 +57,28 @@
     </div>
 
     <div style="margin-top: 16px;">
-      <label>Response</label>
-      <div id="output"></div>
+      <div class="columns">
+        <div class="column">
+          <div class="col-title">Agent A Response <span id="badgeA" class="badge" style="display:none;">final</span></div>
+          <div id="outputA" class="mono"></div>
+        </div>
+        <div class="column">
+          <div class="col-title">Agent B Response (if multi-hop) <span id="badgeB" class="badge" style="display:none;">from A→B</span></div>
+          <div id="outputB" class="mono"></div>
+        </div>
+      </div>
+      <div style="margin-top: 8px;" class="mono" id="rawResp"></div>
     </div>
   </div>
 
   <script>
     const promptEl = document.getElementById('prompt');
     const statusEl = document.getElementById('status');
-    const outputEl = document.getElementById('output');
+    const outputA = document.getElementById('outputA');
+    const outputB = document.getElementById('outputB');
+    const rawResp = document.getElementById('rawResp');
+    const badgeA = document.getElementById('badgeA');
+    const badgeB = document.getElementById('badgeB');
     const scenarioEl = document.getElementById('scenario');
     const endpointA = document.getElementById('endpointA');
     const endpointB = document.getElementById('endpointB');
@@ -80,7 +97,11 @@
       }
 
       statusEl.textContent = 'Sending...';
-      outputEl.textContent = '';
+      outputA.textContent = '';
+      outputB.textContent = '';
+      rawResp.textContent = '';
+      badgeA.style.display = 'none';
+      badgeB.style.display = 'none';
 
       try {
         const resp = await fetch(url, {
@@ -95,7 +116,13 @@
         }
 
         const data = await resp.json();
-        outputEl.textContent = JSON.stringify(data, null, 2);
+        outputA.textContent = data.output || '';
+        outputB.textContent = data.agent_b_output || '';
+        rawResp.textContent = JSON.stringify(data, null, 2);
+        badgeA.style.display = 'inline-block';
+        if (data.agent_b_output) {
+          badgeB.style.display = 'inline-block';
+        }
         statusEl.textContent = 'Done';
       } catch (err) {
         outputEl.textContent = String(err);

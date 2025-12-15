@@ -1,9 +1,9 @@
 import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from agents.agent_a.main import call_llm
+from agents.agent_a.main import AGENT_B_URL, call_agent_b, call_llm
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 
@@ -70,21 +70,66 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             span.set_attribute("app.task_id", task_id)
             logger.log(task_id=task_id, event_type="task_received", message=task)
 
-            tool_call_id = logger.new_tool_call_id()
+            final_prompt: str
+            agent_b_output: Optional[str] = None
+
+            if scenario == "agentic_multi_hop":
+                tool_call_id_b = logger.new_tool_call_id()
+                logger.log(
+                    task_id=task_id,
+                    event_type="agent_b_request",
+                    message="Calling Agent B (multi-hop)",
+                    tool_call_id=tool_call_id_b,
+                    extra={"url": AGENT_B_URL},
+                )
+                try:
+                    with self.tracer.start_as_current_span("agent_a.call_agent_b") as span_b:
+                        span_b.set_attribute("app.agent_b.url", AGENT_B_URL)
+                        span_b.set_attribute("app.agent_b.scenario", scenario or "")
+                        agent_b_output = call_agent_b(task, scenario=scenario)
+                except Exception as exc:
+                    logger.log(
+                        task_id=task_id,
+                        event_type="agent_b_error",
+                        message=f"Agent B call failed: {exc}",
+                        tool_call_id=tool_call_id_b,
+                    )
+                    self._send_json(502, {"error": f"Agent B failed: {exc}"})
+                    return
+
+                logger.log(
+                    task_id=task_id,
+                    event_type="agent_b_response",
+                    message="Received Agent B response (multi-hop)",
+                    tool_call_id=tool_call_id_b,
+                    extra={"output_preview": (agent_b_output or "")[:200]},
+                )
+
+                final_prompt = (
+                    "You are Agent A. The user task is:\n"
+                    f"{task}\n\n"
+                    "Agent B responded with:\n"
+                    f"{agent_b_output}\n\n"
+                    "Produce the final answer for the user."
+                )
+            else:
+                final_prompt = task
+
+            tool_call_id_llm = logger.new_tool_call_id()
             logger.log(
                 task_id=task_id,
                 event_type="llm_request",
                 message="Calling LLM server (HTTP AgentA)",
-                tool_call_id=tool_call_id,
+                tool_call_id=tool_call_id_llm,
             )
 
-            output = call_llm(task)
+            output = call_llm(final_prompt)
 
             logger.log(
                 task_id=task_id,
                 event_type="llm_response",
                 message="Received LLM response (HTTP AgentA)",
-                tool_call_id=tool_call_id,
+                tool_call_id=tool_call_id_llm,
                 extra={"output_preview": output[:200]},
             )
 
@@ -93,7 +138,9 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 {
                     "task_id": task_id,
                     "agent_id": "AgentA",
+                    "scenario": scenario,
                     "output": output,
+                    "agent_b_output": agent_b_output,
                 },
             )
 

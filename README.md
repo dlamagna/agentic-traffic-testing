@@ -1,4 +1,3 @@
-````markdown
 # Agentic Traffic Testbed
 
 This repository contains an **initial testbed** to study how **agentic software** (LLM-powered agents with tools) generates traffic patterns that differ from **non-agentic**, traditional microservice-based applications.
@@ -393,4 +392,4 @@ Immediate next steps to make this repo useful:
 
 From there, you can start collecting and analysing traffic-shape data for your first write-up.
 
-```
+

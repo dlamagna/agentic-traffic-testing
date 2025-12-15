@@ -1,6 +1,6 @@
 import argparse
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import httpx
 import os
@@ -10,10 +10,22 @@ from agents.common.telemetry import TelemetryLogger
 
 DEFAULT_LLM_SERVER_URL = "http://localhost:8000/chat"
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", DEFAULT_LLM_SERVER_URL)
+DEFAULT_AGENT_B_URL = "http://agent-b:8102/subtask"
+AGENT_B_URL = os.environ.get("AGENT_B_URL", DEFAULT_AGENT_B_URL)
 
 
 def call_llm(prompt: str) -> str:
     resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, timeout=30.0)
+    resp.raise_for_status()
+    data: Dict[str, Any] = resp.json()
+    return str(data.get("output", ""))
+
+
+def call_agent_b(subtask: str, scenario: Optional[str] = None) -> str:
+    payload: Dict[str, Any] = {"subtask": subtask}
+    if scenario:
+        payload["scenario"] = scenario
+    resp = httpx.post(AGENT_B_URL, json=payload, timeout=30.0)
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))
