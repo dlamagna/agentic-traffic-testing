@@ -10,6 +10,8 @@ from agents.common.tracing import get_tracer
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("AGENT_A_PORT", "8101"))
+MAX_AGENT_B_TURNS = int(os.environ.get("MAX_AGENT_B_TURNS", "3"))
+CONTEXT_PREVIEW_LEN = 300
 
 
 class AgentARequestHandler(BaseHTTPRequestHandler):
@@ -72,46 +74,71 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
             final_prompt: str
             agent_b_output: Optional[str] = None
+            agent_b_outputs: list[str] = []
 
             if scenario == "agentic_multi_hop":
-                tool_call_id_b = logger.new_tool_call_id()
-                logger.log(
-                    task_id=task_id,
-                    event_type="agent_b_request",
-                    message="Calling Agent B (multi-hop)",
-                    tool_call_id=tool_call_id_b,
-                    extra={"url": AGENT_B_URL},
-                )
-                try:
-                    with self.tracer.start_as_current_span("agent_a.call_agent_b") as span_b:
-                        span_b.set_attribute("app.agent_b.url", AGENT_B_URL)
-                        span_b.set_attribute("app.agent_b.scenario", scenario or "")
-                        agent_b_output = call_agent_b(task, scenario=scenario)
-                except Exception as exc:
+                context_summary = ""
+                for turn in range(1, MAX_AGENT_B_TURNS + 1):
+                    subtask = (
+                        f"[Turn {turn}] Help solve the user task. "
+                        "Provide concrete steps or intermediate results.\n"
+                        f"User task:\n{task}\n\n"
+                        f"Context so far:\n{context_summary or '(none yet)'}"
+                    )
+
+                    tool_call_id_b = logger.new_tool_call_id()
                     logger.log(
                         task_id=task_id,
-                        event_type="agent_b_error",
-                        message=f"Agent B call failed: {exc}",
+                        event_type="agent_b_request",
+                        message=f"Calling Agent B (multi-hop, turn {turn})",
                         tool_call_id=tool_call_id_b,
+                        extra={
+                            "url": AGENT_B_URL,
+                            "turn": turn,
+                            "context_preview": context_summary[:CONTEXT_PREVIEW_LEN],
+                        },
                     )
-                    self._send_json(502, {"error": f"Agent B failed: {exc}"})
-                    return
+                    try:
+                        with self.tracer.start_as_current_span("agent_a.call_agent_b") as span_b:
+                            span_b.set_attribute("app.agent_b.url", AGENT_B_URL)
+                            span_b.set_attribute("app.agent_b.scenario", scenario or "")
+                            span_b.set_attribute("app.turn", turn)
+                            agent_b_output = call_agent_b(subtask, scenario=scenario)
+                    except Exception as exc:
+                        logger.log(
+                            task_id=task_id,
+                            event_type="agent_b_error",
+                            message=f"Agent B call failed (turn {turn}): {exc}",
+                            tool_call_id=tool_call_id_b,
+                        )
+                        self._send_json(502, {"error": f"Agent B failed: {exc}"})
+                        return
 
-                logger.log(
-                    task_id=task_id,
-                    event_type="agent_b_response",
-                    message="Received Agent B response (multi-hop)",
-                    tool_call_id=tool_call_id_b,
-                    extra={"output_preview": (agent_b_output or "")[:200]},
-                )
+                    agent_b_outputs.append(agent_b_output or "")
+                    logger.log(
+                        task_id=task_id,
+                        event_type="agent_b_response",
+                        message=f"Received Agent B response (turn {turn})",
+                        tool_call_id=tool_call_id_b,
+                        extra={
+                            "turn": turn,
+                            "output_preview": (agent_b_output or "")[:200],
+                        },
+                    )
+
+                    # Update context summary with the latest B output (keep short).
+                    context_summary = (context_summary + "\n" + (agent_b_output or "")).strip()
+                    if len(context_summary) > 2000:
+                        context_summary = context_summary[-2000:]
 
                 final_prompt = (
                     "You are Agent A. The user task is:\n"
                     f"{task}\n\n"
-                    "Agent B responded with:\n"
-                    f"{agent_b_output}\n\n"
-                    "Produce the final answer for the user."
+                    "Agent B provided these iterative notes:\n"
+                    f"{context_summary}\n\n"
+                    "Now produce the final concise answer for the user task."
                 )
+                agent_b_output = "\n---\n".join(agent_b_outputs)
             else:
                 final_prompt = task
 
@@ -123,7 +150,17 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 tool_call_id=tool_call_id_llm,
             )
 
-            output = call_llm(final_prompt)
+            try:
+                output = call_llm(final_prompt)
+            except Exception as exc:
+                logger.log(
+                    task_id=task_id,
+                    event_type="llm_error",
+                    message=f"LLM call failed (HTTP AgentA): {exc}",
+                    tool_call_id=tool_call_id_llm,
+                )
+                self._send_json(502, {"error": f"LLM failed: {exc}"})
+                return
 
             logger.log(
                 task_id=task_id,

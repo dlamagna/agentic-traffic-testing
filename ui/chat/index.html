@@ -15,6 +15,7 @@
     .row > div { flex: 1 1 260px; }
     button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
     .status { font-size: 14px; color: #555; margin-top: 6px; }
+    .status.live { color: #0b5394; font-weight: 600; }
     .columns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
     .column { flex: 1 1 340px; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 160px; }
     .col-title { font-weight: 700; margin-bottom: 8px; }
@@ -84,6 +85,27 @@
     const endpointB = document.getElementById('endpointB');
     const sendBtn = document.getElementById('sendBtn');
 
+    let timerId = null;
+    let startTs = null;
+
+    function startTimer(label) {
+      startTs = Date.now();
+      statusEl.classList.add('live');
+      statusEl.textContent = label;
+      timerId = setInterval(() => {
+        const elapsed = ((Date.now() - startTs) / 1000).toFixed(1);
+        statusEl.textContent = `${label} (${elapsed}s)`;
+      }, 500);
+    }
+
+    function stopTimer(msg) {
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      startTs = null;
+      statusEl.classList.remove('live');
+      statusEl.textContent = msg;
+    }
+
     async function sendMessage() {
       const agent = document.querySelector('input[name="agent"]:checked').value;
       const text = promptEl.value.trim();
@@ -96,7 +118,10 @@
         return;
       }
 
-      statusEl.textContent = 'Sending...';
+      const label = scenario === 'agentic_multi_hop'
+        ? 'Sending (multi-hop A→B→LLM)'
+        : 'Sending';
+      startTimer(label);
       outputA.textContent = '';
       outputB.textContent = '';
       rawResp.textContent = '';
@@ -123,10 +148,12 @@
         if (data.agent_b_output) {
           badgeB.style.display = 'inline-block';
         }
-        statusEl.textContent = 'Done';
+        stopTimer('Done');
       } catch (err) {
-        outputEl.textContent = String(err);
-        statusEl.textContent = 'Error';
+        outputA.textContent = '';
+        outputB.textContent = '';
+        rawResp.textContent = String(err);
+        stopTimer('Error');
       }
     }
 
