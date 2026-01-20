@@ -61,7 +61,7 @@ flowchart LR
             BCC3["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
         end
 
-        MetricsDB[( "Optional Metrics Store Prometheus or log directory" )]
+        MetricsDB["Optional Metrics Store Prometheus or log directory"]
     end
 
     User(( "User or Benchmark Driver" )) -->| "User task or intent" | AgentA
