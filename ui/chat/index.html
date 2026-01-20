@@ -10,7 +10,8 @@
     .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; }
     textarea { width: 100%; min-height: 120px; }
-    input[type="text"] { width: 100%; }
+    .compact-textarea { min-height: 70px; }
+    input[type="text"], input[type="number"], select { width: 100%; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .row > div { flex: 1 1 260px; }
     button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
@@ -33,8 +34,17 @@
         <label><input type="radio" name="agent" value="b"> Agent B</label>
       </div>
       <div>
-        <label>Scenario (optional)</label>
-        <input id="scenario" type="text" placeholder="agentic_simple / baseline / ...">
+        <label for="scenario">Scenario (optional)</label>
+        <select id="scenario">
+          <option value="">none</option>
+          <option value="agentic_simple">agentic_simple</option>
+          <option value="agentic_multi_hop">agentic_multi_hop</option>
+          <option value="tool_call">tool_call</option>
+        </select>
+      </div>
+      <div>
+        <label for="maxTurns">Max Agent B turns</label>
+        <input id="maxTurns" type="number" min="1" step="1" placeholder="3">
       </div>
     </div>
 
@@ -46,6 +56,35 @@
       <div>
         <label>Agent B endpoint</label>
         <input id="endpointB" type="text" value="http://localhost:8102/subtask">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="agentARole">Agent A role (optional)</label>
+        <select id="agentARole">
+          <option value="">none</option>
+          <option value="planner">planner</option>
+          <option value="researcher">researcher</option>
+          <option value="critic">critic</option>
+          <option value="summarizer">summarizer</option>
+          <option value="executor">executor</option>
+        </select>
+        <label for="agentAContract">Agent A contract (optional)</label>
+        <textarea id="agentAContract" class="compact-textarea" placeholder="Describe the agent's contract or expectations"></textarea>
+      </div>
+      <div>
+        <label for="agentBRole">Agent B role (optional)</label>
+        <select id="agentBRole">
+          <option value="">none</option>
+          <option value="planner">planner</option>
+          <option value="researcher">researcher</option>
+          <option value="critic">critic</option>
+          <option value="summarizer">summarizer</option>
+          <option value="executor">executor</option>
+        </select>
+        <label for="agentBContract">Agent B contract (optional)</label>
+        <textarea id="agentBContract" class="compact-textarea" placeholder="Describe the agent's contract or expectations"></textarea>
       </div>
     </div>
 
@@ -81,8 +120,13 @@
     const badgeA = document.getElementById('badgeA');
     const badgeB = document.getElementById('badgeB');
     const scenarioEl = document.getElementById('scenario');
+    const maxTurnsEl = document.getElementById('maxTurns');
     const endpointA = document.getElementById('endpointA');
     const endpointB = document.getElementById('endpointB');
+    const agentARoleEl = document.getElementById('agentARole');
+    const agentAContractEl = document.getElementById('agentAContract');
+    const agentBRoleEl = document.getElementById('agentBRole');
+    const agentBContractEl = document.getElementById('agentBContract');
     const sendBtn = document.getElementById('sendBtn');
 
     let timerId = null;
@@ -128,11 +172,30 @@
       badgeA.style.display = 'none';
       badgeB.style.display = 'none';
 
+      const maxTurnsRaw = maxTurnsEl.value.trim();
+      const maxTurns = maxTurnsRaw ? Number(maxTurnsRaw) : null;
+      const agentARole = agentARoleEl.value.trim() || null;
+      const agentAContract = agentAContractEl.value.trim() || null;
+      const agentBRole = agentBRoleEl.value.trim() || null;
+      const agentBContract = agentBContractEl.value.trim() || null;
+      const extra =
+        agent === 'a' && Number.isInteger(maxTurns) && maxTurns > 0
+          ? { max_agent_turns: maxTurns }
+          : {};
+
       try {
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [field]: text, scenario: scenario || undefined })
+          body: JSON.stringify({
+            [field]: text,
+            scenario: scenario || undefined,
+            agent_a_role: agentARole || undefined,
+            agent_a_contract: agentAContract || undefined,
+            agent_b_role: agentBRole || undefined,
+            agent_b_contract: agentBContract || undefined,
+            ...extra
+          })
         });
 
         if (!resp.ok) {

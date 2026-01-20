@@ -25,10 +25,16 @@ def call_agent_b(
     subtask: str,
     scenario: Optional[str] = None,
     headers: Optional[Dict[str, str]] = None,
+    agent_b_role: Optional[str] = None,
+    agent_b_contract: Optional[str] = None,
 ) -> str:
     payload: Dict[str, Any] = {"subtask": subtask}
     if scenario:
         payload["scenario"] = scenario
+    if agent_b_role:
+        payload["agent_b_role"] = agent_b_role
+    if agent_b_contract:
+        payload["agent_b_contract"] = agent_b_contract
     resp = httpx.post(AGENT_B_URL, json=payload, headers=headers, timeout=30.0)
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()

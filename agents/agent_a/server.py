@@ -64,6 +64,14 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
             task = data.get("task")
             scenario = data.get("scenario")
+            agent_a_role = data.get("agent_a_role") if isinstance(data.get("agent_a_role"), str) else None
+            agent_a_contract = (
+                data.get("agent_a_contract") if isinstance(data.get("agent_a_contract"), str) else None
+            )
+            agent_b_role = data.get("agent_b_role") if isinstance(data.get("agent_b_role"), str) else None
+            agent_b_contract = (
+                data.get("agent_b_contract") if isinstance(data.get("agent_b_contract"), str) else None
+            )
             if not isinstance(task, str) or not task:
                 self._send_json(400, {"error": "Missing 'task' field"})
                 return
@@ -87,6 +95,14 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             requested_turns = data.get("max_agent_turns")
             if isinstance(requested_turns, int) and requested_turns > 0:
                 max_turns = min(requested_turns, MAX_AGENT_B_TURNS)
+
+            role_context_parts = []
+            if agent_a_role:
+                role_context_parts.append(f"Role: {agent_a_role}")
+            if agent_a_contract:
+                role_context_parts.append(f"Contract: {agent_a_contract}")
+            role_context = "\n".join(role_context_parts)
+            role_context_block = f"{role_context}\n" if role_context else ""
 
             if scenario == "agentic_multi_hop":
                 context_summary = ""
@@ -124,6 +140,8 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 subtask,
                                 scenario=scenario,
                                 headers=headers,
+                                agent_b_role=agent_b_role,
+                                agent_b_contract=agent_b_contract,
                             )
                     except Exception as exc:
                         logger.log(
@@ -150,6 +168,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     progress_prompt = (
                         "You are Agent A. Provide a short progress check after this turn. "
                         "Summarize what's done, what's unclear, and one next step.\n\n"
+                        f"{role_context_block}\n"
                         f"User task:\n{task}\n\n"
                         f"Agent B notes (turn {turn}):\n{agent_b_output or ''}\n\n"
                         f"Context so far:\n{context_summary or '(none yet)'}"
@@ -185,6 +204,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
                 final_prompt = (
                     "You are Agent A. The user task is:\n"
+                    f"{role_context_block}\n"
                     f"{task}\n\n"
                     "Agent B provided these iterative notes:\n"
                     f"{context_summary}\n\n"

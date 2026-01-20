@@ -64,6 +64,10 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
 
             subtask = data.get("subtask")
             scenario = data.get("scenario")
+            agent_b_role = data.get("agent_b_role") if isinstance(data.get("agent_b_role"), str) else None
+            agent_b_contract = (
+                data.get("agent_b_contract") if isinstance(data.get("agent_b_contract"), str) else None
+            )
             if not isinstance(subtask, str) or not subtask:
                 self._send_json(400, {"error": "Missing 'subtask' field"})
                 return
@@ -93,7 +97,18 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)
-                output = call_llm(subtask, headers=headers)
+            role_context_parts = []
+            if agent_b_role:
+                role_context_parts.append(f"Role: {agent_b_role}")
+            if agent_b_contract:
+                role_context_parts.append(f"Contract: {agent_b_contract}")
+            role_context = "\n".join(role_context_parts)
+            prompt = (
+                f"You are Agent B.\n{role_context}\n\n{subtask}"
+                if role_context
+                else f"You are Agent B.\n\n{subtask}"
+            )
+            output = call_llm(prompt, headers=headers)
 
             logger.log(
                 task_id=task_id,
