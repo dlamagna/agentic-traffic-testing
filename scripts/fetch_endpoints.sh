@@ -124,19 +124,13 @@ else
   echo "    - Chat UI     : http://${host_display}:${chat_ui_port}"
 
   # Suggest a convenient SSH command to forward all relevant ports in one go.
-  # You can override SSH_TARGET on your laptop if you don't use "gpu-mercuri"
+  # You can override SSH_TARGET on your laptop if you don't use "saturn"
   # as the SSH host alias.
-  ssh_target="${SSH_TARGET:-gpu-mercuri}"
+  ssh_target="${SSH_TARGET:-saturn}"
+  ports_csv="${llm_port},${agent_a_port},${agent_b_port},${mcp_db_port},${jaeger_port},${chat_ui_port}"
   echo
   echo "[*] Suggested SSH port-forward command (run on your laptop):"
-  echo "    ssh \\"
-  echo "      -L 8000:localhost:${llm_port} \\"
-  echo "      -L 8101:localhost:${agent_a_port} \\"
-  echo "      -L 8102:localhost:${agent_b_port} \\"
-  echo "      -L 8201:localhost:${mcp_db_port} \\"
-  echo "      -L 16686:localhost:${jaeger_port} \\"
-  echo "      -L 3000:localhost:${chat_ui_port} \\"
-  echo "      ${ssh_target}"
+  echo "    ./forward_clean_ssh.sh --ports \"${ports_csv}\" --host ${ssh_target}"
 fi
 
 
