@@ -45,7 +45,7 @@ flowchart LR
             BCC3["BCC / bpftrace tools\n(tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        MetricsDB[(Optional Metrics Store\n(e.g. Prometheus / log directory)]
+        MetricsDB[(Optional Metrics Store\n(e.g. Prometheus / log directory))]
     end
 
     User((User / Benchmark Driver)) -->|User task / intent| AgentA
@@ -292,9 +292,8 @@ Future phases build on the same core idea but add realism and complexity.
 
 ---
 
-## 7. Repository layout (suggested)
+## 7. Repository layout 
 
-You can adopt a structure like:
 
 ```text
 .
@@ -354,25 +353,177 @@ export LLM_SERVER_URL="http://llm-backend:8000/chat"
 
 ### Changing the model served by llm-backend
 
-The model and device used by the `llm-backend` container are set in `infra/docker-compose.yml` under the `llm-backend` service `command`. We currently default to a lighter, ungated model for compatibility:
+The model used by the `llm-backend` container is set in `infra/docker-compose.yml` under the `llm-backend` service `command`. We currently default to:
 
-- Model: `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-- Device flag: `--device cpu` (vLLM will use CPU; switch to `cuda` if you have a compatible GPU)
+- Model: `meta-llama/Llama-3.1-8B-Instruct`
 
-To serve another model (e.g., `meta-llama/Llama-3.1-8B-Instruct`), edit the `command` array for `llm-backend` in `infra/docker-compose.yml` and change the `--model` value (and `--device` if you want GPU). After editing, rebuild/restart:
+To serve another model, edit the `command` array for `llm-backend` in `infra/docker-compose.yml` and change the `--model` value. After editing, rebuild/restart:
 
 ```bash
 cd infra
 docker compose up -d --build llm-backend
 ```
 
-If the model is gated on Hugging Face, set `HF_TOKEN` (and optionally `HUGGINGFACE_HUB_TOKEN`) in your shell so Compose passes it through to the container.
+
+If you want to point the stack at a different Hugging Face model, keep these files in sync depending on how you launch the backend:
+
+- `infra/docker-compose.yml`: update the `llm-backend` `command` `--model` value (used when running via Compose).
+- `llm/serve_llm.py`: update `DEFAULT_MODEL_NAME` or pass `--model` when running the script directly.
+- `llm/hf_cpu_server.py`: set `MODEL_NAME` env var (CPU-only fallback server).
+- `llm/config/llama-3.1-8b.yaml`: update `model_name` if you rely on the config file for vLLM settings.
+
+If you change only one launch path, you only need to update the file(s) used by that path.
+
+### Hugging Face Token setup
+
+If the model is gated on Hugging Face, set `HF_TOKEN` in your shell so Compose passes it through to the container. For compatibility, you can also export `HUGGINGFACE_HUB_TOKEN` and `HUGGINGFACE_HUB_TOKE` (we mirror the same value across all three).
+
+Note: `HF_TOKEN` takes precedence. If it is set but invalid, the container will still fail even if `HUGGINGFACE_HUB_TOKEN` is valid.
 
 You can evolve this as you move into Kubernetes and programmable networks.
 
+## 8. Quick HTTP smoke test (curl)
+
+Once the stack is running (e.g. `cd infra && docker compose up --build -d llm-backend agent-a agent-b`), you can hit the HTTP endpoints directly. Replace `localhost` with the host that exposes the ports if you are forwarding them from another node.
+
+- Agent A → LLM (single-hop):
+```bash
+curl -X POST http://localhost:8101/task \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Summarise what this testbed is for."}'
+```
+
+- Agent A → Agent B → LLM (multi-hop): add `scenario=agentic_multi_hop` to have Agent A iterate with Agent B before answering.
+```bash
+curl -X POST http://localhost:8101/task \
+  -H "Content-Type: application/json" \
+  -d '{"task":"Produce a 3-step plan to collect RTT metrics with eBPF.","scenario":"agentic_multi_hop"}'
+```
+
+- Agent B directly:
+```bash
+curl -X POST http://localhost:8102/subtask \
+  -H "Content-Type: application/json" \
+  -d '{"subtask":"List two example MCP tool calls for troubleshooting."}'
+```
+
+The `task` field is required for Agent A, `subtask` for Agent B. `scenario` is optional; use `agentic_multi_hop` to trigger Agent B participation from Agent A.
+
 ---
 
-## 8. Next steps
+## 9. Shared GPU usage checks (read-only)
+
+This server is shared. Before running workloads, **check GPU usage and memory without disrupting other users**:
+
+```bash
+# Summary of GPU utilization and memory usage
+nvidia-smi
+```
+
+```bash
+# Per-process GPU memory usage (helps identify active users)
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+```bash
+# Continuous view (press q to exit)
+watch -n 1 nvidia-smi
+```
+
+Avoid killing or restarting processes you do not own. If GPU memory is tight, lower model size or run during off-peak hours.
+
+---
+
+## 10. Health check script
+
+The `scripts/health_check.py` script provides comprehensive health checks for the entire testbed. It verifies:
+
+- **Docker Compose services**: Checks if all containers are running
+- **LLM server connectivity**: Verifies the LLM server is reachable and responding
+- **Agent endpoints**: Tests Agent A and Agent B HTTP endpoints
+- **Agent-to-LLM connectivity**: **Critical path check** - verifies agents can successfully call the LLM (this catches DNS resolution failures and connection issues)
+- **UI endpoint**: Checks if the chat console is accessible
+- **DNS resolution**: Validates hostname resolution for container names
+
+### Usage
+
+Basic health check (uses default endpoints):
+```bash
+python scripts/health_check.py
+```
+
+With custom endpoints:
+```bash
+python scripts/health_check.py \
+  --llm-url http://llm-backend:8000/chat \
+  --agent-a-url http://localhost:8101/task \
+  --agent-b-url http://localhost:8102/subtask
+```
+
+Skip Docker checks (useful when running services outside Docker):
+```bash
+python scripts/health_check.py --skip-docker
+```
+
+### Common issues detected
+
+The health check script specifically identifies:
+
+1. **DNS resolution failures**: If agents cannot resolve the LLM hostname (e.g., `llm-backend`), you'll see:
+   ```
+   ✗ Agent A can reach LLM
+     Error: Agent cannot resolve LLM hostname. Error: ...
+   ```
+   **Fix**: Ensure `LLM_SERVER_URL` environment variable matches a reachable URL. In Docker Compose, use `http://llm-backend:8000/chat`. For local testing, use `http://localhost:8000/chat`.
+
+2. **LLM server not running**: The script will detect if the LLM server is unreachable.
+
+3. **Port conflicts**: If endpoints don't respond, check if ports are already in use.
+
+4. **Service startup issues**: Docker Compose service checks reveal if containers failed to start.
+
+### Example output
+
+```
+============================================================
+Docker Compose Services
+============================================================
+
+✓ Docker service: llm-backend (running)
+✓ Docker service: agent-a (running)
+✓ Docker service: agent-b (running)
+✓ Docker service: chat-ui (running)
+
+============================================================
+LLM Server
+============================================================
+
+✓ LLM Server (http://localhost:8000/chat)
+
+============================================================
+Agent A
+============================================================
+
+✓ Agent A endpoint (http://localhost:8101/task)
+
+============================================================
+Agent A → LLM Connectivity (Critical Path)
+============================================================
+
+✓ Agent A can reach LLM (successful end-to-end test)
+
+============================================================
+Summary
+============================================================
+
+✓ All critical checks passed!
+```
+
+If checks fail, the script provides specific error messages and troubleshooting suggestions.
+
+---
+
+## 11. Next steps
 
 Immediate next steps to make this repo useful:
 
