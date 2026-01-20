@@ -12,6 +12,45 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 LOG_DIR="${ROOT_DIR}/logs"
 
+clear_gpu_resources() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[*] nvidia-smi not found; skipping GPU cleanup."
+    return
+  fi
+
+  echo "[*] Clearing GPU VRAM and GPU storage artifacts..."
+
+  local gpu_indices
+  gpu_indices="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null || true)"
+  if [[ -z "${gpu_indices}" ]]; then
+    echo "[*] No NVIDIA GPUs detected."
+    return
+  fi
+
+  local pids
+  pids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)"
+  if [[ -n "${pids}" ]]; then
+    local pid
+    for pid in ${pids}; do
+      if ps -o user= -p "${pid}" 2>/dev/null | grep -q "^${USER}$"; then
+        echo "[*] Stopping lingering GPU process PID ${pid}..."
+        kill -TERM "${pid}" 2>/dev/null || true
+      else
+        echo "[*] Skipping GPU PID ${pid} (not owned by ${USER})."
+      fi
+    done
+    sleep 2
+    for pid in ${pids}; do
+      if ps -o user= -p "${pid}" 2>/dev/null | grep -q "^${USER}$"; then
+        kill -KILL "${pid}" 2>/dev/null || true
+      fi
+    done
+  fi
+
+  # Only clean per-user artifacts to avoid impacting other users.
+  rm -rf "${HOME}/.nv/ComputeCache" "${HOME}/.cache/nvidia" 2>/dev/null || true
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "[!] docker is not installed or not on PATH."
   exit 1
@@ -65,6 +104,8 @@ if [[ -d "${LOG_DIR}" ]]; then
   echo "[*] Removing generated logs under ${LOG_DIR}..."
   find "${LOG_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 fi
+
+clear_gpu_resources
 
 echo "[*] Testbed uninstall completed."
 
