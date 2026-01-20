@@ -26,13 +26,16 @@ DEFAULT_MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 
 
 class VLLMBackend:
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, max_model_len: int | None) -> None:
         if LLM is None:
             raise RuntimeError(
                 "vLLM is not installed. Please `pip install vllm` or "
                 "run the official vLLM server container instead."
             )
-        self._llm = LLM(model=model)
+        llm_kwargs = {"model": model}
+        if max_model_len is not None:
+            llm_kwargs["max_model_len"] = max_model_len
+        self._llm = LLM(**llm_kwargs)
         self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
 
     def generate(self, prompt: str) -> str:
@@ -84,8 +87,8 @@ class LLMRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"output": text})
 
 
-def run_http_server(host: str, port: int, model_name: str) -> None:
-    backend = VLLMBackend(model=model_name)
+def run_http_server(host: str, port: int, model_name: str, max_model_len: int | None) -> None:
+    backend = VLLMBackend(model=model_name, max_model_len=max_model_len)
     LLMRequestHandler.backend = backend  # type: ignore[assignment]
 
     server = HTTPServer((host, port), LLMRequestHandler)
@@ -107,9 +110,15 @@ def main(argv: List[str] | None = None) -> None:
     )
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: %(default)s)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: %(default)d)")
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="Override model max sequence length for KV cache sizing.",
+    )
     args = parser.parse_args(argv)
 
-    run_http_server(args.host, args.port, args.model)
+    run_http_server(args.host, args.port, args.model, args.max_model_len)
 
 
 if __name__ == "__main__":
