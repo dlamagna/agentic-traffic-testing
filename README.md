@@ -8,55 +8,71 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 
 ---
 
+## Table of contents
+
+- [1. High-level architecture (MVP)](#1-high-level-architecture-mvp)
+- [2. What is eBPF and why we use it here](#2-what-is-ebpf-and-why-we-use-it-here)
+- [3. Installing eBPF tools (Debian/Ubuntu)](#3-installing-ebpf-tools-debianubuntu)
+- [4. Example commands to collect L3/L4 metrics](#4-example-commands-to-collect-l3l4-metrics)
+- [5. Experimental idea (MVP)](#5-experimental-idea-mvp)
+- [6. Roadmap / Next Phases](#6-roadmap--next-phases)
+- [7. Repository layout](#7-repository-layout)
+- [8. Quick HTTP smoke test (curl)](#8-quick-http-smoke-test-curl)
+- [9. Chat UI scenarios](#9-chat-ui-scenarios)
+- [10. Shared GPU usage checks (read-only)](#10-shared-gpu-usage-checks-read-only)
+- [11. Health check script](#11-health-check-script)
+- [11. Next steps](#11-next-steps)
+
+---
+
 ## 1. High-level architecture (MVP)
 
 The MVP architecture looks like this:
 
 ```mermaid
 flowchart LR
-    subgraph Host["Physical Server (GPU)"]
-        
+    subgraph Host["Physical Server GPU"]
         subgraph Node1["VM / Node 1 - Agent A"]
-            AgentA["Agent A (MCP host + LLM client)"]
-            AgentALogger["Agent A Telemetry Hooks\n(TaskID / AgentID / ToolCallID)"]
+            AgentA["Agent A MCP host and LLM client"]
+            AgentALogger["Agent A Telemetry Hooks TaskID AgentID ToolCallID"]
         end
 
-        subgraph Node2["VM / Node 2 - Agent B + Tools"]
-            AgentB["Agent B (MCP host + LLM client)"]
-            Tool1["MCP Tool Server 1\n(e.g. DB / HTTP API)"]
-            Tool2["MCP Tool Server 2\n(e.g. Synthetic microservice)"]
-            BaselineSvc["Baseline Non-agentic Service\n(e.g. fixed microservice chain)"]
-            AgentBLogger["Agent B Telemetry Hooks\n(TaskID / AgentID / ToolCallID)"]
+        subgraph Node2["VM / Node 2 - Agent B and Tools"]
+            AgentB["Agent B MCP host and LLM client"]
+            Tool1["MCP Tool Server 1 DB or HTTP API"]
+            Tool2["MCP Tool Server 2 Synthetic microservice"]
+            BaselineSvc["Baseline Non agentic Service Fixed microservice chain"]
+            AgentBLogger["Agent B Telemetry Hooks TaskID AgentID ToolCallID"]
         end
 
-        subgraph Node3["VM / Node 3 - LLM / SLM Server"]
-            LLM["Local LLM / SLM Server\n(vLLM or similar)"]
+        subgraph Node3["VM / Node 3 - LLM or SLM Server"]
+            LLM["Local LLM or SLM Server vLLM or similar"]
         end
 
         subgraph Obs1["Node 1 eBPF"]
-            BCC1["BCC / bpftrace tools\n(tcplife, tcpconnect, tcprtt, tcpretrans)"]
+            BCC1["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
         end
 
         subgraph Obs2["Node 2 eBPF"]
-            BCC2["BCC / bpftrace tools\n(tcplife, tcpconnect, tcprtt, tcpretrans)"]
+            BCC2["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
         end
 
         subgraph Obs3["Node 3 eBPF"]
-            BCC3["BCC / bpftrace tools\n(tcplife, tcpconnect, tcprtt, tcpretrans)"]
+            BCC3["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
         end
 
-        MetricsDB[(Optional Metrics Store\n(e.g. Prometheus / log directory))]
+        MetricsDB[( "Optional Metrics Store Prometheus or log directory" )]
     end
 
-    User((User / Benchmark Driver)) -->|User task / intent| AgentA
-    AgentA -->|Agent message / subtask| AgentB
-    AgentA -->|MCP tool calls| Tool1
-    AgentB -->|MCP tool calls| Tool2
-    AgentA -->|Service calls| BaselineSvc
-    AgentB -->|Service calls| BaselineSvc
+    User(( "User or Benchmark Driver" )) -->| "User task or intent" | AgentA
+    AgentA -->| "Agent message or subtask" | AgentB
+    AgentA -->| "MCP tool calls" | Tool1
+    AgentB -->| "MCP tool calls" | Tool2
+    AgentA -->| "Service calls" | BaselineSvc
+    AgentB -->| "Service calls" | BaselineSvc
 
-    AgentA -->|LLM queries| LLM
-    AgentB -->|LLM queries| LLM
+    AgentA -->| "LLM queries" | LLM
+    AgentB -->| "LLM queries" | LLM
 
     AgentA --- BCC1
     AgentB --- BCC2
@@ -65,9 +81,10 @@ flowchart LR
     BaselineSvc --- BCC2
     LLM --- BCC3
 
-    BCC1 -->|export logs / metrics| MetricsDB
-    BCC2 -->|export logs / metrics| MetricsDB
-    BCC3 -->|export logs / metrics| MetricsDB
+    BCC1 -->| "export logs or metrics" | MetricsDB
+    BCC2 -->| "export logs or metrics" | MetricsDB
+    BCC3 -->| "export logs or metrics" | MetricsDB
+
 ````
 
 ### Components
@@ -415,7 +432,7 @@ The `task` field is required for Agent A, `subtask` for Agent B. `scenario` is o
 
 The chat UI (`ui/chat/index.html`) exposes a Scenario dropdown with:
 
-- `agentic_simple`: agent-to-LLM single hop (label only).
+- `agentic_simple`: agent-to-LLM single hop.
 - `agentic_multi_hop`: Agent A calls Agent B before answering (behavioral change).
 - `tool_call`: placeholder for routing the query to an MCP tool adapted to the task (not implemented yet).
 
