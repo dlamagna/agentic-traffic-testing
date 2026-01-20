@@ -16,6 +16,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 source "${ROOT_DIR}/scripts/deploy_ui.sh"
 
+run_health_check() {
+  local health_script="${ROOT_DIR}/scripts/health_check.py"
+  if [[ ! -f "${health_script}" ]]; then
+    echo "[!] Health check script not found at ${health_script}"
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[!] python3 is not installed; skipping health check."
+    return 1
+  fi
+  echo
+  echo "[*] Running health check..."
+  python3 "${health_script}" || true
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "[!] docker is not installed or not on PATH."
   exit 1
@@ -66,6 +81,7 @@ if [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
   echo
   echo "[*] Final endpoint summary (via fetch_endpoints.sh):"
   bash "${ROOT_DIR}/scripts/fetch_endpoints.sh"
+  run_health_check
 else
   #########################################################################
   # Single-host mode: all containers on the local machine.
@@ -79,16 +95,17 @@ else
   echo "[*] Current container status:"
   docker compose ps
 
-  echo "[*] Services should now be reachable on the host:"
-  echo "    - LLM backend : http://localhost:8000/chat"
-  echo "    - Agent A     : http://localhost:8101/task"
-  echo "    - Agent B     : http://localhost:8102/subtask"
-  echo "    - MCP DB tool : http://localhost:8201/query"
-  echo "    - Jaeger UI   : http://localhost:16686"
-  echo "    - Chat UI     : http://localhost:3000"
-  echo
+  # echo "[*] Services should now be reachable on the host:"
+  # echo "    - LLM backend : http://localhost:8000/chat"
+  # echo "    - Agent A     : http://localhost:8101/task"
+  # echo "    - Agent B     : http://localhost:8102/subtask"
+  # echo "    - MCP DB tool : http://localhost:8201/query"
+  # echo "    - Jaeger UI   : http://localhost:16686"
+  # echo "    - Chat UI     : http://localhost:3000"
+  # echo
   echo "[*] Final endpoint summary (via fetch_endpoints.sh):"
   bash "${ROOT_DIR}/scripts/fetch_endpoints.sh"
+  run_health_check
 fi
 
 
