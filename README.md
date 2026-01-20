@@ -411,7 +411,19 @@ The `task` field is required for Agent A, `subtask` for Agent B. `scenario` is o
 
 ---
 
-## 9. Shared GPU usage checks (read-only)
+## 9. Chat UI scenarios
+
+The chat UI (`ui/chat/index.html`) exposes a Scenario dropdown with:
+
+- `agentic_simple`: agent-to-LLM single hop (label only).
+- `agentic_multi_hop`: Agent A calls Agent B before answering (behavioral change).
+- `tool_call`: placeholder for routing the query to an MCP tool adapted to the task (not implemented yet).
+
+Only `agentic_multi_hop` changes runtime behavior today; `agentic_simple` and `tool_call` are labels used for telemetry and future experiment tracking.
+
+---
+
+## 10. Shared GPU usage checks (read-only)
 
 This server is shared. Before running workloads, **check GPU usage and memory without disrupting other users**:
 
@@ -434,7 +446,7 @@ Avoid killing or restarting processes you do not own. If GPU memory is tight, lo
 
 ---
 
-## 10. Health check script
+## 11. Health check script
 
 The `scripts/health_check.py` script provides comprehensive health checks for the entire testbed. It verifies:
 
