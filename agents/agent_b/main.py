@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import httpx
 from agents.common.telemetry import TelemetryLogger
@@ -11,8 +11,8 @@ DEFAULT_LLM_SERVER_URL = "http://localhost:8000/chat"
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", DEFAULT_LLM_SERVER_URL)
 
 
-def call_llm(prompt: str) -> str:
-    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, timeout=30.0)
+def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
+    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, headers=headers, timeout=30.0)
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))

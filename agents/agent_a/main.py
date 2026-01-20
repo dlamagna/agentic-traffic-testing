@@ -14,18 +14,22 @@ DEFAULT_AGENT_B_URL = "http://agent-b:8102/subtask"
 AGENT_B_URL = os.environ.get("AGENT_B_URL", DEFAULT_AGENT_B_URL)
 
 
-def call_llm(prompt: str) -> str:
-    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, timeout=30.0)
+def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
+    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, headers=headers, timeout=30.0)
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))
 
 
-def call_agent_b(subtask: str, scenario: Optional[str] = None) -> str:
+def call_agent_b(
+    subtask: str,
+    scenario: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> str:
     payload: Dict[str, Any] = {"subtask": subtask}
     if scenario:
         payload["scenario"] = scenario
-    resp = httpx.post(AGENT_B_URL, json=payload, timeout=30.0)
+    resp = httpx.post(AGENT_B_URL, json=payload, headers=headers, timeout=30.0)
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))
@@ -34,7 +38,11 @@ def call_agent_b(subtask: str, scenario: Optional[str] = None) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent A MVP")
     parser.add_argument("task", help="User task / intent text")
-    parser.add_argument("--scenario", default=None, help="Scenario label (baseline/agentic_simple/agentic_multi_hop)")
+    parser.add_argument(
+        "--scenario",
+        default=None,
+        help="Scenario label (agentic_simple/agentic_multi_hop/tool_call)",
+    )
     args = parser.parse_args()
 
     logger = TelemetryLogger(agent_id="AgentA", scenario=args.scenario)

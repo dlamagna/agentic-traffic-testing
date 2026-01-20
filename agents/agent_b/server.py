@@ -3,7 +3,10 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 
-from agents.agent_b.main import call_llm
+from opentelemetry import propagate
+from opentelemetry.trace import SpanKind
+
+from agents.agent_b.main import LLM_SERVER_URL, call_llm
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 
@@ -43,7 +46,13 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Not found"})
             return
 
-        with self.tracer.start_as_current_span("agent_b.handle_subtask") as span:
+        carrier = {key: value for key, value in self.headers.items()}
+        ctx = propagate.extract(carrier)
+        with self.tracer.start_as_current_span(
+            "agent_b.handle_subtask",
+            context=ctx,
+            kind=SpanKind.SERVER,
+        ) as span:
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
 
@@ -77,7 +86,14 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 tool_call_id=tool_call_id,
             )
 
-            output = call_llm(subtask)
+            with self.tracer.start_as_current_span(
+                "agent_b.call_llm",
+                kind=SpanKind.CLIENT,
+            ) as span_llm:
+                span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
+                headers: Dict[str, str] = {}
+                propagate.inject(headers)
+                output = call_llm(subtask, headers=headers)
 
             logger.log(
                 task_id=task_id,
