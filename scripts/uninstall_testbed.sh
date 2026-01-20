@@ -18,7 +18,7 @@ clear_gpu_resources() {
     return
   fi
 
-  echo "[*] Clearing GPU VRAM and GPU storage artifacts..."
+  echo "[*] Clearing GPU VRAM and GPU storage artifacts for USER=${USER}..."
 
   local gpu_indices
   gpu_indices="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null || true)"
