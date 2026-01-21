@@ -32,6 +32,8 @@ services:
       - LLM_SERVER_URL=http://llm-backend:8000/chat
       - NODE_NAME=node1_agentA
       - AGENT_A_PORT=8101
+      - OTEL_SERVICE_NAME=agent-a
+      - AGENT_B_URLS=http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask
     depends_on:
       - llm-backend
     ports:
@@ -49,10 +51,83 @@ services:
       - LLM_SERVER_URL=http://llm-backend:8000/chat
       - NODE_NAME=node2_agentB
       - AGENT_B_PORT=8102
+      - OTEL_SERVICE_NAME=agent-b-1
     depends_on:
       - llm-backend
     ports:
       - "8102:8102"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-2:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-2
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_2
+      - AGENT_B_PORT=8103
+      - OTEL_SERVICE_NAME=agent-b-2
+    depends_on:
+      - llm-backend
+    ports:
+      - "8103:8103"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-3:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-3
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_3
+      - AGENT_B_PORT=8104
+      - OTEL_SERVICE_NAME=agent-b-3
+    depends_on:
+      - llm-backend
+    ports:
+      - "8104:8104"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-4:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-4
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_4
+      - AGENT_B_PORT=8105
+      - OTEL_SERVICE_NAME=agent-b-4
+    depends_on:
+      - llm-backend
+    ports:
+      - "8105:8105"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-5:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-5
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_5
+      - AGENT_B_PORT=8106
+      - OTEL_SERVICE_NAME=agent-b-5
+    depends_on:
+      - llm-backend
+    ports:
+      - "8106:8106"
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
@@ -82,6 +157,10 @@ services:
     depends_on:
       - agent-a
       - agent-b
+      - agent-b-2
+      - agent-b-3
+      - agent-b-4
+      - agent-b-5
 
   jaeger:
     image: jaegertracing/all-in-one:1.57
