@@ -51,11 +51,11 @@
     <div class="row">
       <div>
         <label>Agent A endpoint</label>
-        <input id="endpointA" type="text" value="http://localhost:8101/task">
+        <input id="endpointA" type="text">
       </div>
       <div>
         <label>Agent B endpoint</label>
-        <input id="endpointB" type="text" value="http://localhost:8102/subtask">
+        <input id="endpointB" type="text">
       </div>
     </div>
 
@@ -150,7 +150,27 @@
       statusEl.textContent = msg;
     }
 
+    function getDefaultProtocol() {
+      return window.location.protocol === 'file:' ? 'http:' : window.location.protocol;
+    }
+
+    function buildEndpoint(port, path) {
+      const protocol = getDefaultProtocol();
+      const host = window.location.hostname || 'localhost';
+      return `${protocol}//${host}:${port}${path}`;
+    }
+
+    function ensureDefaultEndpoints() {
+      if (!endpointA.value.trim()) {
+        endpointA.value = buildEndpoint(8101, '/task');
+      }
+      if (!endpointB.value.trim()) {
+        endpointB.value = buildEndpoint(8102, '/subtask');
+      }
+    }
+
     async function sendMessage() {
+      ensureDefaultEndpoints();
       const agent = document.querySelector('input[name="agent"]:checked').value;
       const text = promptEl.value.trim();
       const scenario = scenarioEl.value.trim() || null;
@@ -184,9 +204,13 @@
           : {};
 
       try {
+        const controller = new AbortController();
+        const timeoutMs = 120000;
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             [field]: text,
             scenario: scenario || undefined,
@@ -197,6 +221,7 @@
             ...extra
           })
         });
+        clearTimeout(timeoutId);
 
         if (!resp.ok) {
           const err = await resp.text();
@@ -215,7 +240,11 @@
       } catch (err) {
         outputA.textContent = '';
         outputB.textContent = '';
-        rawResp.textContent = String(err);
+        const message =
+          err && err.name === 'AbortError'
+            ? 'Request timed out. Check the agent endpoint and port forwarding.'
+            : String(err);
+        rawResp.textContent = message;
         stopTimer('Error');
       }
     }
