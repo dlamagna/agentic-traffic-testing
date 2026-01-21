@@ -19,7 +19,8 @@ def init_tracer(service_name: str) -> None:
         return
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4318/v1/traces")
-    resource = Resource(attributes={SERVICE_NAME: service_name})
+    resolved_service_name = os.environ.get("OTEL_SERVICE_NAME", service_name)
+    resource = Resource(attributes={SERVICE_NAME: resolved_service_name})
 
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=endpoint)
@@ -32,6 +33,7 @@ def init_tracer(service_name: str) -> None:
 
 def get_tracer(service_name: str):
     init_tracer(service_name)
-    return trace.get_tracer(service_name)
+    resolved_service_name = os.environ.get("OTEL_SERVICE_NAME", service_name)
+    return trace.get_tracer(resolved_service_name)
 
 

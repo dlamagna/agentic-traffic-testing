@@ -1,6 +1,6 @@
 import json
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
 from opentelemetry import propagate
@@ -75,12 +75,23 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             span.set_attribute("app.subtask", subtask)
             if scenario:
                 span.set_attribute("app.scenario", scenario)
+            if agent_b_role:
+                span.set_attribute("app.agent_role", agent_b_role)
+                span.set_attribute(
+                    "app.role_service",
+                    f"{os.environ.get('OTEL_SERVICE_NAME', 'agent-b')}:{agent_b_role}",
+                )
 
             logger = self.logger
             logger.scenario = scenario  # type: ignore[assignment]
             task_id = logger.new_task_id()
             span.set_attribute("app.task_id", task_id)
-            logger.log(task_id=task_id, event_type="subtask_received", message=subtask)
+            logger.log(
+                task_id=task_id,
+                event_type="subtask_received",
+                message=subtask,
+                extra={"agent_role": agent_b_role} if agent_b_role else None,
+            )
 
             tool_call_id = logger.new_tool_call_id()
             logger.log(
@@ -129,7 +140,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
 
 
 def run() -> None:
-    server = HTTPServer((HOST, PORT), AgentBRequestHandler)
+    server = ThreadingHTTPServer((HOST, PORT), AgentBRequestHandler)
     print(f"[*] Agent B HTTP server listening on http://{HOST}:{PORT}/subtask")
     try:
         server.serve_forever()
