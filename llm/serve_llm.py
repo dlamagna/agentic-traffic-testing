@@ -13,6 +13,9 @@ import argparse
 import json
 from typing import Any, Dict, List
 
+from opentelemetry import propagate
+from opentelemetry.trace import SpanKind
+
 try:
     from vllm import LLM, SamplingParams  # type: ignore
 except ImportError:  # pragma: no cover - only at runtime without vLLM
@@ -20,6 +23,8 @@ except ImportError:  # pragma: no cover - only at runtime without vLLM
     SamplingParams = None  # type: ignore
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from llm.tracing import get_tracer
 
 
 DEFAULT_MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
@@ -50,6 +55,7 @@ class VLLMBackend:
 
 class LLMRequestHandler(BaseHTTPRequestHandler):
     backend: VLLMBackend  # type: ignore[assignment]
+    tracer = get_tracer("llm-backend")
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -64,27 +70,36 @@ class LLMRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Not found"})
             return
 
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+        carrier = {key: value for key, value in self.headers.items()}
+        ctx = propagate.extract(carrier)
+        with self.tracer.start_as_current_span(
+            "llm.handle_request",
+            context=ctx,
+            kind=SpanKind.SERVER,
+        ) as span:
+            span.set_attribute("app.path", self.path)
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        try:
-            data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-        except json.JSONDecodeError:
-            self._send_json(400, {"error": "Invalid JSON"})
-            return
+            try:
+                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
 
-        prompt = data.get("prompt") or data.get("input")
-        if not isinstance(prompt, str) or not prompt:
-            self._send_json(400, {"error": "Missing 'prompt' field"})
-            return
+            prompt = data.get("prompt") or data.get("input")
+            if not isinstance(prompt, str) or not prompt:
+                self._send_json(400, {"error": "Missing 'prompt' field"})
+                return
 
-        try:
-            text = self.backend.generate(prompt)
-        except Exception as exc:  # pragma: no cover - runtime safety
-            self._send_json(500, {"error": f"Generation failed: {exc}"})
-            return
+            span.set_attribute("app.prompt_length", len(prompt))
+            try:
+                text = self.backend.generate(prompt)
+            except Exception as exc:  # pragma: no cover - runtime safety
+                self._send_json(500, {"error": f"Generation failed: {exc}"})
+                return
 
-        self._send_json(200, {"output": text})
+            self._send_json(200, {"output": text})
 
 
 def run_http_server(host: str, port: int, model_name: str, max_model_len: int | None) -> None:
