@@ -22,6 +22,8 @@
     .col-title { font-weight: 700; margin-bottom: 8px; }
     .mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; }
     .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #e7f3ff; color: #084298; margin-left: 6px; }
+    .worker-card { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+    .worker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
   </style>
 </head>
 <body>
@@ -39,12 +41,17 @@
           <option value="">none</option>
           <option value="agentic_simple">agentic_simple</option>
           <option value="agentic_multi_hop">agentic_multi_hop</option>
+          <option value="agentic_parallel">agentic_parallel</option>
           <option value="tool_call">tool_call</option>
         </select>
       </div>
       <div>
         <label for="maxTurns">Max Agent B turns</label>
         <input id="maxTurns" type="number" min="1" step="1" placeholder="3">
+      </div>
+      <div>
+        <label for="agentCount">Worker count (parallel)</label>
+        <input id="agentCount" type="number" min="1" max="5" step="1" placeholder="2">
       </div>
     </div>
 
@@ -88,6 +95,9 @@
       </div>
     </div>
 
+    <label>Parallel workers (Agent B instances)</label>
+    <div id="workers" class="worker-grid"></div>
+
     <label for="prompt">Message</label>
     <textarea id="prompt" placeholder="Ask a question or give a task"></textarea>
 
@@ -107,6 +117,10 @@
           <div id="outputB" class="mono"></div>
         </div>
       </div>
+      <div style="margin-top: 12px;">
+        <div class="col-title">Worker Responses (parallel)</div>
+        <div id="outputWorkers" class="mono"></div>
+      </div>
       <div style="margin-top: 8px;" class="mono" id="rawResp"></div>
     </div>
   </div>
@@ -116,18 +130,30 @@
     const statusEl = document.getElementById('status');
     const outputA = document.getElementById('outputA');
     const outputB = document.getElementById('outputB');
+    const outputWorkersEl = document.getElementById('outputWorkers');
     const rawResp = document.getElementById('rawResp');
     const badgeA = document.getElementById('badgeA');
     const badgeB = document.getElementById('badgeB');
     const scenarioEl = document.getElementById('scenario');
     const maxTurnsEl = document.getElementById('maxTurns');
+    const agentCountEl = document.getElementById('agentCount');
     const endpointA = document.getElementById('endpointA');
     const endpointB = document.getElementById('endpointB');
     const agentARoleEl = document.getElementById('agentARole');
     const agentAContractEl = document.getElementById('agentAContract');
     const agentBRoleEl = document.getElementById('agentBRole');
     const agentBContractEl = document.getElementById('agentBContract');
+    const workersEl = document.getElementById('workers');
     const sendBtn = document.getElementById('sendBtn');
+
+    const roleOptions = [
+      { value: '', label: 'none' },
+      { value: 'planner', label: 'planner' },
+      { value: 'researcher', label: 'researcher' },
+      { value: 'critic', label: 'critic' },
+      { value: 'summarizer', label: 'summarizer' },
+      { value: 'executor', label: 'executor' }
+    ];
 
     let timerId = null;
     let startTs = null;
@@ -169,6 +195,58 @@
       }
     }
 
+    function getDefaultWorkerPorts() {
+      return [8102, 8103, 8104, 8105, 8106];
+    }
+
+    function renderWorkers() {
+      const requested = Number(agentCountEl.value) || 2;
+      const count = Math.max(1, Math.min(5, requested));
+      agentCountEl.value = count;
+      workersEl.innerHTML = '';
+      const ports = getDefaultWorkerPorts();
+      for (let i = 0; i < count; i += 1) {
+        const card = document.createElement('div');
+        card.className = 'worker-card';
+        const optionsHtml = roleOptions
+          .map((opt) => `<option value="${opt.value}">${opt.label}</option>`)
+          .join('');
+        card.innerHTML = `
+          <div><strong>Worker ${i + 1}</strong></div>
+          <label for="workerEndpoint-${i}">Endpoint</label>
+          <input id="workerEndpoint-${i}" type="text" value="${buildEndpoint(ports[i], '/subtask')}" placeholder="${buildEndpoint(ports[i], '/subtask')}">
+          <label for="workerRole-${i}">Role</label>
+          <select id="workerRole-${i}">
+            ${optionsHtml}
+          </select>
+          <label for="workerContract-${i}">Contract</label>
+          <textarea id="workerContract-${i}" class="compact-textarea" placeholder="Describe the worker's focus"></textarea>
+        `;
+        workersEl.appendChild(card);
+      }
+    }
+
+    function collectWorkers() {
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(5, count));
+      const ports = getDefaultWorkerPorts();
+      const workers = [];
+      for (let i = 0; i < safeCount; i += 1) {
+        const endpointEl = document.getElementById(`workerEndpoint-${i}`);
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
+        const endpoint = endpointEl && endpointEl.value.trim()
+          ? endpointEl.value.trim()
+          : buildEndpoint(ports[i], '/subtask');
+        workers.push({
+          endpoint,
+          role: roleEl ? roleEl.value.trim() : '',
+          contract: contractEl ? contractEl.value.trim() : ''
+        });
+      }
+      return { count: safeCount, workers };
+    }
+
     async function sendMessage() {
       ensureDefaultEndpoints();
       const agent = document.querySelector('input[name="agent"]:checked').value;
@@ -184,10 +262,13 @@
 
       const label = scenario === 'agentic_multi_hop'
         ? 'Sending (multi-hop A→B→LLM)'
-        : 'Sending';
+        : scenario === 'agentic_parallel'
+          ? 'Sending (parallel A→B workers)'
+          : 'Sending';
       startTimer(label);
       outputA.textContent = '';
       outputB.textContent = '';
+      outputWorkersEl.textContent = '';
       rawResp.textContent = '';
       badgeA.style.display = 'none';
       badgeB.style.display = 'none';
@@ -198,10 +279,15 @@
       const agentAContract = agentAContractEl.value.trim() || null;
       const agentBRole = agentBRoleEl.value.trim() || null;
       const agentBContract = agentBContractEl.value.trim() || null;
-      const extra =
-        agent === 'a' && Number.isInteger(maxTurns) && maxTurns > 0
-          ? { max_agent_turns: maxTurns }
-          : {};
+      const { count: workerCount, workers } = collectWorkers();
+      const extra = {};
+      if (agent === 'a' && Number.isInteger(maxTurns) && maxTurns > 0) {
+        extra.max_agent_turns = maxTurns;
+      }
+      if (agent === 'a') {
+        extra.agent_count = workerCount;
+        extra.agent_b_workers = workers;
+      }
 
       try {
         const controller = new AbortController();
@@ -231,6 +317,21 @@
         const data = await resp.json();
         outputA.textContent = data.output || '';
         outputB.textContent = data.agent_b_output || '';
+        if (Array.isArray(data.agent_b_outputs) && data.agent_b_outputs.length > 0) {
+          const isObjectList = data.agent_b_outputs.every(
+            (item) => item && typeof item === 'object'
+          );
+          if (isObjectList) {
+            outputWorkersEl.textContent = data.agent_b_outputs
+              .map((item) => {
+                const index = item.agent_index || '?';
+                const endpoint = item.endpoint ? ` (${item.endpoint})` : '';
+                const subtask = item.subtask ? `Subtask: ${item.subtask}\n` : '';
+                return `Worker ${index}${endpoint}\n${subtask}${item.output || ''}`;
+              })
+              .join('\n\n');
+          }
+        }
         rawResp.textContent = JSON.stringify(data, null, 2);
         badgeA.style.display = 'inline-block';
         if (data.agent_b_output) {
@@ -240,6 +341,7 @@
       } catch (err) {
         outputA.textContent = '';
         outputB.textContent = '';
+        outputWorkersEl.textContent = '';
         const message =
           err && err.name === 'AbortError'
             ? 'Request timed out. Check the agent endpoint and port forwarding.'
@@ -255,7 +357,8 @@
         sendMessage();
       }
     });
+    agentCountEl.addEventListener('change', renderWorkers);
+    renderWorkers();
   </script>
 </body>
 </html>
-
