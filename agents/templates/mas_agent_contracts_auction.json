@@ -1,0 +1,135 @@
+{
+  "template_id": "mas_agent_contracts_auction",
+  "title": "auction",
+  "agents": [
+    {
+      "id": "agent_a_critic",
+      "name": "Agent A - Auctioneer",
+      "role": "critic",
+      "responsibilities": [
+        "Collect bids, resolve ties, and declare winning allocations."
+      ],
+      "input": [
+        "Bids from bidders plus reserve constraints."
+      ],
+      "output": [
+        "Winning bids and a summary of allocations."
+      ],
+      "example_output": {
+        "winners": [
+          {
+            "item": "Resource A",
+            "winner": "Bidder 2",
+            "price": 120
+          }
+        ]
+      }
+    },
+    {
+      "id": "agent_b_planner",
+      "name": "Agent B - Market Coordinator",
+      "role": "planner",
+      "responsibilities": [
+        "Define the auction rules and assign bidder roles."
+      ],
+      "input": [
+        "Auction items, bidder constraints, and pricing rules."
+      ],
+      "output": [
+        "A list of bidder tasks and auction timeline."
+      ]
+    },
+    {
+      "id": "agent_b2_researcher",
+      "name": "Agent B-2 - Bidder 1",
+      "role": "researcher",
+      "responsibilities": [
+        "Compute a bid based on value and constraints."
+      ],
+      "input": [
+        "Item details and bidder preferences."
+      ],
+      "output": [
+        "A bid proposal with price and justification."
+      ]
+    },
+    {
+      "id": "agent_b3_summariser",
+      "name": "Agent B-3 - Bidder 2",
+      "role": "summariser",
+      "responsibilities": [
+        "Compute a bid based on value and constraints."
+      ],
+      "input": [
+        "Item details and bidder preferences."
+      ],
+      "output": [
+        "A bid proposal with price and justification."
+      ]
+    },
+    {
+      "id": "agent_b4_executor",
+      "name": "Agent B-4 - Bidder 3",
+      "role": "executor",
+      "responsibilities": [
+        "Compute a bid based on value and constraints."
+      ],
+      "input": [
+        "Item details and bidder preferences."
+      ],
+      "output": [
+        "A bid proposal with price and justification."
+      ]
+    },
+    {
+      "id": "agent_b5_executor",
+      "name": "Agent B-5 - Bidder 4",
+      "role": "executor",
+      "responsibilities": [
+        "Compute a bid based on value and constraints."
+      ],
+      "input": [
+        "Item details and bidder preferences."
+      ],
+      "output": [
+        "A bid proposal with price and justification."
+      ]
+    }
+  ],
+  "execution_flow": [
+    "Coordinator defines auction rules and items.",
+    "Bidders calculate and submit bids.",
+    "Auctioneer selects winners and announces allocations."
+  ],
+  "ui_defaults": {
+    "prompt": "Allocate a limited GPU cluster (3 nodes) among four teams based on their stated value and urgency.",
+    "scenario": "agentic_parallel",
+    "agentA": {
+      "role": "critic",
+      "contract": "Act as the auctioneer and finalize winning bids."
+    },
+    "agentB": {
+      "role": "planner",
+      "contract": "Coordinate the auction and assign bidder roles."
+    },
+    "worker_count": 4,
+    "workers": [
+      {
+        "role": "researcher",
+        "contract": "Bid as Team 1 with a clear valuation."
+      },
+      {
+        "role": "summarizer",
+        "contract": "Bid as Team 2 with a clear valuation."
+      },
+      {
+        "role": "executor",
+        "contract": "Bid as Team 3 with a clear valuation."
+      },
+      {
+        "role": "executor",
+        "contract": "Bid as Team 4 with a clear valuation."
+      }
+    ]
+  }
+}

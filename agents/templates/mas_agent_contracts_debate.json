@@ -1,0 +1,154 @@
+{
+  "template_id": "mas_agent_contracts_debate",
+  "title": "debate",
+  "agents": [
+    {
+      "id": "agent_a_critic",
+      "name": "Agent A - Judge",
+      "role": "critic",
+      "responsibilities": [
+        "Evaluate arguments from both sides and decide which is stronger."
+      ],
+      "input": [
+        "Claims and rebuttals from the debaters."
+      ],
+      "output": [
+        "A winner plus a brief justification."
+      ],
+      "example_output": {
+        "winner": "pro",
+        "rationale": "Pro provided more evidence and addressed counterpoints."
+      }
+    },
+    {
+      "id": "agent_b_planner",
+      "name": "Agent B - Moderator",
+      "role": "planner",
+      "responsibilities": [
+        "Define the debate structure and assign turns."
+      ],
+      "input": [
+        "The debate question and any constraints."
+      ],
+      "output": [
+        "A turn plan for pro and con arguments."
+      ],
+      "example_output": [
+        {
+          "task_id": 1,
+          "role": "researcher",
+          "description": "Draft the pro argument",
+          "dependencies": []
+        },
+        {
+          "task_id": 2,
+          "role": "executor",
+          "description": "Draft the con argument",
+          "dependencies": []
+        },
+        {
+          "task_id": 3,
+          "role": "critic",
+          "description": "Judge which argument is stronger",
+          "dependencies": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agent_b2_researcher",
+      "name": "Agent B-2 - Pro Debater",
+      "role": "researcher",
+      "responsibilities": [
+        "Present the strongest case for the affirmative position."
+      ],
+      "input": [
+        "Debate prompt and any supporting facts."
+      ],
+      "output": [
+        "A concise pro argument with evidence."
+      ]
+    },
+    {
+      "id": "agent_b3_summariser",
+      "name": "Agent B-3 - Con Debater",
+      "role": "summariser",
+      "responsibilities": [
+        "Present the strongest case for the opposing position."
+      ],
+      "input": [
+        "Debate prompt and any supporting facts."
+      ],
+      "output": [
+        "A concise con argument with evidence."
+      ]
+    },
+    {
+      "id": "agent_b4_executor",
+      "name": "Agent B-4 - Rebuttal (Pro)",
+      "role": "executor",
+      "responsibilities": [
+        "Rebut the con argument and reinforce the pro case."
+      ],
+      "input": [
+        "The con argument."
+      ],
+      "output": [
+        "A short rebuttal from the pro side."
+      ]
+    },
+    {
+      "id": "agent_b5_executor",
+      "name": "Agent B-5 - Rebuttal (Con)",
+      "role": "executor",
+      "responsibilities": [
+        "Rebut the pro argument and reinforce the con case."
+      ],
+      "input": [
+        "The pro argument."
+      ],
+      "output": [
+        "A short rebuttal from the con side."
+      ]
+    }
+  ],
+  "execution_flow": [
+    "Moderator assigns pro and con roles.",
+    "Pro and con present opening arguments.",
+    "Each side issues a rebuttal.",
+    "Judge selects the stronger argument and explains why."
+  ],
+  "ui_defaults": {
+    "prompt": "Debate the question: Should cities ban private cars in downtown areas?",
+    "scenario": "agentic_parallel",
+    "agentA": {
+      "role": "critic",
+      "contract": "Judge the debate and decide the stronger case."
+    },
+    "agentB": {
+      "role": "planner",
+      "contract": "Moderate the debate and assign pro/con roles."
+    },
+    "worker_count": 4,
+    "workers": [
+      {
+        "role": "researcher",
+        "contract": "Present the pro argument with evidence."
+      },
+      {
+        "role": "summarizer",
+        "contract": "Present the con argument with evidence."
+      },
+      {
+        "role": "executor",
+        "contract": "Rebut the con argument from the pro side."
+      },
+      {
+        "role": "executor",
+        "contract": "Rebut the pro argument from the con side."
+      }
+    ]
+  }
+}

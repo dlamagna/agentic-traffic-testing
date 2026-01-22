@@ -1,0 +1,280 @@
+{
+  "template_id": "mas_agent_contracts_enhanced",
+  "title": "MAS Agent Contracts (Enhanced)",
+  "agents": [
+    {
+      "id": "agent_a_critic",
+      "name": "Agent A - Critic",
+      "role": "critic",
+      "responsibilities": [
+        "Verify that all subtasks are completed correctly by the executors.",
+        "Check that arithmetic, logic, and constraints (budget, revenue calculation) are satisfied.",
+        "Flag any errors or inconsistencies immediately.",
+        "Produce a concise, validated solution for the final summary."
+      ],
+      "input": [
+        "Results from executor agents (costs, revenues, ride combinations).",
+        "Any intermediate outputs from planner or researcher."
+      ],
+      "output": [
+        "Boolean validation for each subtask (valid / invalid).",
+        "Corrected calculations if needed.",
+        "Final concise solution for summariser."
+      ],
+      "example_output": {
+        "validation": true,
+        "corrected_results": {
+          "best_combo": [
+            "Ride2",
+            "Ride3"
+          ],
+          "total_cost": 1600,
+          "total_revenue": 5500
+        }
+      }
+    },
+    {
+      "id": "agent_b_planner",
+      "name": "Agent B - Planner",
+      "role": "planner",
+      "responsibilities": [
+        "Take the main problem prompt and break it into subtasks for the MAS.",
+        "Assign subtasks to the appropriate agents.",
+        "Maintain a dependency graph to ensure execution order: research -> execution -> critic -> summariser."
+      ],
+      "input": [
+        "Original problem statement.",
+        "Optional constraints (e.g., budget, student number)."
+      ],
+      "output": [
+        "List of subtasks with metadata: assigned agent, dependencies, inputs."
+      ],
+      "example_output": [
+        {
+          "task_id": 1,
+          "role": "researcher",
+          "description": "Find best approach to maximize revenue",
+          "dependencies": []
+        },
+        {
+          "task_id": 2,
+          "role": "executor",
+          "description": "Calculate revenue for Ride1+Ride2",
+          "dependencies": [
+            1
+          ]
+        },
+        {
+          "task_id": 3,
+          "role": "executor",
+          "description": "Calculate revenue for Ride1+Ride3",
+          "dependencies": [
+            1
+          ]
+        },
+        {
+          "task_id": 4,
+          "role": "executor",
+          "description": "Calculate revenue for Ride2+Ride3",
+          "dependencies": [
+            1
+          ]
+        },
+        {
+          "task_id": 5,
+          "role": "critic",
+          "description": "Verify executor calculations",
+          "dependencies": [
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "task_id": 6,
+          "role": "summariser",
+          "description": "Produce final solution summary",
+          "dependencies": [
+            5
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agent_b2_researcher",
+      "name": "Agent B-2 - Researcher",
+      "role": "researcher",
+      "responsibilities": [
+        "Analyze the problem and suggest the most efficient approach to find the solution.",
+        "Identify all valid ride combinations under budget.",
+        "Provide guidance to executors about what calculations to perform.",
+        "Optionally, propose optimizations (e.g., shortcut formulas)."
+      ],
+      "input": [
+        "Problem statement.",
+        "Parameters (ride costs, revenue per ride, budget, students)."
+      ],
+      "output": [
+        "List of ride combinations to evaluate.",
+        "Recommended calculation plan for executors."
+      ],
+      "example_output": {
+        "combinations": [
+          [
+            "Ride1",
+            "Ride2"
+          ],
+          [
+            "Ride1",
+            "Ride3"
+          ],
+          [
+            "Ride2",
+            "Ride3"
+          ],
+          [
+            "Ride1",
+            "Ride2",
+            "Ride3"
+          ]
+        ],
+        "executor_guidance": "Calculate total cost and total revenue for each combination. Exclude combinations exceeding budget."
+      }
+    },
+    {
+      "id": "agent_b3_summariser",
+      "name": "Agent B-3 - Summariser",
+      "role": "summariser",
+      "responsibilities": [
+        "Take the validated results from the critic.",
+        "Format the solution in clear, readable, and complete text.",
+        "Ensure all relevant details are included (chosen rides, total cost, expected revenue).",
+        "Optionally include a short explanation of why this combination is optimal."
+      ],
+      "input": [
+        "Validated results from critic.",
+        "Optional intermediate steps for context."
+      ],
+      "output": [
+        "Concise, user-friendly summary.",
+        "Optional table of calculations."
+      ],
+      "example_output_text": "The school should build Ride2 and Ride3. Total construction cost: $1600 (within budget). Expected total revenue from 100 students: $5500. This combination maximizes revenue while staying within the $2000 budget."
+    },
+    {
+      "id": "agent_b4_executor",
+      "name": "Agent B-4 - Executor",
+      "role": "executor",
+      "responsibilities": [
+        "Take combinations identified by researcher.",
+        "Compute total cost for each combination.",
+        "Compute expected revenue: number of students x revenue per ride.",
+        "Return results to critic for verification."
+      ],
+      "input": [
+        "Ride combinations (from researcher).",
+        "Cost and revenue per ride.",
+        "Budget constraint."
+      ],
+      "output": [
+        "For each combination: total cost, total revenue, feasibility (within budget)."
+      ],
+      "example_output": [
+        {
+          "combination": [
+            "Ride1",
+            "Ride2"
+          ],
+          "total_cost": 1200,
+          "total_revenue": 4500,
+          "within_budget": true
+        },
+        {
+          "combination": [
+            "Ride1",
+            "Ride3"
+          ],
+          "total_cost": 1400,
+          "total_revenue": 5000,
+          "within_budget": true
+        },
+        {
+          "combination": [
+            "Ride2",
+            "Ride3"
+          ],
+          "total_cost": 1600,
+          "total_revenue": 5500,
+          "within_budget": true
+        },
+        {
+          "combination": [
+            "Ride1",
+            "Ride2",
+            "Ride3"
+          ],
+          "total_cost": 2100,
+          "total_revenue": 6000,
+          "within_budget": false
+        }
+      ]
+    },
+    {
+      "id": "agent_b5_executor",
+      "name": "Agent B-5 - Executor",
+      "role": "executor",
+      "responsibilities": [
+        "Take combinations identified by researcher.",
+        "Compute total cost for each combination.",
+        "Compute expected revenue: number of students x revenue per ride.",
+        "Return results to critic for verification."
+      ],
+      "input": [
+        "Ride combinations (from researcher).",
+        "Cost and revenue per ride.",
+        "Budget constraint."
+      ],
+      "output": [
+        "For each combination: total cost, total revenue, feasibility (within budget)."
+      ]
+    }
+  ],
+  "execution_flow": [
+    "Planner generates subtasks -> assigns researcher, executor, critic, summariser.",
+    "Researcher identifies combinations -> returns guidance to executors.",
+    "Executors calculate totals -> return results to critic.",
+    "Critic validates calculations -> sends validated results to summariser.",
+    "Summariser outputs final readable answer."
+  ],
+  "ui_defaults": {
+    "prompt": "A school is designing a small amusement park with three rides. The first ride costs $500 to build and makes $20 per ride. The second ride costs $700 and makes $25 per ride. The third ride costs $900 and makes $30 per ride.\n\nThe school has a budget of $2000 and wants to maximize revenue in 1 day if 100 students ride each ride at most once.\n\nDetermine which rides to build and calculate the expected total revenue.",
+    "scenario": "agentic_parallel",
+    "agentA": {
+      "role": "critic",
+      "contract": "Role: Quality control & verification\nResponsibilities:\n1. Verify that all subtasks are completed correctly by the executors.\n2. Check that arithmetic, logic, and constraints (budget, revenue calculation) are satisfied.\n3. Flag any errors or inconsistencies immediately.\n4. Produce a concise, validated solution for the final summary.\nInput:\n- Results from executor agents (costs, revenues, ride combinations).\n- Any intermediate outputs from planner or researcher.\nOutput:\n- Boolean validation for each subtask (valid / invalid).\n- Corrected calculations if needed.\n- Final concise solution for summariser."
+    },
+    "agentB": {
+      "role": "planner",
+      "contract": "Role: Task decomposition & orchestration\nResponsibilities:\n1. Take the main problem prompt and break it into subtasks for the MAS.\n2. Assign subtasks to the appropriate agents.\n3. Maintain a dependency graph to ensure execution order: research -> execution -> critic -> summariser.\nInput:\n- Original problem statement.\n- Optional constraints (e.g., budget, student number).\nOutput:\n- List of subtasks with metadata: assigned agent, dependencies, inputs."
+    },
+    "worker_count": 4,
+    "workers": [
+      {
+        "role": "researcher",
+        "contract": "Role: Problem-solving strategy & methodology\nResponsibilities:\n1. Analyze the problem and suggest the most efficient approach to find the solution.\n2. Identify all valid ride combinations under budget.\n3. Provide guidance to executors about what calculations to perform.\n4. Optionally, propose optimizations (e.g., shortcut formulas).\nInput:\n- Problem statement.\n- Parameters (ride costs, revenue per ride, budget, students).\nOutput:\n- List of ride combinations to evaluate.\n- Recommended calculation plan for executors."
+      },
+      {
+        "role": "summarizer",
+        "contract": "Role: Present the final answer clearly\nResponsibilities:\n1. Take the validated results from the critic.\n2. Format the solution in clear, readable, and complete text.\n3. Ensure all relevant details are included (chosen rides, total cost, expected revenue).\n4. Optionally include a short explanation of why this combination is optimal.\nInput:\n- Validated results from critic.\n- Optional intermediate steps for context.\nOutput:\n- Concise, user-friendly summary.\n- Optional table of calculations."
+      },
+      {
+        "role": "executor",
+        "contract": "Role: Perform raw calculations\nResponsibilities:\n1. Take combinations identified by researcher.\n2. Compute total cost for each combination.\n3. Compute expected revenue: number of students x revenue per ride.\n4. Return results to critic for verification.\nInput:\n- Ride combinations (from researcher).\n- Cost and revenue per ride.\n- Budget constraint.\nOutput:\n- For each combination: total cost, total revenue, feasibility (within budget)."
+      },
+      {
+        "role": "executor",
+        "contract": "Role: Perform raw calculations\nResponsibilities:\n1. Take combinations identified by researcher.\n2. Compute total cost for each combination.\n3. Compute expected revenue: number of students x revenue per ride.\n4. Return results to critic for verification.\nInput:\n- Ride combinations (from researcher).\n- Cost and revenue per ride.\n- Budget constraint.\nOutput:\n- For each combination: total cost, total revenue, feasibility (within budget)."
+      }
+    ]
+  }
+}

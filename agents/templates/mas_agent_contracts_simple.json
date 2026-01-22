@@ -1,0 +1,172 @@
+{
+  "template_id": "mas_agent_contracts_simple",
+  "title": "MAS Agent Contracts (Simple)",
+  "agents": [
+    {
+      "id": "agent_a_critic",
+      "name": "Agent A - Critic",
+      "role": "critic",
+      "responsibilities": [
+        "Validate executor outputs for correctness and consistency."
+      ],
+      "input": [
+        "Executor results plus any planner or researcher notes."
+      ],
+      "output": [
+        "A validated result with corrections if needed."
+      ],
+      "example_output": {
+        "validation": true,
+        "corrected_results": {
+          "best_combo": [
+            "Ride2",
+            "Ride3"
+          ],
+          "total_cost": 1600,
+          "total_revenue": 5500
+        }
+      }
+    },
+    {
+      "id": "agent_b_planner",
+      "name": "Agent B - Planner",
+      "role": "planner",
+      "responsibilities": [
+        "Break the main prompt into subtasks and assign them in order."
+      ],
+      "input": [
+        "The original problem statement and any constraints."
+      ],
+      "output": [
+        "A list of subtasks with owners and dependencies."
+      ],
+      "example_output": [
+        {
+          "task_id": 1,
+          "role": "researcher",
+          "description": "Find the best approach to maximize revenue",
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "agent_b2_researcher",
+      "name": "Agent B-2 - Researcher",
+      "role": "researcher",
+      "responsibilities": [
+        "Identify valid combinations and outline the calculation approach."
+      ],
+      "input": [
+        "Problem statement plus costs, revenues, budget, and students."
+      ],
+      "output": [
+        "Combinations to test and guidance for executors."
+      ],
+      "example_output": {
+        "combinations": [
+          [
+            "Ride1",
+            "Ride2"
+          ],
+          [
+            "Ride2",
+            "Ride3"
+          ]
+        ],
+        "executor_guidance": "Compute total cost and revenue for each combination and drop those over budget."
+      }
+    },
+    {
+      "id": "agent_b3_summariser",
+      "name": "Agent B-3 - Summariser",
+      "role": "summariser",
+      "responsibilities": [
+        "Turn validated results into a clear final answer."
+      ],
+      "input": [
+        "Validated results from the critic."
+      ],
+      "output": [
+        "A concise summary of the best option and totals."
+      ],
+      "example_output_text": "Build Ride2 and Ride3 for $1600 total cost and $5500 expected revenue, which is optimal under the $2000 budget."
+    },
+    {
+      "id": "agent_b4_executor",
+      "name": "Agent B-4 - Executor",
+      "role": "executor",
+      "responsibilities": [
+        "Compute cost, revenue, and feasibility for each assigned combination."
+      ],
+      "input": [
+        "Ride combinations with cost and revenue details."
+      ],
+      "output": [
+        "Totals and budget feasibility per combination."
+      ],
+      "example_output": [
+        {
+          "combination": [
+            "Ride2",
+            "Ride3"
+          ],
+          "total_cost": 1600,
+          "total_revenue": 5500,
+          "within_budget": true
+        }
+      ]
+    },
+    {
+      "id": "agent_b5_executor",
+      "name": "Agent B-5 - Executor",
+      "role": "executor",
+      "responsibilities": [
+        "Compute cost, revenue, and feasibility for each assigned combination."
+      ],
+      "input": [
+        "Ride combinations with cost and revenue details."
+      ],
+      "output": [
+        "Totals and budget feasibility per combination."
+      ]
+    }
+  ],
+  "execution_flow": [
+    "Planner assigns subtasks to researcher and executors.",
+    "Researcher lists valid combinations and guidance.",
+    "Executors compute totals and feasibility.",
+    "Critic validates results.",
+    "Summariser delivers the final answer."
+  ],
+  "ui_defaults": {
+    "prompt": "A school is designing a small amusement park with three rides. The first ride costs $500 to build and makes $20 per ride. The second ride costs $700 and makes $25 per ride. The third ride costs $900 and makes $30 per ride.\n\nThe school has a budget of $2000 and wants to maximize revenue in 1 day if 100 students ride each ride at most once.\n\nDetermine which rides to build and calculate the expected total revenue.",
+    "scenario": "agentic_parallel",
+    "agentA": {
+      "role": "critic",
+      "contract": "Validate executor outputs and return a corrected final result."
+    },
+    "agentB": {
+      "role": "planner",
+      "contract": "Split the prompt into ordered subtasks and assign each role."
+    },
+    "worker_count": 4,
+    "workers": [
+      {
+        "role": "researcher",
+        "contract": "Identify valid combinations and outline the calculation approach."
+      },
+      {
+        "role": "summarizer",
+        "contract": "Write a clear final answer from validated results."
+      },
+      {
+        "role": "executor",
+        "contract": "Compute total cost and revenue for assigned combinations."
+      },
+      {
+        "role": "executor",
+        "contract": "Compute total cost and revenue for assigned combinations."
+      }
+    ]
+  }
+}
