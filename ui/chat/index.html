@@ -7,7 +7,13 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; background: #f6f8fa; }
     h1 { margin-bottom: 8px; }
-    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; }
+    .layout { display: flex; gap: 16px; align-items: flex-start; }
+    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; flex: 1 1 auto; }
+    .sidebar { width: 260px; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; }
+    .sidebar h2 { font-size: 16px; margin: 6px 0 12px; }
+    .template-list { display: flex; flex-direction: column; gap: 8px; }
+    .template-btn { text-align: left; padding: 8px 10px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+    .template-btn:hover { background: #eef2f6; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; }
     textarea { width: 100%; min-height: 120px; }
     .compact-textarea { min-height: 70px; }
@@ -24,11 +30,13 @@
     .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #e7f3ff; color: #084298; margin-left: 6px; }
     .worker-card { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
     .worker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <h1>Agent Chat Console</h1>
-  <div class="panel">
+  <div class="layout">
+    <div class="panel">
     <div class="row">
       <div>
         <label>Agent</label>
@@ -51,11 +59,11 @@
       </div>
       <div>
         <label for="agentCount">Worker count (parallel)</label>
-        <input id="agentCount" type="number" min="1" max="5" step="1" placeholder="2">
+        <input id="agentCount" type="number" min="1" max="4" step="1" placeholder="2">
       </div>
     </div>
 
-    <div class="row">
+    <div class="row hidden">
       <div>
         <label>Agent A endpoint</label>
         <input id="endpointA" type="text">
@@ -123,6 +131,12 @@
       </div>
       <div style="margin-top: 8px;" class="mono" id="rawResp"></div>
     </div>
+    </div>
+    <aside class="sidebar">
+      <h2>Templates</h2>
+      <div id="templateList" class="template-list"></div>
+      <button id="clearTemplates" type="button" class="template-btn">Clear</button>
+    </aside>
   </div>
 
   <script>
@@ -145,6 +159,8 @@
     const agentBContractEl = document.getElementById('agentBContract');
     const workersEl = document.getElementById('workers');
     const sendBtn = document.getElementById('sendBtn');
+    const templateListEl = document.getElementById('templateList');
+    const clearTemplatesBtn = document.getElementById('clearTemplates');
 
     const roleOptions = [
       { value: '', label: 'none' },
@@ -153,6 +169,45 @@
       { value: 'critic', label: 'critic' },
       { value: 'summarizer', label: 'summarizer' },
       { value: 'executor', label: 'executor' }
+    ];
+
+    const templateDefinitions = [
+      {
+        id: 'mas_agent_contracts_enhanced',
+        label: 'MAS Agent Contracts (Enhanced)',
+        paths: [
+          './templates/mas_agent_contracts_enhanced.json',
+          '../templates/mas_agent_contracts_enhanced.json',
+          '../../agents/templates/mas_agent_contracts_enhanced.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_simple',
+        label: 'MAS Agent Contracts (Simple)',
+        paths: [
+          './templates/mas_agent_contracts_simple.json',
+          '../templates/mas_agent_contracts_simple.json',
+          '../../agents/templates/mas_agent_contracts_simple.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_debate',
+        label: 'debate',
+        paths: [
+          './templates/mas_agent_contracts_debate.json',
+          '../templates/mas_agent_contracts_debate.json',
+          '../../agents/templates/mas_agent_contracts_debate.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_auction',
+        label: 'auction',
+        paths: [
+          './templates/mas_agent_contracts_auction.json',
+          '../templates/mas_agent_contracts_auction.json',
+          '../../agents/templates/mas_agent_contracts_auction.json'
+        ]
+      }
     ];
 
     let timerId = null;
@@ -195,16 +250,17 @@
       }
     }
 
-    function getDefaultWorkerPorts() {
-      return [8102, 8103, 8104, 8105, 8106];
+    function ensureDefaultScenario() {
+      if (!scenarioEl.value) {
+        scenarioEl.value = 'agentic_parallel';
+      }
     }
 
     function renderWorkers() {
       const requested = Number(agentCountEl.value) || 2;
-      const count = Math.max(1, Math.min(5, requested));
+      const count = Math.max(1, Math.min(4, requested));
       agentCountEl.value = count;
       workersEl.innerHTML = '';
-      const ports = getDefaultWorkerPorts();
       for (let i = 0; i < count; i += 1) {
         const card = document.createElement('div');
         card.className = 'worker-card';
@@ -213,8 +269,6 @@
           .join('');
         card.innerHTML = `
           <div><strong>Worker ${i + 1}</strong></div>
-          <label for="workerEndpoint-${i}">Endpoint</label>
-          <input id="workerEndpoint-${i}" type="text" value="${buildEndpoint(ports[i], '/subtask')}" placeholder="${buildEndpoint(ports[i], '/subtask')}">
           <label for="workerRole-${i}">Role</label>
           <select id="workerRole-${i}">
             ${optionsHtml}
@@ -226,20 +280,99 @@
       }
     }
 
-    function collectWorkers() {
+    async function loadTemplate(paths) {
+      for (const path of paths) {
+        try {
+          const resp = await fetch(path, { cache: 'no-store' });
+          if (!resp.ok) continue;
+          return await resp.json();
+        } catch (err) {
+          // Try the next path.
+        }
+      }
+      return null;
+    }
+
+    function applyTemplateDefaults(defaults) {
+      if (!defaults) return;
+      if (defaults.prompt) {
+        promptEl.value = defaults.prompt;
+      }
+      if (defaults.scenario) {
+        scenarioEl.value = defaults.scenario;
+      }
+      if (defaults.agentA) {
+        agentARoleEl.value = defaults.agentA.role || '';
+        agentAContractEl.value = defaults.agentA.contract || '';
+      }
+      if (defaults.agentB) {
+        agentBRoleEl.value = defaults.agentB.role || '';
+        agentBContractEl.value = defaults.agentB.contract || '';
+      }
+      if (Number.isInteger(defaults.worker_count)) {
+        agentCountEl.value = defaults.worker_count;
+      }
+    }
+
+    function applyWorkerDefaults(defaults) {
+      if (!defaults || !Array.isArray(defaults.workers)) return;
       const count = Number(agentCountEl.value) || 2;
-      const safeCount = Math.max(1, Math.min(5, count));
-      const ports = getDefaultWorkerPorts();
-      const workers = [];
+      const safeCount = Math.max(1, Math.min(4, count));
       for (let i = 0; i < safeCount; i += 1) {
-        const endpointEl = document.getElementById(`workerEndpoint-${i}`);
+        const worker = defaults.workers[i];
+        if (!worker) continue;
         const roleEl = document.getElementById(`workerRole-${i}`);
         const contractEl = document.getElementById(`workerContract-${i}`);
-        const endpoint = endpointEl && endpointEl.value.trim()
-          ? endpointEl.value.trim()
-          : buildEndpoint(ports[i], '/subtask');
+        if (roleEl) roleEl.value = worker.role || '';
+        if (contractEl) contractEl.value = worker.contract || '';
+      }
+    }
+
+    async function applyTemplate(definition) {
+      const template = await loadTemplate(definition.paths);
+      if (!template || !template.ui_defaults) return;
+      applyTemplateDefaults(template.ui_defaults);
+      renderWorkers();
+      applyWorkerDefaults(template.ui_defaults);
+    }
+
+    function renderTemplates() {
+      templateListEl.innerHTML = '';
+      templateDefinitions.forEach((definition) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'template-btn';
+        button.textContent = definition.label;
+        button.addEventListener('click', () => applyTemplate(definition));
+        templateListEl.appendChild(button);
+      });
+    }
+
+    function clearTemplateFields() {
+      scenarioEl.value = '';
+      promptEl.value = '';
+      agentARoleEl.value = '';
+      agentAContractEl.value = '';
+      agentBRoleEl.value = '';
+      agentBContractEl.value = '';
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(4, count));
+      for (let i = 0; i < safeCount; i += 1) {
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
+        if (roleEl) roleEl.value = '';
+        if (contractEl) contractEl.value = '';
+      }
+    }
+
+    function collectWorkers() {
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(4, count));
+      const workers = [];
+      for (let i = 0; i < safeCount; i += 1) {
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
         workers.push({
-          endpoint,
           role: roleEl ? roleEl.value.trim() : '',
           contract: contractEl ? contractEl.value.trim() : ''
         });
@@ -359,6 +492,9 @@
     });
     agentCountEl.addEventListener('change', renderWorkers);
     renderWorkers();
+    ensureDefaultEndpoints();
+    renderTemplates();
+    clearTemplatesBtn.addEventListener('click', clearTemplateFields);
   </script>
 </body>
 </html>
