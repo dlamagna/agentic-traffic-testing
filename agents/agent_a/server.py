@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, Optional
 
+from opentelemetry import context as otel_context
 from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
 
@@ -217,6 +218,37 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 )
 
                 agent_b_outputs = []
+                def _run_worker_call(
+                    parent_ctx: otel_context.Context,
+                    worker_index: int,
+                    worker: Dict[str, Optional[str]],
+                    subtask: str,
+                ) -> str:
+                    token = otel_context.attach(parent_ctx)
+                    role = worker["role"] or agent_b_role
+                    try:
+                        with self.tracer.start_as_current_span(
+                            "agent_a.call_agent_b_parallel",
+                            kind=SpanKind.CLIENT,
+                        ) as span_b:
+                            span_b.set_attribute("app.agent_b.url", worker["endpoint"] or "")
+                            span_b.set_attribute("app.agent_index", worker_index)
+                            if role:
+                                span_b.set_attribute("app.agent_role", role)
+                            headers: Dict[str, str] = {"x-agent-index": str(worker_index)}
+                            propagate.inject(headers)
+                            return call_agent_b(
+                                subtask,
+                                scenario=scenario,
+                                headers=headers,
+                                agent_b_role=role,
+                                agent_b_contract=worker["contract"] or agent_b_contract,
+                                agent_b_url=worker["endpoint"],
+                            )
+                    finally:
+                        otel_context.detach(token)
+
+                request_ctx = otel_context.get_current()
                 with ThreadPoolExecutor(max_workers=len(workers)) as executor:
                     future_map = {}
                     for idx, (worker, subtask) in enumerate(zip(workers, subtasks), start=1):
@@ -233,16 +265,12 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 "subtask_preview": subtask[:CONTEXT_PREVIEW_LEN],
                             },
                         )
-                        headers = {}
-                        propagate.inject(headers)
                         future = executor.submit(
-                            call_agent_b,
+                            _run_worker_call,
+                            request_ctx,
+                            idx,
+                            worker,
                             subtask,
-                            scenario=scenario,
-                            headers=headers,
-                            agent_b_role=worker["role"] or agent_b_role,
-                            agent_b_contract=worker["contract"] or agent_b_contract,
-                            agent_b_url=worker["endpoint"],
                         )
                         future_map[future] = (idx, worker, subtask)
 

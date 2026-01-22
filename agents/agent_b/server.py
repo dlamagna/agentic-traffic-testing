@@ -47,6 +47,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             return
 
         carrier = {key: value for key, value in self.headers.items()}
+        agent_index = self.headers.get("x-agent-index")
         ctx = propagate.extract(carrier)
         with self.tracer.start_as_current_span(
             "agent_b.handle_subtask",
@@ -75,6 +76,8 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             span.set_attribute("app.subtask", subtask)
             if scenario:
                 span.set_attribute("app.scenario", scenario)
+            if agent_index:
+                span.set_attribute("app.agent_index", agent_index)
             if agent_b_role:
                 span.set_attribute("app.agent_role", agent_b_role)
                 span.set_attribute(
@@ -90,7 +93,12 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 task_id=task_id,
                 event_type="subtask_received",
                 message=subtask,
-                extra={"agent_role": agent_b_role} if agent_b_role else None,
+                extra={
+                    "agent_role": agent_b_role,
+                    "agent_index": agent_index,
+                }
+                if agent_b_role or agent_index
+                else None,
             )
 
             tool_call_id = logger.new_tool_call_id()
