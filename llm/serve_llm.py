@@ -57,6 +57,12 @@ class LLMRequestHandler(BaseHTTPRequestHandler):
     backend: VLLMBackend  # type: ignore[assignment]
     tracer = get_tracer("llm-backend")
 
+    def do_GET(self) -> None:  # type: ignore[override]
+        if self.path in ("/health", "/ready", "/live"):
+            self._send_json(200, {"status": "ok"})
+            return
+        self._send_json(404, {"error": "Not found"})
+
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)

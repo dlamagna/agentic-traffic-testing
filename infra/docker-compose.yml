@@ -15,6 +15,18 @@ services:
       - "8000:8000"
     networks:
       - agent-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
     deploy:
       resources:
         reservations:
@@ -35,7 +47,8 @@ services:
       - OTEL_SERVICE_NAME=agent-a
       - AGENT_B_URLS=http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8101:8101"
     command: ["python", "-m", "agents.agent_a.server"]
@@ -53,7 +66,8 @@ services:
       - AGENT_B_PORT=8102
       - OTEL_SERVICE_NAME=agent-b-1
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8102:8102"
     command: ["python", "-m", "agents.agent_b.server"]
@@ -71,7 +85,8 @@ services:
       - AGENT_B_PORT=8103
       - OTEL_SERVICE_NAME=agent-b-2
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8103:8103"
     command: ["python", "-m", "agents.agent_b.server"]
@@ -89,7 +104,8 @@ services:
       - AGENT_B_PORT=8104
       - OTEL_SERVICE_NAME=agent-b-3
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8104:8104"
     command: ["python", "-m", "agents.agent_b.server"]
@@ -107,7 +123,8 @@ services:
       - AGENT_B_PORT=8105
       - OTEL_SERVICE_NAME=agent-b-4
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8105:8105"
     command: ["python", "-m", "agents.agent_b.server"]
@@ -125,7 +142,8 @@ services:
       - AGENT_B_PORT=8106
       - OTEL_SERVICE_NAME=agent-b-5
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8106:8106"
     command: ["python", "-m", "agents.agent_b.server"]
