@@ -179,8 +179,9 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
             final_prompt: str
             agent_b_output: Optional[str] = None
-            agent_b_outputs: list[str] = []
+            agent_b_outputs: list[Any] = []
             agent_a_progress_notes: list[str] = []
+            llm_requests: list[Dict[str, Any]] = []
             max_turns = MAX_AGENT_B_TURNS
             requested_turns = data.get("max_agent_turns")
             if isinstance(requested_turns, int) and requested_turns > 0:
@@ -219,6 +220,13 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
                         _log_llm_prompt("planning", planning_prompt)
+                        llm_requests.append(
+                            {
+                                "source": "agent_a",
+                                "label": "planning",
+                                "prompt": planning_prompt,
+                            }
+                        )
                         planned_raw = call_llm(planning_prompt, headers=headers)
                 except Exception as exc:
                     logger.log(
@@ -242,7 +250,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     worker_index: int,
                     worker: Dict[str, Optional[str]],
                     subtask: str,
-                ) -> str:
+                ) -> Dict[str, Any]:
                     token = otel_context.attach(parent_ctx)
                     role = worker["role"] or agent_b_role
                     try:
@@ -296,15 +304,28 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     for future in as_completed(future_map):
                         idx, worker, subtask = future_map[future]
                         try:
-                            output = future.result()
+                            response = future.result()
+                            output = str(response.get("output", ""))
+                            llm_prompt = response.get("llm_prompt")
                             agent_b_outputs.append(
                                 {
                                     "agent_index": idx,
                                     "endpoint": worker["endpoint"],
                                     "subtask": subtask,
                                     "output": output,
+                                    "llm_prompt": llm_prompt,
                                 }
                             )
+                            if llm_prompt:
+                                llm_requests.append(
+                                    {
+                                        "source": "agent_b",
+                                        "label": "subtask",
+                                        "prompt": llm_prompt,
+                                        "agent_index": idx,
+                                        "endpoint": worker["endpoint"],
+                                    }
+                                )
                             logger.log(
                                 task_id=task_id,
                                 event_type="agent_b_response",
@@ -395,13 +416,24 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             span_b.set_attribute("app.turn", turn)
                             headers: Dict[str, str] = {}
                             propagate.inject(headers)
-                            agent_b_output = call_agent_b(
+                            response = call_agent_b(
                                 subtask,
                                 scenario=scenario,
                                 headers=headers,
                                 agent_b_role=agent_b_role,
                                 agent_b_contract=agent_b_contract,
                             )
+                            agent_b_output = str(response.get("output", ""))
+                            llm_prompt = response.get("llm_prompt")
+                            if llm_prompt:
+                                llm_requests.append(
+                                    {
+                                        "source": "agent_b",
+                                        "label": f"turn_{turn}",
+                                        "prompt": llm_prompt,
+                                        "turn": turn,
+                                    }
+                                )
                     except Exception as exc:
                         logger.log(
                             task_id=task_id,
@@ -442,6 +474,14 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             headers = {}
                             propagate.inject(headers)
                             _log_llm_prompt("progress_check", progress_prompt)
+                            llm_requests.append(
+                                {
+                                    "source": "agent_a",
+                                    "label": f"progress_check_{turn}",
+                                    "prompt": progress_prompt,
+                                    "turn": turn,
+                                }
+                            )
                             progress_note = call_llm(progress_prompt, headers=headers)
                             agent_a_progress_notes.append(progress_note)
                             logger.log(
@@ -493,6 +533,13 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     headers: Dict[str, str] = {}
                     propagate.inject(headers)
                     _log_llm_prompt("final", final_prompt)
+                    llm_requests.append(
+                        {
+                            "source": "agent_a",
+                            "label": "final",
+                            "prompt": final_prompt,
+                        }
+                    )
                     output = call_llm(final_prompt, headers=headers)
             except Exception as exc:
                 logger.log(
@@ -522,6 +569,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     "agent_b_output": agent_b_output,
                     "agent_b_outputs": agent_b_outputs,
                     "agent_a_progress_notes": agent_a_progress_notes,
+                    "llm_requests": llm_requests,
                 },
             )
 
