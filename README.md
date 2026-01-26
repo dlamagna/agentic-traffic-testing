@@ -368,6 +368,13 @@ Agents can point at this backend by setting `LLM_SERVER_URL`, e.g.:
 export LLM_SERVER_URL="http://llm-backend:8000/chat"
 ```
 
+You can also add runtime overrides to a `.env` file (loaded by Docker Compose), for example:
+```text
+LLM_TIMEOUT_SECONDS=120
+LLM_MAX_MODEL_LEN=4000
+LLM_MAX_CONCURRENCY=2
+```
+
 ### Changing the model served by llm-backend
 
 The model used by the `llm-backend` container is set in `infra/docker-compose.yml` under the `llm-backend` service `command`. We currently default to:
