@@ -23,6 +23,7 @@
     button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
     .status { font-size: 14px; color: #555; margin-top: 6px; }
     .status.live { color: #0b5394; font-weight: 600; }
+    .note { font-size: 12px; color: #57606a; margin-top: 6px; }
     .columns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
     .column { flex: 1 1 340px; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 160px; }
     .col-title { font-weight: 700; margin-bottom: 8px; }
@@ -30,6 +31,15 @@
     .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #e7f3ff; color: #084298; margin-left: 6px; }
     .worker-card { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
     .worker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .worker-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .worker-table th, .worker-table td { border: 1px solid #d0d7de; padding: 8px; vertical-align: top; background: #fff; }
+    .worker-table th { background: #f6f8fa; text-align: left; font-weight: 600; }
+    .worker-table pre { margin: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .worker-status { font-weight: 600; }
+    .status-ok { color: #1a7f37; }
+    .status-failed { color: #cf222e; }
+    .worker-summary { margin: 6px 0 10px; color: #57606a; font-size: 12px; }
+    .llm-summary { margin: 6px 0 10px; color: #57606a; font-size: 12px; }
     .hidden { display: none; }
   </style>
 </head>
@@ -112,6 +122,7 @@
     <div style="margin-top: 12px;">
       <button id="sendBtn">Send</button>
       <span class="status" id="status"></span>
+      <div class="note">Verbose LLM logs: set <code>LOG_LLM_REQUESTS=1</code> and <code>LLM_LOG_MAX_CHARS</code>.</div>
     </div>
 
     <div style="margin-top: 16px;">
@@ -127,7 +138,11 @@
       </div>
       <div style="margin-top: 12px;">
         <div class="col-title">Worker Responses (parallel)</div>
-        <div id="outputWorkers" class="mono"></div>
+        <div id="outputWorkers"></div>
+      </div>
+      <div style="margin-top: 12px;">
+        <div class="col-title">LLM Requests</div>
+        <div id="outputRequests"></div>
       </div>
       <div style="margin-top: 8px;" class="mono" id="rawResp"></div>
     </div>
@@ -145,6 +160,7 @@
     const outputA = document.getElementById('outputA');
     const outputB = document.getElementById('outputB');
     const outputWorkersEl = document.getElementById('outputWorkers');
+    const outputRequestsEl = document.getElementById('outputRequests');
     const rawResp = document.getElementById('rawResp');
     const badgeA = document.getElementById('badgeA');
     const badgeB = document.getElementById('badgeB');
@@ -254,6 +270,101 @@
       if (!scenarioEl.value) {
         scenarioEl.value = 'agentic_parallel';
       }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderWorkerTable(items) {
+      if (!Array.isArray(items) || items.length === 0) return '';
+      const rows = items
+        .map((item) => {
+          const index = item.agent_index || '?';
+          const endpoint = item.endpoint || '—';
+          const subtask = item.subtask || '';
+          const output = item.output || '';
+          const isFailed = /failed|timed out/i.test(output);
+          const statusLabel = isFailed ? 'failed' : 'ok';
+          const statusClass = isFailed ? 'status-failed' : 'status-ok';
+          return `
+            <tr>
+              <td>Worker ${escapeHtml(index)}</td>
+              <td>${escapeHtml(endpoint)}</td>
+              <td><pre>${escapeHtml(subtask)}</pre></td>
+              <td><pre>${escapeHtml(output)}</pre></td>
+              <td class="worker-status ${statusClass}">${statusLabel}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      const successCount = items.filter((item) => !/failed|timed out/i.test(item.output || '')).length;
+      const failureCount = items.length - successCount;
+      const summary = `Total: ${items.length} • Success: ${successCount} • Failed: ${failureCount}`;
+
+      return `
+        <div class="worker-summary">${escapeHtml(summary)}</div>
+        <table class="worker-table">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Endpoint</th>
+              <th>Subtask</th>
+              <th>Output</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderRequestTable(items) {
+      if (!Array.isArray(items) || items.length === 0) return '';
+      const rows = items
+        .map((item) => {
+          const source = item.source || 'unknown';
+          const label = item.label || '';
+          const agentIndex = item.agent_index || item.turn || '—';
+          const endpoint = item.endpoint || '—';
+          const prompt = item.prompt || '';
+          return `
+            <tr>
+              <td>${escapeHtml(source)}</td>
+              <td>${escapeHtml(label)}</td>
+              <td>${escapeHtml(agentIndex)}</td>
+              <td>${escapeHtml(endpoint)}</td>
+              <td><pre>${escapeHtml(prompt)}</pre></td>
+            </tr>
+          `;
+        })
+        .join('');
+      const summary = `Total requests: ${items.length}`;
+      return `
+        <div class="llm-summary">${escapeHtml(summary)}</div>
+        <table class="worker-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Label</th>
+              <th>Agent/Turn</th>
+              <th>Endpoint</th>
+              <th>Prompt</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
     }
 
     function renderWorkers() {
@@ -401,7 +512,8 @@
       startTimer(label);
       outputA.textContent = '';
       outputB.textContent = '';
-      outputWorkersEl.textContent = '';
+      outputWorkersEl.innerHTML = '';
+      outputRequestsEl.innerHTML = '';
       rawResp.textContent = '';
       badgeA.style.display = 'none';
       badgeB.style.display = 'none';
@@ -455,15 +567,11 @@
             (item) => item && typeof item === 'object'
           );
           if (isObjectList) {
-            outputWorkersEl.textContent = data.agent_b_outputs
-              .map((item) => {
-                const index = item.agent_index || '?';
-                const endpoint = item.endpoint ? ` (${item.endpoint})` : '';
-                const subtask = item.subtask ? `Subtask: ${item.subtask}\n` : '';
-                return `Worker ${index}${endpoint}\n${subtask}${item.output || ''}`;
-              })
-              .join('\n\n');
+            outputWorkersEl.innerHTML = renderWorkerTable(data.agent_b_outputs);
           }
+        }
+        if (Array.isArray(data.llm_requests) && data.llm_requests.length > 0) {
+          outputRequestsEl.innerHTML = renderRequestTable(data.llm_requests);
         }
         rawResp.textContent = JSON.stringify(data, null, 2);
         badgeA.style.display = 'inline-block';
@@ -474,7 +582,8 @@
       } catch (err) {
         outputA.textContent = '';
         outputB.textContent = '';
-        outputWorkersEl.textContent = '';
+        outputWorkersEl.innerHTML = '';
+        outputRequestsEl.innerHTML = '';
         const message =
           err && err.name === 'AbortError'
             ? 'Request timed out. Check the agent endpoint and port forwarding.'
