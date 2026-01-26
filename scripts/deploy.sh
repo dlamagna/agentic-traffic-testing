@@ -28,7 +28,7 @@ run_health_check() {
   fi
   echo
   echo "[*] Running health check..."
-  python3 "${health_script}" || true
+  python3 "${health_script}" --docker-compose-dir "${COMPOSE_DIR}" || true
 }
 
 wait_for_llm() {
@@ -39,6 +39,7 @@ wait_for_llm() {
   start_ts="$(date +%s)"
 
   echo "[*] Waiting for LLM backend to be healthy at ${url}..."
+  echo "    (this can take a few minutes while the model loads)"
   while true; do
     if python3 - <<PY >/dev/null 2>&1; then
 import urllib.request
@@ -50,6 +51,9 @@ PY
 
     local now_ts
     now_ts="$(date +%s)"
+    local elapsed
+    elapsed=$(( now_ts - start_ts ))
+    echo "[*] Still waiting for LLM backend... (${elapsed}s elapsed)"
     if (( now_ts - start_ts >= timeout_seconds )); then
       echo "[!] Timed out waiting for LLM backend at ${url}."
       return 1
