@@ -10,6 +10,12 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_TOKEN=${HF_TOKEN}
       - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN}}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-1}
+      - LLM_METRICS_ENABLED=${LLM_METRICS_ENABLED:-1}
+      - LLM_METRICS_INCLUDE_TOKENS=${LLM_METRICS_INCLUDE_TOKENS:-1}
+      - LLM_METRICS_PREFIX=${LLM_METRICS_PREFIX:-llm}
     command: ["python3", "-m", "llm.serve_llm", "--model", "meta-llama/Llama-3.1-8B-Instruct", "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "32768"]
     ports:
       - "8000:8000"
@@ -46,6 +52,10 @@ services:
       - AGENT_A_PORT=8101
       - OTEL_SERVICE_NAME=agent-a
       - AGENT_B_URLS=http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - AGENT_B_TIMEOUT_SECONDS=${AGENT_B_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -65,6 +75,9 @@ services:
       - NODE_NAME=node2_agentB
       - AGENT_B_PORT=8102
       - OTEL_SERVICE_NAME=agent-b-1
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -84,6 +97,9 @@ services:
       - NODE_NAME=node2_agentB_2
       - AGENT_B_PORT=8103
       - OTEL_SERVICE_NAME=agent-b-2
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -103,6 +119,9 @@ services:
       - NODE_NAME=node2_agentB_3
       - AGENT_B_PORT=8104
       - OTEL_SERVICE_NAME=agent-b-3
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -122,6 +141,9 @@ services:
       - NODE_NAME=node2_agentB_4
       - AGENT_B_PORT=8105
       - OTEL_SERVICE_NAME=agent-b-4
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -141,6 +163,9 @@ services:
       - NODE_NAME=node2_agentB_5
       - AGENT_B_PORT=8106
       - OTEL_SERVICE_NAME=agent-b-5
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
       llm-backend:
         condition: service_healthy
