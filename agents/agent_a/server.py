@@ -228,6 +228,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             }
                         )
                         planned_raw = call_llm(planning_prompt, headers=headers)
+                        llm_requests[-1]["response"] = planned_raw
                 except Exception as exc:
                     logger.log(
                         task_id=task_id,
@@ -307,6 +308,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             response = future.result()
                             output = str(response.get("output", ""))
                             llm_prompt = response.get("llm_prompt")
+                            llm_response = response.get("llm_response")
                             agent_b_outputs.append(
                                 {
                                     "agent_index": idx,
@@ -314,6 +316,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                     "subtask": subtask,
                                     "output": output,
                                     "llm_prompt": llm_prompt,
+                                    "llm_response": llm_response,
                                 }
                             )
                             if llm_prompt:
@@ -322,6 +325,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                         "source": "agent_b",
                                         "label": "subtask",
                                         "prompt": llm_prompt,
+                                        "response": llm_response,
                                         "agent_index": idx,
                                         "endpoint": worker["endpoint"],
                                     }
@@ -425,12 +429,14 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             )
                             agent_b_output = str(response.get("output", ""))
                             llm_prompt = response.get("llm_prompt")
+                            llm_response = response.get("llm_response")
                             if llm_prompt:
                                 llm_requests.append(
                                     {
                                         "source": "agent_b",
                                         "label": f"turn_{turn}",
                                         "prompt": llm_prompt,
+                                        "response": llm_response,
                                         "turn": turn,
                                     }
                                 )
@@ -483,6 +489,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 }
                             )
                             progress_note = call_llm(progress_prompt, headers=headers)
+                            llm_requests[-1]["response"] = progress_note
                             agent_a_progress_notes.append(progress_note)
                             logger.log(
                                 task_id=task_id,
@@ -541,6 +548,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         }
                     )
                     output = call_llm(final_prompt, headers=headers)
+                    llm_requests[-1]["response"] = output
             except Exception as exc:
                 logger.log(
                     task_id=task_id,
