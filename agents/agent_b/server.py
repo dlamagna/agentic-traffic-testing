@@ -160,6 +160,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                     "agent_id": "AgentB",
                     "output": output,
                     "llm_prompt": prompt,
+                    "llm_response": output,
                 },
             )
 
