@@ -336,6 +336,7 @@
           const agentIndex = item.agent_index || item.turn || '—';
           const endpoint = item.endpoint || '—';
           const prompt = item.prompt || '';
+          const response = item.response || '';
           return `
             <tr>
               <td>${escapeHtml(source)}</td>
@@ -343,6 +344,7 @@
               <td>${escapeHtml(agentIndex)}</td>
               <td>${escapeHtml(endpoint)}</td>
               <td><pre>${escapeHtml(prompt)}</pre></td>
+              <td><pre>${escapeHtml(response)}</pre></td>
             </tr>
           `;
         })
@@ -358,6 +360,7 @@
               <th>Agent/Turn</th>
               <th>Endpoint</th>
               <th>Prompt</th>
+              <th>Response</th>
             </tr>
           </thead>
           <tbody>
