@@ -10,6 +10,7 @@ from agents.common.telemetry import TelemetryLogger
 
 DEFAULT_LLM_SERVER_URL = "http://localhost:8000/chat"
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", DEFAULT_LLM_SERVER_URL)
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
 DEFAULT_AGENT_B_URL = "http://agent-b:8102/subtask"
 AGENT_B_URL = os.environ.get("AGENT_B_URL", DEFAULT_AGENT_B_URL)
 AGENT_B_URLS = [
@@ -22,7 +23,12 @@ if not AGENT_B_URLS:
 
 
 def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
-    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, headers=headers, timeout=30.0)
+    resp = httpx.post(
+        LLM_SERVER_URL,
+        json={"prompt": prompt},
+        headers=headers,
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))
