@@ -13,6 +13,21 @@ from agents.common.tracing import get_tracer
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("AGENT_B_PORT", "8102"))
+LOG_LLM_REQUESTS = os.environ.get("LOG_LLM_REQUESTS", "").lower() in ("1", "true", "yes", "on")
+LLM_LOG_MAX_CHARS = int(os.environ.get("LLM_LOG_MAX_CHARS", "500"))
+
+
+def _log_llm_prompt(label: str, prompt: str) -> None:
+    if not LOG_LLM_REQUESTS:
+        return
+    max_chars = max(LLM_LOG_MAX_CHARS, 0)
+    if max_chars == 0:
+        preview = ""
+        suffix = ""
+    else:
+        preview = prompt[:max_chars]
+        suffix = "" if len(prompt) <= max_chars else f"... [truncated {len(prompt) - max_chars} chars]"
+    print(f"[agent-b][llm] {label} prompt_len={len(prompt)} prompt={preview}{suffix}")
 
 
 class AgentBRequestHandler(BaseHTTPRequestHandler):
@@ -127,6 +142,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 if role_context
                 else f"You are Agent B.\n\n{subtask}"
             )
+            _log_llm_prompt(f"subtask_{agent_index or 'unknown'}", prompt)
             output = call_llm(prompt, headers=headers)
 
             logger.log(
@@ -143,6 +159,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                     "task_id": task_id,
                     "agent_id": "AgentB",
                     "output": output,
+                    "llm_prompt": prompt,
                 },
             )
 

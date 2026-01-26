@@ -8,6 +8,8 @@ from opentelemetry import context as otel_context
 from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
 
+import httpx
+
 from agents.agent_a.main import AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
@@ -18,6 +20,9 @@ PORT = int(os.environ.get("AGENT_A_PORT", "8101"))
 MAX_AGENT_B_TURNS = int(os.environ.get("MAX_AGENT_B_TURNS", "3"))
 CONTEXT_PREVIEW_LEN = 300
 MAX_PARALLEL_WORKERS = int(os.environ.get("MAX_PARALLEL_WORKERS", "5"))
+AGENT_B_TIMEOUT_SECONDS = float(os.environ.get("AGENT_B_TIMEOUT_SECONDS", "120"))
+LOG_LLM_REQUESTS = os.environ.get("LOG_LLM_REQUESTS", "").lower() in ("1", "true", "yes", "on")
+LLM_LOG_MAX_CHARS = int(os.environ.get("LLM_LOG_MAX_CHARS", "500"))
 
 
 def _clean_string(value: Any) -> Optional[str]:
@@ -74,6 +79,19 @@ def _parse_subtasks(raw: str, desired_count: int, fallback_task: str) -> list[st
             for idx in range(len(subtasks), desired_count)
         ]
     return subtasks[:desired_count]
+
+
+def _log_llm_prompt(label: str, prompt: str) -> None:
+    if not LOG_LLM_REQUESTS:
+        return
+    max_chars = max(LLM_LOG_MAX_CHARS, 0)
+    if max_chars == 0:
+        preview = ""
+        suffix = ""
+    else:
+        preview = prompt[:max_chars]
+        suffix = "" if len(prompt) <= max_chars else f"... [truncated {len(prompt) - max_chars} chars]"
+    print(f"[agent-a][llm] {label} prompt_len={len(prompt)} prompt={preview}{suffix}")
 
 
 def handle_tool_call(task: str, logger: TelemetryLogger, task_id: str) -> str:
@@ -200,6 +218,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         span_plan.set_attribute("app.llm.url", LLM_SERVER_URL)
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        _log_llm_prompt("planning", planning_prompt)
                         planned_raw = call_llm(planning_prompt, headers=headers)
                 except Exception as exc:
                     logger.log(
@@ -296,6 +315,15 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 },
                             )
                         except Exception as exc:
+                            if isinstance(exc, httpx.TimeoutException) or "timed out" in str(exc).lower():
+                                timeout_label = (
+                                    f"{int(AGENT_B_TIMEOUT_SECONDS)}s"
+                                    if AGENT_B_TIMEOUT_SECONDS.is_integer()
+                                    else f"{AGENT_B_TIMEOUT_SECONDS:.1f}s"
+                                )
+                                error_text = f"Worker timed out after {timeout_label}"
+                            else:
+                                error_text = f"Worker failed: {exc}"
                             logger.log(
                                 task_id=task_id,
                                 event_type="agent_b_error",
@@ -307,7 +335,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                     "agent_index": idx,
                                     "endpoint": worker["endpoint"],
                                     "subtask": subtask,
-                                    "output": f"Worker failed: {exc}",
+                                    "output": error_text,
                                 }
                             )
 
@@ -413,6 +441,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             span_progress.set_attribute("app.turn", turn)
                             headers = {}
                             propagate.inject(headers)
+                            _log_llm_prompt("progress_check", progress_prompt)
                             progress_note = call_llm(progress_prompt, headers=headers)
                             agent_a_progress_notes.append(progress_note)
                             logger.log(
@@ -463,6 +492,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                     headers: Dict[str, str] = {}
                     propagate.inject(headers)
+                    _log_llm_prompt("final", final_prompt)
                     output = call_llm(final_prompt, headers=headers)
             except Exception as exc:
                 logger.log(

@@ -42,7 +42,7 @@ def call_agent_b(
     agent_b_role: Optional[str] = None,
     agent_b_contract: Optional[str] = None,
     agent_b_url: Optional[str] = None,
-) -> str:
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"subtask": subtask}
     if scenario:
         payload["scenario"] = scenario
@@ -59,7 +59,10 @@ def call_agent_b(
     )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
-    return str(data.get("output", ""))
+    return {
+        "output": str(data.get("output", "")),
+        "llm_prompt": data.get("llm_prompt"),
+    }
 
 
 def main() -> None:
