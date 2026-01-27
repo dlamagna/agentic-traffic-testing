@@ -383,8 +383,10 @@ export LLM_SERVER_URL="http://llm-backend:8000/chat"
 
 ### LLM runtime settings (.env)
 
-You can add runtime overrides to a `.env` file (loaded by Docker Compose):
+Place the `.env` file in the `infra/` directory so Docker Compose picks it up automatically.
+You can add runtime overrides to that file:
 ```text
+LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 LLM_TIMEOUT_SECONDS=120
 LLM_MAX_MODEL_LEN=4000
 LLM_MAX_CONCURRENCY=2
@@ -402,25 +404,24 @@ LLM_GPU_MEMORY_UTILIZATION=0.90
 
 ### Changing the model served by llm-backend
 
-The model used by the `llm-backend` container is set in `infra/docker-compose.yml` under the `llm-backend` service `command`. We currently default to:
+The model is controlled by the `LLM_MODEL` environment variable. The default is:
 
-- Model: `meta-llama/Llama-3.1-8B-Instruct`
-
-To serve another model, edit the `command` array for `llm-backend` in `infra/docker-compose.yml` and change the `--model` value. After editing, rebuild/restart:
-
-```bash
-cd infra
-docker compose up -d --build llm-backend
+```text
+meta-llama/Llama-3.1-8B-Instruct
 ```
 
-If you want to point the stack at a different Hugging Face model, keep these files in sync depending on how you launch the backend:
+To serve another model, set `LLM_MODEL` in your `.env` file (in `infra/`):
+```text
+LLM_MODEL=meta-llama/Llama-3.2-3B-Instruct
+```
 
-- `infra/docker-compose.yml`: update the `llm-backend` `command` `--model` value (used when running via Compose).
-- `llm/serve_llm.py`: update `DEFAULT_MODEL_NAME` or pass `--model` when running the script directly.
-- `llm/hf_cpu_server.py`: set `MODEL_NAME` env var (CPU-only fallback server).
-- `llm/config/llama-3.1-8b.yaml`: update `model_name` if you rely on the config file for vLLM settings.
+Then rebuild/restart:
+```bash
+cd infra
+docker compose up -d --force-recreate llm-backend
+```
 
-If you change only one launch path, you only need to update the file(s) used by that path.
+All launch paths (`docker-compose.yml`, `serve_llm.py`, `hf_cpu_server.py`) now read `LLM_MODEL` from the environment, so you only need to set it once.
 
 ### Hugging Face Token setup
 
