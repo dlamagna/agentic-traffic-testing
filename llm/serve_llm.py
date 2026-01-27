@@ -1,123 +1,484 @@
 """
-Minimal vLLM-based LLM backend for the testbed.
+Async vLLM-based LLM backend for the testbed.
 
 Targets the model:
   meta-llama/Llama-3.1-8B-Instruct
 
-This module assumes you have vLLM installed and a GPU available.
-You can also run vLLM via its provided CLI container instead of this script,
-but this gives you a clear declaration of the model we intend to use.
+Uses AsyncLLMEngine for true request batching - concurrent requests are
+automatically batched together by vLLM's scheduler for GPU efficiency.
 """
 
 import argparse
+import asyncio
 import json
-from typing import Any, Dict, List
+import os
+import time
+import uuid
+from typing import Any, Dict, List, Optional
 
 from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
 
 try:
-    from vllm import LLM, SamplingParams  # type: ignore
+    from vllm import SamplingParams  # type: ignore
+    from vllm.engine.arg_utils import AsyncEngineArgs  # type: ignore
+    from vllm.engine.async_llm_engine import AsyncLLMEngine  # type: ignore
 except ImportError:  # pragma: no cover - only at runtime without vLLM
-    LLM = None  # type: ignore
+    AsyncLLMEngine = None  # type: ignore
+    AsyncEngineArgs = None  # type: ignore
     SamplingParams = None  # type: ignore
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+try:
+    from vllm.transformers_utils.tokenizer import get_tokenizer as vllm_get_tokenizer  # type: ignore
+except ImportError:  # pragma: no cover - optional
+    vllm_get_tokenizer = None  # type: ignore
+
+try:
+    from prometheus_client import Counter, Gauge, Histogram, generate_latest  # type: ignore
+    from prometheus_client import CONTENT_TYPE_LATEST  # type: ignore
+except ImportError:  # pragma: no cover - optional
+    Counter = Gauge = Histogram = None  # type: ignore
+    generate_latest = None  # type: ignore
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+try:
+    from aiohttp import web  # type: ignore
+except ImportError:  # pragma: no cover
+    web = None  # type: ignore
 
 from llm.tracing import get_tracer
 
 
-DEFAULT_MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL_NAME = os.environ.get("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+LOG_LLM_REQUESTS = os.environ.get("LOG_LLM_REQUESTS", "").lower() in ("1", "true", "yes", "on")
+LOG_LLM_MAX_CHARS = int(os.environ.get("LLM_LOG_MAX_CHARS", "500"))
+LLM_DTYPE = os.environ.get("LLM_DTYPE")
+LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
+LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
+LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
+LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+LLM_METRICS_PREFIX = os.environ.get("LLM_METRICS_PREFIX", "llm")
+
+_METRICS_READY = LLM_METRICS_ENABLED and Counter is not None and Gauge is not None and Histogram is not None
+
+if LLM_METRICS_ENABLED and not _METRICS_READY:
+    print(
+        "[llm-metrics] Disabled: prometheus_client not installed. "
+        "Install via requirements.txt to enable /metrics."
+    )
+
+if _METRICS_READY:
+    REQUESTS_TOTAL = Counter(
+        f"{LLM_METRICS_PREFIX}_requests_total",
+        "Total LLM requests",
+        ["status"],
+    )
+    REQUEST_LATENCY = Histogram(
+        f"{LLM_METRICS_PREFIX}_request_latency_seconds",
+        "End-to-end LLM request latency",
+    )
+    QUEUE_WAIT = Histogram(
+        f"{LLM_METRICS_PREFIX}_queue_wait_seconds",
+        "Time spent waiting in vLLM queue",
+    )
+    INFLIGHT = Gauge(
+        f"{LLM_METRICS_PREFIX}_inflight_requests",
+        "In-flight LLM requests",
+    )
+    PROMPT_TOKENS = Counter(
+        f"{LLM_METRICS_PREFIX}_prompt_tokens_total",
+        "Total prompt tokens",
+    )
+    COMPLETION_TOKENS = Counter(
+        f"{LLM_METRICS_PREFIX}_completion_tokens_total",
+        "Total completion tokens",
+    )
+    BATCH_SIZE = Histogram(
+        f"{LLM_METRICS_PREFIX}_batch_size",
+        "Number of requests batched together",
+        buckets=[1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 32],
+    )
 
 
-class VLLMBackend:
-    def __init__(self, model: str, max_model_len: int | None) -> None:
-        if LLM is None:
+def _log_prompt(source: str, prompt: str) -> None:
+    if not LOG_LLM_REQUESTS:
+        return
+    max_chars = max(LOG_LLM_MAX_CHARS, 0)
+    if max_chars == 0:
+        preview = ""
+        suffix = ""
+    else:
+        preview = prompt[:max_chars]
+        suffix = "" if len(prompt) <= max_chars else f"... [truncated {len(prompt) - max_chars} chars]"
+    print(f"[llm-request] source={source} prompt_len={len(prompt)} prompt={preview}{suffix}")
+
+
+def _log_request_stats(stats: Dict[str, Any]) -> None:
+    if not LOG_LLM_REQUESTS:
+        return
+    pairs = " ".join(f"{key}={value}" for key, value in stats.items() if value is not None)
+    if pairs:
+        print(f"[llm-metrics] {pairs}")
+
+
+def _record_metrics(
+    status: str,
+    latency_s: float,
+    queue_wait_s: float,
+    prompt_tokens: Optional[int],
+    completion_tokens: Optional[int],
+) -> None:
+    if not _METRICS_READY:
+        return
+    REQUESTS_TOTAL.labels(status=status).inc()
+    REQUEST_LATENCY.observe(latency_s)
+    QUEUE_WAIT.observe(queue_wait_s)
+    if prompt_tokens is not None:
+        PROMPT_TOKENS.inc(prompt_tokens)
+    if completion_tokens is not None:
+        COMPLETION_TOKENS.inc(completion_tokens)
+
+
+class AsyncVLLMBackend:
+    """Async vLLM backend using AsyncLLMEngine for true batching."""
+
+    def __init__(
+        self,
+        model: str,
+        max_model_len: int | None,
+        dtype: str | None,
+        max_num_seqs: int | None,
+        max_num_batched_tokens: int | None,
+        gpu_memory_utilization: float | None,
+    ) -> None:
+        if AsyncLLMEngine is None or AsyncEngineArgs is None:
             raise RuntimeError(
                 "vLLM is not installed. Please `pip install vllm` or "
                 "run the official vLLM server container instead."
             )
-        llm_kwargs = {"model": model}
+        self._model_name = model
+
+        engine_kwargs: Dict[str, Any] = {"model": model}
         if max_model_len is not None:
-            llm_kwargs["max_model_len"] = max_model_len
-        self._llm = LLM(**llm_kwargs)
+            engine_kwargs["max_model_len"] = max_model_len
+        if dtype:
+            engine_kwargs["dtype"] = dtype
+        if max_num_seqs is not None:
+            engine_kwargs["max_num_seqs"] = max_num_seqs
+        if max_num_batched_tokens is not None:
+            engine_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+        if gpu_memory_utilization is not None:
+            engine_kwargs["gpu_memory_utilization"] = gpu_memory_utilization
+
+        engine_args = AsyncEngineArgs(**engine_kwargs)
+        self._engine = AsyncLLMEngine.from_engine_args(engine_args)
         self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
+        self._tokenizer = None
+        self._tokenizer_ready = False
 
-    def generate(self, prompt: str) -> str:
-        outputs = self._llm.generate(
-            [prompt],
-            sampling_params=self._default_sampling,
+    async def generate(
+        self,
+        prompt: str,
+        request_id: str | None = None,
+        log_progress: bool = True,
+    ) -> str:
+        """Generate text asynchronously. Concurrent calls are batched by vLLM."""
+        if request_id is None:
+            request_id = str(uuid.uuid4())[:8]
+
+        results_generator = self._engine.generate(
+            prompt,
+            self._default_sampling,
+            request_id,
         )
-        # vLLM returns a list of RequestOutput objects
-        text: str = outputs[0].outputs[0].text
-        return text
 
+        final_output = None
+        start_time = time.monotonic()
+        last_log_time = start_time
+        last_token_count = 0
 
-class LLMRequestHandler(BaseHTTPRequestHandler):
-    backend: VLLMBackend  # type: ignore[assignment]
-    tracer = get_tracer("llm-backend")
+        async for request_output in results_generator:
+            final_output = request_output
 
-    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            # Log progress periodically (every ~2 seconds)
+            if log_progress and final_output.outputs:
+                now = time.monotonic()
+                try:
+                    current_tokens = len(final_output.outputs[0].token_ids)
+                except AttributeError:
+                    # Fallback: estimate from text length
+                    current_tokens = len(final_output.outputs[0].text.split())
+                if now - last_log_time >= 2.0:
+                    elapsed = now - start_time
+                    tokens_per_sec = current_tokens / elapsed if elapsed > 0 else 0
+                    print(
+                        f"[llm] req={request_id} PROGRESS tokens={current_tokens} "
+                        f"speed={tokens_per_sec:.1f} tok/s",
+                        flush=True,
+                    )
+                    last_log_time = now
+                    last_token_count = current_tokens
 
-    def do_POST(self) -> None:  # type: ignore[override]
-        if self.path not in ("/chat", "/completion", "/generate"):
-            self._send_json(404, {"error": "Not found"})
+        if final_output is None or not final_output.outputs:
+            return ""
+
+        # Log final token count
+        if log_progress:
+            try:
+                total_tokens = len(final_output.outputs[0].token_ids)
+            except AttributeError:
+                total_tokens = len(final_output.outputs[0].text.split())
+            elapsed = time.monotonic() - start_time
+            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
+            print(
+                f"[llm] req={request_id} GENERATED tokens={total_tokens} "
+                f"time={elapsed:.2f}s speed={tokens_per_sec:.1f} tok/s",
+                flush=True,
+            )
+
+        return final_output.outputs[0].text
+
+    def _resolve_tokenizer(self) -> None:
+        if self._tokenizer_ready:
             return
-
-        carrier = {key: value for key, value in self.headers.items()}
-        ctx = propagate.extract(carrier)
-        with self.tracer.start_as_current_span(
-            "llm.handle_request",
-            context=ctx,
-            kind=SpanKind.SERVER,
-        ) as span:
-            span.set_attribute("app.path", self.path)
-            content_length = int(self.headers.get("Content-Length", "0"))
-            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
-
+        self._tokenizer_ready = True
+        if vllm_get_tokenizer is not None:
             try:
-                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-            except json.JSONDecodeError:
-                self._send_json(400, {"error": "Invalid JSON"})
-                return
+                self._tokenizer = vllm_get_tokenizer(self._model_name)
+            except Exception:
+                self._tokenizer = None
 
-            prompt = data.get("prompt") or data.get("input")
-            if not isinstance(prompt, str) or not prompt:
-                self._send_json(400, {"error": "Missing 'prompt' field"})
-                return
-
-            span.set_attribute("app.prompt_length", len(prompt))
-            try:
-                text = self.backend.generate(prompt)
-            except Exception as exc:  # pragma: no cover - runtime safety
-                self._send_json(500, {"error": f"Generation failed: {exc}"})
-                return
-
-            self._send_json(200, {"output": text})
+    def count_tokens(self, text: str) -> Optional[int]:
+        if not LLM_METRICS_INCLUDE_TOKENS:
+            return None
+        if not text:
+            return 0
+        self._resolve_tokenizer()
+        if self._tokenizer is None:
+            return None
+        try:
+            return len(self._tokenizer.encode(text, add_special_tokens=False))
+        except Exception:
+            return None
 
 
-def run_http_server(host: str, port: int, model_name: str, max_model_len: int | None) -> None:
-    backend = VLLMBackend(model=model_name, max_model_len=max_model_len)
-    LLMRequestHandler.backend = backend  # type: ignore[assignment]
+# Global backend instance (set during server startup)
+_backend: Optional[AsyncVLLMBackend] = None
+_tracer = get_tracer("llm-backend")
+_inflight_count = 0
+_inflight_lock = asyncio.Lock()
 
-    server = HTTPServer((host, port), LLMRequestHandler)
-    print(f"[*] vLLM backend serving {model_name} on http://{host}:{port}")
+
+async def handle_health(request: web.Request) -> web.Response:
+    """Health check endpoint."""
+    return web.json_response({"status": "ok"})
+
+
+async def handle_metrics(request: web.Request) -> web.Response:
+    """Prometheus metrics endpoint."""
+    if not _METRICS_READY or generate_latest is None:
+        return web.json_response({"error": "Metrics disabled"}, status=503)
+    output = generate_latest()
+    return web.Response(body=output, content_type=CONTENT_TYPE_LATEST)
+
+
+async def handle_chat(request: web.Request) -> web.Response:
+    """Handle chat/completion requests with async batching."""
+    global _backend, _inflight_count
+
+    if _backend is None:
+        return web.json_response({"error": "Backend not initialized"}, status=503)
+
+    # Extract tracing context from headers
+    carrier = dict(request.headers)
+    ctx = propagate.extract(carrier)
+
+    with _tracer.start_as_current_span(
+        "llm.handle_request",
+        context=ctx,
+        kind=SpanKind.SERVER,
+    ) as span:
+        start_time = time.monotonic()
+        request_id = str(uuid.uuid4())[:8]  # Short ID for logs
+
+        # Track in-flight requests
+        async with _inflight_lock:
+            _inflight_count += 1
+            current_inflight = _inflight_count
+
+        if _METRICS_READY:
+            INFLIGHT.inc()
+
+        span.set_attribute("app.path", request.path)
+        span.set_attribute("app.request_id", request_id)
+
+        try:
+            data: Dict[str, Any] = await request.json()
+        except json.JSONDecodeError:
+            async with _inflight_lock:
+                _inflight_count -= 1
+            if _METRICS_READY:
+                INFLIGHT.dec()
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        prompt = data.get("prompt") or data.get("input")
+        if not isinstance(prompt, str) or not prompt:
+            async with _inflight_lock:
+                _inflight_count -= 1
+            if _METRICS_READY:
+                INFLIGHT.dec()
+            return web.json_response({"error": "Missing 'prompt' field"}, status=400)
+
+        span.set_attribute("app.prompt_length", len(prompt))
+        if LOG_LLM_REQUESTS:
+            span.set_attribute("app.prompt_preview", prompt[:200])
+        _log_prompt("http", prompt)
+
+        # Log request start
+        print(f"[llm] req={request_id} START inflight={current_inflight} prompt_len={len(prompt)}", flush=True)
+
+        status = "success"
+        prompt_tokens: Optional[int] = None
+        completion_tokens: Optional[int] = None
+        text = ""
+
+        try:
+            with _tracer.start_as_current_span("llm.wait_for_slot") as wait_span:
+                wait_span.set_attribute("app.request_id", request_id)
+                wait_span.set_attribute("llm.inflight_requests", current_inflight)
+
+            with _tracer.start_as_current_span("llm.generate") as gen_span:
+                gen_span.set_attribute("app.request_id", request_id)
+                gen_start = time.monotonic()
+                text = await _backend.generate(prompt, request_id=request_id)
+                gen_ms = int((time.monotonic() - gen_start) * 1000)
+                gen_span.set_attribute("llm.generate_ms", gen_ms)
+
+            prompt_tokens = _backend.count_tokens(prompt)
+            completion_tokens = _backend.count_tokens(text)
+
+            if prompt_tokens is not None:
+                span.set_attribute("llm.prompt_tokens", prompt_tokens)
+            if completion_tokens is not None:
+                span.set_attribute("llm.completion_tokens", completion_tokens)
+            if prompt_tokens is not None and completion_tokens is not None:
+                span.set_attribute("llm.total_tokens", prompt_tokens + completion_tokens)
+
+        except Exception as exc:  # pragma: no cover
+            status = "error"
+            async with _inflight_lock:
+                _inflight_count -= 1
+            if _METRICS_READY:
+                INFLIGHT.dec()
+            latency_s = time.monotonic() - start_time
+            print(f"[llm] req={request_id} ERROR after {int(latency_s * 1000)}ms: {exc}", flush=True)
+            _record_metrics(status, latency_s, 0, prompt_tokens, completion_tokens)
+            return web.json_response({"error": f"Generation failed: {exc}"}, status=500)
+
+        async with _inflight_lock:
+            _inflight_count -= 1
+            remaining_inflight = _inflight_count
+
+        if _METRICS_READY:
+            INFLIGHT.dec()
+
+        latency_s = time.monotonic() - start_time
+        latency_ms = int(latency_s * 1000)
+
+        # Log request completion
+        print(
+            f"[llm] req={request_id} DONE latency={latency_ms}ms "
+            f"prompt={prompt_tokens} completion={completion_tokens} "
+            f"remaining={remaining_inflight}",
+            flush=True,
+        )
+
+        _record_metrics(status, latency_s, 0, prompt_tokens, completion_tokens)
+        _log_request_stats(
+            {
+                "status": status,
+                "latency_ms": latency_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }
+        )
+
+        return web.json_response({"output": text})
+
+
+def create_app() -> web.Application:
+    """Create the aiohttp application with routes."""
+    app = web.Application()
+    app.router.add_get("/health", handle_health)
+    app.router.add_get("/ready", handle_health)
+    app.router.add_get("/live", handle_health)
+    app.router.add_get("/metrics", handle_metrics)
+    app.router.add_post("/chat", handle_chat)
+    app.router.add_post("/completion", handle_chat)
+    app.router.add_post("/generate", handle_chat)
+    return app
+
+
+async def run_async_server(
+    host: str,
+    port: int,
+    model_name: str,
+    max_model_len: int | None,
+    dtype: str | None,
+    max_num_seqs: int | None,
+    max_num_batched_tokens: int | None,
+    gpu_memory_utilization: float | None,
+) -> None:
+    """Run the async HTTP server with vLLM backend."""
+    global _backend
+
+    if web is None:
+        raise RuntimeError("aiohttp is not installed. Please `pip install aiohttp`.")
+
+    print(f"[*] Initializing AsyncLLMEngine for {model_name}...")
+    _backend = AsyncVLLMBackend(
+        model=model_name,
+        max_model_len=max_model_len,
+        dtype=dtype,
+        max_num_seqs=max_num_seqs,
+        max_num_batched_tokens=max_num_batched_tokens,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+
+    app = create_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(runner, host, port)
+    print("=" * 60)
+    print(f"[*] vLLM async backend ready")
+    print(f"    Model: {model_name}")
+    print(f"    URL: http://{host}:{port}")
+    print(f"    max_num_seqs: {max_num_seqs or 'default'}")
+    print(f"    max_model_len: {max_model_len or 'default'}")
+    print(f"    Batching: ENABLED (concurrent requests batched automatically)")
+    print("=" * 60)
+
+    await site.start()
+
+    # Keep running until interrupted
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[*] Shutting down vLLM backend.")
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        pass
     finally:
-        server.server_close()
+        await runner.cleanup()
 
 
 def main(argv: List[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="LLM backend (vLLM) for agentic traffic testbed")
+    parser = argparse.ArgumentParser(description="Async LLM backend (vLLM) for agentic traffic testbed")
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL_NAME,
@@ -131,12 +492,64 @@ def main(argv: List[str] | None = None) -> None:
         default=None,
         help="Override model max sequence length for KV cache sizing.",
     )
+    parser.add_argument("--dtype", default=None, help="vLLM dtype override (e.g., float16).")
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="Max sequences per iteration (vLLM scheduler).",
+    )
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help="Max batched tokens per iteration (vLLM scheduler).",
+    )
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=None,
+        help="Target GPU memory utilization fraction (0-1).",
+    )
     args = parser.parse_args(argv)
 
-    run_http_server(args.host, args.port, args.model, args.max_model_len)
+    def _env_int(value: str | None) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _env_float(value: str | None) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    dtype = args.dtype or LLM_DTYPE
+    max_num_seqs = args.max_num_seqs or _env_int(LLM_MAX_NUM_SEQS)
+    max_num_batched_tokens = args.max_num_batched_tokens or _env_int(LLM_MAX_NUM_BATCHED_TOKENS)
+    gpu_memory_utilization = args.gpu_memory_utilization or _env_float(LLM_GPU_MEMORY_UTILIZATION)
+
+    try:
+        asyncio.run(
+            run_async_server(
+                args.host,
+                args.port,
+                args.model,
+                args.max_model_len,
+                dtype,
+                max_num_seqs,
+                max_num_batched_tokens,
+                gpu_memory_utilization,
+            )
+        )
+    except KeyboardInterrupt:
+        print("\n[*] Shutting down vLLM async backend.")
 
 
 if __name__ == "__main__":
     main()
-
-

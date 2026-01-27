@@ -23,7 +23,7 @@ import os
 import socket
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -85,12 +85,16 @@ def check_docker_compose_services(compose_dir: str) -> Dict[str, bool]:
             except json.JSONDecodeError:
                 continue
         
-        expected_services = ["llm-backend", "agent-a", "agent-b", "chat-ui"]
-        for svc in expected_services:
-            if svc in services:
+        reported = set()
+        for svc in sorted(services):
+            if svc.startswith("agent-") or svc in ("llm-backend", "chat-ui"):
                 results[svc] = services[svc]
                 print_check(f"Docker service: {svc}", services[svc], f"({services[svc]})")
-            else:
+                reported.add(svc)
+
+        expected_services = ["llm-backend", "agent-a", "agent-b", "chat-ui"]
+        for svc in expected_services:
+            if svc not in reported:
                 results[svc] = False
                 print_check(f"Docker service: {svc}", False, "(not found)")
         
@@ -229,6 +233,65 @@ def check_agent_to_llm_connectivity(agent_url: str, agent_name: str, llm_url: st
         return False, f"Error: {str(e)}"
 
 
+def _iter_compose_ps(compose_dir: str) -> Iterable[Dict[str, Any]]:
+    result = subprocess.run(
+        ["docker", "compose", "-f", os.path.join(compose_dir, "docker-compose.yml"), "ps", "--format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Docker Compose not available or services not running")
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def _publishers_to_ports(publishers: Any) -> List[int]:
+    ports: List[int] = []
+    if isinstance(publishers, list):
+        for item in publishers:
+            if not isinstance(item, dict):
+                continue
+            published = item.get("PublishedPort")
+            if isinstance(published, int) and published > 0:
+                ports.append(published)
+    return sorted(set(ports))
+
+
+def discover_agent_endpoints(
+    compose_dir: str,
+    default_agent_a_url: str,
+    default_agent_b_urls: List[str],
+) -> Tuple[List[str], List[str]]:
+    agent_a_urls: List[str] = []
+    agent_b_urls: List[str] = []
+
+    compose_file = os.path.join(compose_dir, "docker-compose.yml")
+    if os.path.exists(compose_file):
+        try:
+            for entry in _iter_compose_ps(compose_dir):
+                service = entry.get("Service") or entry.get("Name") or ""
+                publishers = _publishers_to_ports(entry.get("Publishers"))
+                if service.startswith("agent-a") and publishers:
+                    agent_a_urls.append(f"http://localhost:{publishers[0]}/task")
+                elif service.startswith("agent-b") and publishers:
+                    agent_b_urls.append(f"http://localhost:{publishers[0]}/subtask")
+        except Exception:
+            pass
+
+    if not agent_a_urls:
+        agent_a_urls = [default_agent_a_url]
+    if not agent_b_urls:
+        agent_b_urls = default_agent_b_urls
+
+    return agent_a_urls, agent_b_urls
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Health check for agentic traffic testbed")
     parser.add_argument(
@@ -245,6 +308,11 @@ def main() -> None:
         "--agent-b-url",
         default="http://localhost:8102/subtask",
         help="Agent B endpoint URL (default: http://localhost:8102/subtask)",
+    )
+    parser.add_argument(
+        "--agent-b-urls",
+        default=os.environ.get("AGENT_B_URLS", ""),
+        help="Comma-separated Agent B endpoints (overrides auto-discovery)",
     )
     parser.add_argument(
         "--ui-url",
@@ -273,6 +341,16 @@ def main() -> None:
         if docker_results:
             all_checks_passed = all_checks_passed and all(docker_results.values())
     
+    agent_b_urls = [url.strip() for url in args.agent_b_urls.split(",") if url.strip()]
+    if not agent_b_urls:
+        agent_b_urls = [args.agent_b_url]
+
+    agent_a_urls, agent_b_urls = discover_agent_endpoints(
+        args.docker_compose_dir,
+        args.agent_a_url,
+        agent_b_urls,
+    )
+
     # LLM Server check
     print_section("LLM Server")
     llm_ok, llm_error = check_llm_server(args.llm_url)
@@ -282,57 +360,57 @@ def main() -> None:
         if llm_error:
             print(f"  {Colors.RED}Error: {llm_error}{Colors.RESET}")
     
-    # Agent A check
+    # Agent A checks
     print_section("Agent A")
-    agent_a_ok, agent_a_error = check_agent_endpoint(args.agent_a_url, "Agent A", "task")
-    print_check("Agent A endpoint", agent_a_ok, agent_a_error or f"({args.agent_a_url})")
-    if not agent_a_ok:
-        all_checks_passed = False
-        if agent_a_error:
-            print(f"  {Colors.RED}Error: {agent_a_error}{Colors.RESET}")
-    
-    # Agent A → LLM connectivity (critical path)
-    if llm_ok and agent_a_ok:
-        print_section("Agent A → LLM Connectivity (Critical Path)")
-        agent_a_llm_ok, agent_a_llm_error = check_agent_to_llm_connectivity(
-            args.agent_a_url, "Agent A", args.llm_url, "task"
-        )
-        print_check(
-            "Agent A can reach LLM",
-            agent_a_llm_ok,
-            agent_a_llm_error or "(successful end-to-end test)",
-        )
-        if not agent_a_llm_ok:
+    for idx, agent_url in enumerate(agent_a_urls, start=1):
+        agent_label = f"Agent A ({idx})" if len(agent_a_urls) > 1 else "Agent A"
+        agent_a_ok, agent_a_error = check_agent_endpoint(agent_url, agent_label, "task")
+        print_check(f"{agent_label} endpoint", agent_a_ok, agent_a_error or f"({agent_url})")
+        if not agent_a_ok:
             all_checks_passed = False
-            if agent_a_llm_error:
-                print(f"  {Colors.RED}Error: {agent_a_llm_error}{Colors.RESET}")
-                print(f"  {Colors.YELLOW}This is likely the issue causing your 502 error!{Colors.RESET}")
-                print(f"  {Colors.YELLOW}Check that LLM_SERVER_URL in Agent A's environment matches a reachable URL.{Colors.RESET}")
-    
-    # Agent B check
+            if agent_a_error:
+                print(f"  {Colors.RED}Error: {agent_a_error}{Colors.RESET}")
+        elif llm_ok:
+            print_section(f"{agent_label} → LLM Connectivity (Critical Path)")
+            agent_a_llm_ok, agent_a_llm_error = check_agent_to_llm_connectivity(
+                agent_url, agent_label, args.llm_url, "task"
+            )
+            print_check(
+                f"{agent_label} can reach LLM",
+                agent_a_llm_ok,
+                agent_a_llm_error or "(successful end-to-end test)",
+            )
+            if not agent_a_llm_ok:
+                all_checks_passed = False
+                if agent_a_llm_error:
+                    print(f"  {Colors.RED}Error: {agent_a_llm_error}{Colors.RESET}")
+                    print(f"  {Colors.YELLOW}This is likely the issue causing your 502 error!{Colors.RESET}")
+                    print(f"  {Colors.YELLOW}Check that LLM_SERVER_URL in Agent A's environment matches a reachable URL.{Colors.RESET}")
+
+    # Agent B checks
     print_section("Agent B")
-    agent_b_ok, agent_b_error = check_agent_endpoint(args.agent_b_url, "Agent B", "subtask")
-    print_check("Agent B endpoint", agent_b_ok, agent_b_error or f"({args.agent_b_url})")
-    if not agent_b_ok:
-        all_checks_passed = False
-        if agent_b_error:
-            print(f"  {Colors.RED}Error: {agent_b_error}{Colors.RESET}")
-    
-    # Agent B → LLM connectivity
-    if llm_ok and agent_b_ok:
-        print_section("Agent B → LLM Connectivity")
-        agent_b_llm_ok, agent_b_llm_error = check_agent_to_llm_connectivity(
-            args.agent_b_url, "Agent B", args.llm_url, "subtask"
-        )
-        print_check(
-            "Agent B can reach LLM",
-            agent_b_llm_ok,
-            agent_b_llm_error or "(successful end-to-end test)",
-        )
-        if not agent_b_llm_ok:
+    for idx, agent_url in enumerate(agent_b_urls, start=1):
+        agent_label = f"Agent B ({idx})"
+        agent_b_ok, agent_b_error = check_agent_endpoint(agent_url, agent_label, "subtask")
+        print_check(f"{agent_label} endpoint", agent_b_ok, agent_b_error or f"({agent_url})")
+        if not agent_b_ok:
             all_checks_passed = False
-            if agent_b_llm_error:
-                print(f"  {Colors.RED}Error: {agent_b_llm_error}{Colors.RESET}")
+            if agent_b_error:
+                print(f"  {Colors.RED}Error: {agent_b_error}{Colors.RESET}")
+        elif llm_ok:
+            print_section(f"{agent_label} → LLM Connectivity")
+            agent_b_llm_ok, agent_b_llm_error = check_agent_to_llm_connectivity(
+                agent_url, agent_label, args.llm_url, "subtask"
+            )
+            print_check(
+                f"{agent_label} can reach LLM",
+                agent_b_llm_ok,
+                agent_b_llm_error or "(successful end-to-end test)",
+            )
+            if not agent_b_llm_ok:
+                all_checks_passed = False
+                if agent_b_llm_error:
+                    print(f"  {Colors.RED}Error: {agent_b_llm_error}{Colors.RESET}")
     
     # UI check
     print_section("UI (Chat Console)")

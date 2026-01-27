@@ -10,12 +10,26 @@ from agents.common.telemetry import TelemetryLogger
 
 DEFAULT_LLM_SERVER_URL = "http://localhost:8000/chat"
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", DEFAULT_LLM_SERVER_URL)
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
+AGENT_B_TIMEOUT_SECONDS = float(os.environ.get("AGENT_B_TIMEOUT_SECONDS", "120"))
 DEFAULT_AGENT_B_URL = "http://agent-b:8102/subtask"
 AGENT_B_URL = os.environ.get("AGENT_B_URL", DEFAULT_AGENT_B_URL)
+AGENT_B_URLS = [
+    url.strip()
+    for url in os.environ.get("AGENT_B_URLS", "").split(",")
+    if url.strip()
+]
+if not AGENT_B_URLS:
+    AGENT_B_URLS = [AGENT_B_URL]
 
 
 def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
-    resp = httpx.post(LLM_SERVER_URL, json={"prompt": prompt}, headers=headers, timeout=30.0)
+    resp = httpx.post(
+        LLM_SERVER_URL,
+        json={"prompt": prompt},
+        headers=headers,
+        timeout=LLM_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
     return str(data.get("output", ""))
@@ -27,7 +41,8 @@ def call_agent_b(
     headers: Optional[Dict[str, str]] = None,
     agent_b_role: Optional[str] = None,
     agent_b_contract: Optional[str] = None,
-) -> str:
+    agent_b_url: Optional[str] = None,
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"subtask": subtask}
     if scenario:
         payload["scenario"] = scenario
@@ -35,10 +50,21 @@ def call_agent_b(
         payload["agent_b_role"] = agent_b_role
     if agent_b_contract:
         payload["agent_b_contract"] = agent_b_contract
-    resp = httpx.post(AGENT_B_URL, json=payload, headers=headers, timeout=30.0)
+    target_url = agent_b_url or AGENT_B_URL
+    resp = httpx.post(
+        target_url,
+        json=payload,
+        headers=headers,
+        timeout=AGENT_B_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
-    return str(data.get("output", ""))
+    return {
+        "output": str(data.get("output", "")),
+        "llm_prompt": data.get("llm_prompt"),
+        "llm_response": data.get("llm_response"),
+        "llm_endpoint": data.get("llm_endpoint"),
+    }
 
 
 def main() -> None:

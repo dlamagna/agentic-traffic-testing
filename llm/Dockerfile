@@ -17,10 +17,13 @@ RUN pip3 install --no-cache-dir -r /app/requirements.txt
 COPY llm /app/llm
 
 ENV PYTHONPATH=/app
+ENV LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["python3", "-m", "llm.serve_llm", "--model", "meta-llama/Llama-3.1-8B-Instruct", "--host", "0.0.0.0", "--port", "8000"]
+# Default CMD; docker-compose overrides this with --model from LLM_MODEL env var
+CMD ["python3", "-m", "llm.serve_llm", "--host", "0.0.0.0", "--port", "8000"]
 
 
 

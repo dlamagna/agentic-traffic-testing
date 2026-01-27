@@ -28,7 +28,38 @@ run_health_check() {
   fi
   echo
   echo "[*] Running health check..."
-  python3 "${health_script}" || true
+  python3 "${health_script}" --docker-compose-dir "${COMPOSE_DIR}" || true
+}
+
+wait_for_llm() {
+  local url="$1"
+  local timeout_seconds="${2:-600}"
+  local interval_seconds="${3:-5}"
+  local start_ts
+  start_ts="$(date +%s)"
+
+  echo "[*] Waiting for LLM backend to be healthy at ${url}..."
+  echo "    (this can take a few minutes while the model loads)"
+  while true; do
+    if python3 - <<PY >/dev/null 2>&1; then
+import urllib.request
+urllib.request.urlopen("${url}", timeout=2).read()
+PY
+      echo "[*] LLM backend is healthy."
+      return 0
+    fi
+
+    local now_ts
+    now_ts="$(date +%s)"
+    local elapsed
+    elapsed=$(( now_ts - start_ts ))
+    echo "[*] Still waiting for LLM backend... (${elapsed}s elapsed)"
+    if (( now_ts - start_ts >= timeout_seconds )); then
+      echo "[!] Timed out waiting for LLM backend at ${url}."
+      return 1
+    fi
+    sleep "${interval_seconds}"
+  done
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -81,6 +112,7 @@ if [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
   echo
   echo "[*] Final endpoint summary (via fetch_endpoints.sh):"
   bash "${ROOT_DIR}/scripts/fetch_endpoints.sh"
+  wait_for_llm "http://${NODE3_HOST}:8000/health" || true
   run_health_check
 else
   #########################################################################
@@ -105,6 +137,7 @@ else
   # echo
   echo "[*] Final endpoint summary (via fetch_endpoints.sh):"
   bash "${ROOT_DIR}/scripts/fetch_endpoints.sh"
+  wait_for_llm "http://localhost:8000/health" || true
   run_health_check
 fi
 

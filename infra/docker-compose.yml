@@ -10,11 +10,33 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_TOKEN=${HF_TOKEN}
       - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN}}
-    command: ["python3", "-m", "llm.serve_llm", "--model", "meta-llama/Llama-3.1-8B-Instruct", "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "32768"]
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - LLM_DTYPE=${LLM_DTYPE:-float16}
+      - LLM_MAX_NUM_SEQS=${LLM_MAX_NUM_SEQS:-12}
+      - LLM_MAX_NUM_BATCHED_TOKENS=${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
+      - LLM_GPU_MEMORY_UTILIZATION=${LLM_GPU_MEMORY_UTILIZATION:-0.90}
+      - LLM_METRICS_ENABLED=${LLM_METRICS_ENABLED:-1}
+      - LLM_METRICS_INCLUDE_TOKENS=${LLM_METRICS_INCLUDE_TOKENS:-1}
+      - LLM_METRICS_PREFIX=${LLM_METRICS_PREFIX:-llm}
+      - LLM_MODEL=${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+    command: ["python3", "-m", "llm.serve_llm", "--model", "${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}", "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "${LLM_MAX_MODEL_LEN:-4096}", "--dtype", "${LLM_DTYPE:-float16}", "--max-num-seqs", "${LLM_MAX_NUM_SEQS:-12}", "--max-num-batched-tokens", "${LLM_MAX_NUM_BATCHED_TOKENS:-8192}", "--gpu-memory-utilization", "${LLM_GPU_MEMORY_UTILIZATION:-0.90}"]
     ports:
       - "8000:8000"
     networks:
       - agent-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     deploy:
       resources:
         reservations:
@@ -32,8 +54,15 @@ services:
       - LLM_SERVER_URL=http://llm-backend:8000/chat
       - NODE_NAME=node1_agentA
       - AGENT_A_PORT=8101
+      - OTEL_SERVICE_NAME=agent-a
+      - AGENT_B_URLS=http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - AGENT_B_TIMEOUT_SECONDS=${AGENT_B_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8101:8101"
     command: ["python", "-m", "agents.agent_a.server"]
@@ -49,10 +78,103 @@ services:
       - LLM_SERVER_URL=http://llm-backend:8000/chat
       - NODE_NAME=node2_agentB
       - AGENT_B_PORT=8102
+      - OTEL_SERVICE_NAME=agent-b-1
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
     depends_on:
-      - llm-backend
+      llm-backend:
+        condition: service_healthy
     ports:
       - "8102:8102"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-2:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-2
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_2
+      - AGENT_B_PORT=8103
+      - OTEL_SERVICE_NAME=agent-b-2
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8103:8103"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-3:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-3
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_3
+      - AGENT_B_PORT=8104
+      - OTEL_SERVICE_NAME=agent-b-3
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8104:8104"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-4:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-4
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_4
+      - AGENT_B_PORT=8105
+      - OTEL_SERVICE_NAME=agent-b-4
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8105:8105"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      - agent-net
+
+  agent-b-5:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-5
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - NODE_NAME=node2_agentB_5
+      - AGENT_B_PORT=8106
+      - OTEL_SERVICE_NAME=agent-b-5
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8106:8106"
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
@@ -82,6 +204,10 @@ services:
     depends_on:
       - agent-a
       - agent-b
+      - agent-b-2
+      - agent-b-3
+      - agent-b-4
+      - agent-b-5
 
   jaeger:
     image: jaegertracing/all-in-one:1.57

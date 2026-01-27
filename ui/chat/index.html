@@ -7,7 +7,13 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; background: #f6f8fa; }
     h1 { margin-bottom: 8px; }
-    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; }
+    .layout { display: flex; gap: 16px; align-items: flex-start; }
+    .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; flex: 1 1 auto; }
+    .sidebar { width: 260px; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; }
+    .sidebar h2 { font-size: 16px; margin: 6px 0 12px; }
+    .template-list { display: flex; flex-direction: column; gap: 8px; }
+    .template-btn { text-align: left; padding: 8px 10px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+    .template-btn:hover { background: #eef2f6; }
     label { display: block; margin: 8px 0 4px; font-weight: 600; }
     textarea { width: 100%; min-height: 120px; }
     .compact-textarea { min-height: 70px; }
@@ -17,16 +23,30 @@
     button { padding: 10px 16px; font-size: 15px; cursor: pointer; }
     .status { font-size: 14px; color: #555; margin-top: 6px; }
     .status.live { color: #0b5394; font-weight: 600; }
+    .note { font-size: 12px; color: #57606a; margin-top: 6px; }
     .columns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
     .column { flex: 1 1 340px; background: #0b1021; color: #e6edf3; padding: 12px; border-radius: 6px; min-height: 160px; }
     .col-title { font-weight: 700; margin-bottom: 8px; }
     .mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; }
     .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #e7f3ff; color: #084298; margin-left: 6px; }
+    .worker-card { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+    .worker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .worker-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .worker-table th, .worker-table td { border: 1px solid #d0d7de; padding: 8px; vertical-align: top; background: #fff; }
+    .worker-table th { background: #f6f8fa; text-align: left; font-weight: 600; }
+    .worker-table pre { margin: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .worker-status { font-weight: 600; }
+    .status-ok { color: #1a7f37; }
+    .status-failed { color: #cf222e; }
+    .worker-summary { margin: 6px 0 10px; color: #57606a; font-size: 12px; }
+    .llm-summary { margin: 6px 0 10px; color: #57606a; font-size: 12px; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <h1>Agent Chat Console</h1>
-  <div class="panel">
+  <div class="layout">
+    <div class="panel">
     <div class="row">
       <div>
         <label>Agent</label>
@@ -39,6 +59,7 @@
           <option value="">none</option>
           <option value="agentic_simple">agentic_simple</option>
           <option value="agentic_multi_hop">agentic_multi_hop</option>
+          <option value="agentic_parallel">agentic_parallel</option>
           <option value="tool_call">tool_call</option>
         </select>
       </div>
@@ -46,9 +67,13 @@
         <label for="maxTurns">Max Agent B turns</label>
         <input id="maxTurns" type="number" min="1" step="1" placeholder="3">
       </div>
+      <div>
+        <label for="agentCount">Worker count (parallel)</label>
+        <input id="agentCount" type="number" min="1" max="4" step="1" placeholder="2">
+      </div>
     </div>
 
-    <div class="row">
+    <div class="row hidden">
       <div>
         <label>Agent A endpoint</label>
         <input id="endpointA" type="text">
@@ -88,12 +113,16 @@
       </div>
     </div>
 
+    <label>Parallel workers (Agent B instances)</label>
+    <div id="workers" class="worker-grid"></div>
+
     <label for="prompt">Message</label>
     <textarea id="prompt" placeholder="Ask a question or give a task"></textarea>
 
     <div style="margin-top: 12px;">
       <button id="sendBtn">Send</button>
       <span class="status" id="status"></span>
+      <div class="note">Verbose LLM logs: set <code>LOG_LLM_REQUESTS=1</code> and <code>LLM_LOG_MAX_CHARS</code>.</div>
     </div>
 
     <div style="margin-top: 16px;">
@@ -107,8 +136,22 @@
           <div id="outputB" class="mono"></div>
         </div>
       </div>
+      <div style="margin-top: 12px;">
+        <div class="col-title">Worker Responses (parallel)</div>
+        <div id="outputWorkers"></div>
+      </div>
+      <div style="margin-top: 12px;">
+        <div class="col-title">LLM Requests</div>
+        <div id="outputRequests"></div>
+      </div>
       <div style="margin-top: 8px;" class="mono" id="rawResp"></div>
     </div>
+    </div>
+    <aside class="sidebar">
+      <h2>Templates</h2>
+      <div id="templateList" class="template-list"></div>
+      <button id="clearTemplates" type="button" class="template-btn">Clear</button>
+    </aside>
   </div>
 
   <script>
@@ -116,18 +159,72 @@
     const statusEl = document.getElementById('status');
     const outputA = document.getElementById('outputA');
     const outputB = document.getElementById('outputB');
+    const outputWorkersEl = document.getElementById('outputWorkers');
+    const outputRequestsEl = document.getElementById('outputRequests');
     const rawResp = document.getElementById('rawResp');
     const badgeA = document.getElementById('badgeA');
     const badgeB = document.getElementById('badgeB');
     const scenarioEl = document.getElementById('scenario');
     const maxTurnsEl = document.getElementById('maxTurns');
+    const agentCountEl = document.getElementById('agentCount');
     const endpointA = document.getElementById('endpointA');
     const endpointB = document.getElementById('endpointB');
     const agentARoleEl = document.getElementById('agentARole');
     const agentAContractEl = document.getElementById('agentAContract');
     const agentBRoleEl = document.getElementById('agentBRole');
     const agentBContractEl = document.getElementById('agentBContract');
+    const workersEl = document.getElementById('workers');
     const sendBtn = document.getElementById('sendBtn');
+    const templateListEl = document.getElementById('templateList');
+    const clearTemplatesBtn = document.getElementById('clearTemplates');
+
+    const roleOptions = [
+      { value: '', label: 'none' },
+      { value: 'planner', label: 'planner' },
+      { value: 'researcher', label: 'researcher' },
+      { value: 'critic', label: 'critic' },
+      { value: 'summarizer', label: 'summarizer' },
+      { value: 'executor', label: 'executor' }
+    ];
+
+    const templateDefinitions = [
+      {
+        id: 'mas_agent_contracts_enhanced',
+        label: 'MAS Agent Contracts (Enhanced)',
+        paths: [
+          './templates/mas_agent_contracts_enhanced.json',
+          '../templates/mas_agent_contracts_enhanced.json',
+          '../../agents/templates/mas_agent_contracts_enhanced.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_simple',
+        label: 'MAS Agent Contracts (Simple)',
+        paths: [
+          './templates/mas_agent_contracts_simple.json',
+          '../templates/mas_agent_contracts_simple.json',
+          '../../agents/templates/mas_agent_contracts_simple.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_debate',
+        label: 'debate',
+        paths: [
+          './templates/mas_agent_contracts_debate.json',
+          '../templates/mas_agent_contracts_debate.json',
+          '../../agents/templates/mas_agent_contracts_debate.json'
+        ]
+      },
+      {
+        id: 'mas_agent_contracts_auction',
+        label: 'auction',
+        paths: [
+          './templates/mas_agent_contracts_auction.json',
+          '../templates/mas_agent_contracts_auction.json',
+          '../../agents/templates/mas_agent_contracts_auction.json'
+        ]
+      }
+    ];
 
     let timerId = null;
     let startTs = null;
@@ -169,6 +266,234 @@
       }
     }
 
+    function ensureDefaultScenario() {
+      if (!scenarioEl.value) {
+        scenarioEl.value = 'agentic_parallel';
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderWorkerTable(items) {
+      if (!Array.isArray(items) || items.length === 0) return '';
+      const rows = items
+        .map((item) => {
+          const index = item.agent_index || '?';
+          const endpoint = item.endpoint || '—';
+          const subtask = item.subtask || '';
+          const output = item.output || '';
+          const isFailed = /failed|timed out/i.test(output);
+          const statusLabel = isFailed ? 'failed' : 'ok';
+          const statusClass = isFailed ? 'status-failed' : 'status-ok';
+          return `
+            <tr>
+              <td>Worker ${escapeHtml(index)}</td>
+              <td>${escapeHtml(endpoint)}</td>
+              <td><pre>${escapeHtml(subtask)}</pre></td>
+              <td><pre>${escapeHtml(output)}</pre></td>
+              <td class="worker-status ${statusClass}">${statusLabel}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      const successCount = items.filter((item) => !/failed|timed out/i.test(item.output || '')).length;
+      const failureCount = items.length - successCount;
+      const summary = `Total: ${items.length} • Success: ${successCount} • Failed: ${failureCount}`;
+
+      return `
+        <div class="worker-summary">${escapeHtml(summary)}</div>
+        <table class="worker-table">
+          <thead>
+            <tr>
+              <th>Worker</th>
+              <th>Endpoint</th>
+              <th>Subtask</th>
+              <th>Output</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderRequestTable(items) {
+      if (!Array.isArray(items) || items.length === 0) return '';
+      const rows = items
+        .map((item) => {
+          const source = item.source || 'unknown';
+          const label = item.label || '';
+          const agentIndex = item.agent_index || item.turn || '—';
+          const endpoint = item.endpoint || '—';
+          const prompt = item.prompt || '';
+          const response = item.response || '';
+          return `
+            <tr>
+              <td>${escapeHtml(source)}</td>
+              <td>${escapeHtml(label)}</td>
+              <td>${escapeHtml(agentIndex)}</td>
+              <td>${escapeHtml(endpoint)}</td>
+              <td><pre>${escapeHtml(prompt)}</pre></td>
+              <td><pre>${escapeHtml(response)}</pre></td>
+            </tr>
+          `;
+        })
+        .join('');
+      const summary = `Total requests: ${items.length}`;
+      return `
+        <div class="llm-summary">${escapeHtml(summary)}</div>
+        <table class="worker-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Label</th>
+              <th>Agent/Turn</th>
+              <th>Endpoint</th>
+              <th>Prompt</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderWorkers() {
+      const requested = Number(agentCountEl.value) || 2;
+      const count = Math.max(1, Math.min(4, requested));
+      agentCountEl.value = count;
+      workersEl.innerHTML = '';
+      for (let i = 0; i < count; i += 1) {
+        const card = document.createElement('div');
+        card.className = 'worker-card';
+        const optionsHtml = roleOptions
+          .map((opt) => `<option value="${opt.value}">${opt.label}</option>`)
+          .join('');
+        card.innerHTML = `
+          <div><strong>Worker ${i + 1}</strong></div>
+          <label for="workerRole-${i}">Role</label>
+          <select id="workerRole-${i}">
+            ${optionsHtml}
+          </select>
+          <label for="workerContract-${i}">Contract</label>
+          <textarea id="workerContract-${i}" class="compact-textarea" placeholder="Describe the worker's focus"></textarea>
+        `;
+        workersEl.appendChild(card);
+      }
+    }
+
+    async function loadTemplate(paths) {
+      for (const path of paths) {
+        try {
+          const resp = await fetch(path, { cache: 'no-store' });
+          if (!resp.ok) continue;
+          return await resp.json();
+        } catch (err) {
+          // Try the next path.
+        }
+      }
+      return null;
+    }
+
+    function applyTemplateDefaults(defaults) {
+      if (!defaults) return;
+      if (defaults.prompt) {
+        promptEl.value = defaults.prompt;
+      }
+      if (defaults.scenario) {
+        scenarioEl.value = defaults.scenario;
+      }
+      if (defaults.agentA) {
+        agentARoleEl.value = defaults.agentA.role || '';
+        agentAContractEl.value = defaults.agentA.contract || '';
+      }
+      if (defaults.agentB) {
+        agentBRoleEl.value = defaults.agentB.role || '';
+        agentBContractEl.value = defaults.agentB.contract || '';
+      }
+      if (Number.isInteger(defaults.worker_count)) {
+        agentCountEl.value = defaults.worker_count;
+      }
+    }
+
+    function applyWorkerDefaults(defaults) {
+      if (!defaults || !Array.isArray(defaults.workers)) return;
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(4, count));
+      for (let i = 0; i < safeCount; i += 1) {
+        const worker = defaults.workers[i];
+        if (!worker) continue;
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
+        if (roleEl) roleEl.value = worker.role || '';
+        if (contractEl) contractEl.value = worker.contract || '';
+      }
+    }
+
+    async function applyTemplate(definition) {
+      const template = await loadTemplate(definition.paths);
+      if (!template || !template.ui_defaults) return;
+      applyTemplateDefaults(template.ui_defaults);
+      renderWorkers();
+      applyWorkerDefaults(template.ui_defaults);
+    }
+
+    function renderTemplates() {
+      templateListEl.innerHTML = '';
+      templateDefinitions.forEach((definition) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'template-btn';
+        button.textContent = definition.label;
+        button.addEventListener('click', () => applyTemplate(definition));
+        templateListEl.appendChild(button);
+      });
+    }
+
+    function clearTemplateFields() {
+      scenarioEl.value = '';
+      promptEl.value = '';
+      agentARoleEl.value = '';
+      agentAContractEl.value = '';
+      agentBRoleEl.value = '';
+      agentBContractEl.value = '';
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(4, count));
+      for (let i = 0; i < safeCount; i += 1) {
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
+        if (roleEl) roleEl.value = '';
+        if (contractEl) contractEl.value = '';
+      }
+    }
+
+    function collectWorkers() {
+      const count = Number(agentCountEl.value) || 2;
+      const safeCount = Math.max(1, Math.min(4, count));
+      const workers = [];
+      for (let i = 0; i < safeCount; i += 1) {
+        const roleEl = document.getElementById(`workerRole-${i}`);
+        const contractEl = document.getElementById(`workerContract-${i}`);
+        workers.push({
+          role: roleEl ? roleEl.value.trim() : '',
+          contract: contractEl ? contractEl.value.trim() : ''
+        });
+      }
+      return { count: safeCount, workers };
+    }
+
     async function sendMessage() {
       ensureDefaultEndpoints();
       const agent = document.querySelector('input[name="agent"]:checked').value;
@@ -184,10 +509,14 @@
 
       const label = scenario === 'agentic_multi_hop'
         ? 'Sending (multi-hop A→B→LLM)'
-        : 'Sending';
+        : scenario === 'agentic_parallel'
+          ? 'Sending (parallel A→B workers)'
+          : 'Sending';
       startTimer(label);
       outputA.textContent = '';
       outputB.textContent = '';
+      outputWorkersEl.innerHTML = '';
+      outputRequestsEl.innerHTML = '';
       rawResp.textContent = '';
       badgeA.style.display = 'none';
       badgeB.style.display = 'none';
@@ -198,10 +527,15 @@
       const agentAContract = agentAContractEl.value.trim() || null;
       const agentBRole = agentBRoleEl.value.trim() || null;
       const agentBContract = agentBContractEl.value.trim() || null;
-      const extra =
-        agent === 'a' && Number.isInteger(maxTurns) && maxTurns > 0
-          ? { max_agent_turns: maxTurns }
-          : {};
+      const { count: workerCount, workers } = collectWorkers();
+      const extra = {};
+      if (agent === 'a' && Number.isInteger(maxTurns) && maxTurns > 0) {
+        extra.max_agent_turns = maxTurns;
+      }
+      if (agent === 'a') {
+        extra.agent_count = workerCount;
+        extra.agent_b_workers = workers;
+      }
 
       try {
         const controller = new AbortController();
@@ -231,6 +565,17 @@
         const data = await resp.json();
         outputA.textContent = data.output || '';
         outputB.textContent = data.agent_b_output || '';
+        if (Array.isArray(data.agent_b_outputs) && data.agent_b_outputs.length > 0) {
+          const isObjectList = data.agent_b_outputs.every(
+            (item) => item && typeof item === 'object'
+          );
+          if (isObjectList) {
+            outputWorkersEl.innerHTML = renderWorkerTable(data.agent_b_outputs);
+          }
+        }
+        if (Array.isArray(data.llm_requests) && data.llm_requests.length > 0) {
+          outputRequestsEl.innerHTML = renderRequestTable(data.llm_requests);
+        }
         rawResp.textContent = JSON.stringify(data, null, 2);
         badgeA.style.display = 'inline-block';
         if (data.agent_b_output) {
@@ -240,6 +585,8 @@
       } catch (err) {
         outputA.textContent = '';
         outputB.textContent = '';
+        outputWorkersEl.innerHTML = '';
+        outputRequestsEl.innerHTML = '';
         const message =
           err && err.name === 'AbortError'
             ? 'Request timed out. Check the agent endpoint and port forwarding.'
@@ -255,7 +602,11 @@
         sendMessage();
       }
     });
+    agentCountEl.addEventListener('change', renderWorkers);
+    renderWorkers();
+    ensureDefaultEndpoints();
+    renderTemplates();
+    clearTemplatesBtn.addEventListener('click', clearTemplateFields);
   </script>
 </body>
 </html>
-
