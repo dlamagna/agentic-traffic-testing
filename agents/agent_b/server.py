@@ -144,6 +144,14 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             )
             _log_llm_prompt(f"subtask_{agent_index or 'unknown'}", prompt)
             output = call_llm(prompt, headers=headers)
+            llm_request = {
+                "source": "agent_b",
+                "label": f"subtask_{agent_index or 'unknown'}",
+                "prompt": prompt,
+                "response": output,
+                "agent_index": agent_index,
+                "endpoint": LLM_SERVER_URL,
+            }
 
             logger.log(
                 task_id=task_id,
@@ -161,6 +169,8 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                     "output": output,
                     "llm_prompt": prompt,
                     "llm_response": output,
+                    "llm_endpoint": LLM_SERVER_URL,
+                    "llm_requests": [llm_request],
                 },
             )
 

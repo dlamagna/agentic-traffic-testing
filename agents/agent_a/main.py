@@ -63,6 +63,7 @@ def call_agent_b(
         "output": str(data.get("output", "")),
         "llm_prompt": data.get("llm_prompt"),
         "llm_response": data.get("llm_response"),
+        "llm_endpoint": data.get("llm_endpoint"),
     }
 
 

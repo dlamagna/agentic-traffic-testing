@@ -225,6 +225,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 "source": "agent_a",
                                 "label": "planning",
                                 "prompt": planning_prompt,
+                                "endpoint": LLM_SERVER_URL,
                             }
                         )
                         planned_raw = call_llm(planning_prompt, headers=headers)
@@ -309,6 +310,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             output = str(response.get("output", ""))
                             llm_prompt = response.get("llm_prompt")
                             llm_response = response.get("llm_response")
+                            llm_endpoint = response.get("llm_endpoint") or LLM_SERVER_URL
                             agent_b_outputs.append(
                                 {
                                     "agent_index": idx,
@@ -317,6 +319,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                     "output": output,
                                     "llm_prompt": llm_prompt,
                                     "llm_response": llm_response,
+                                    "llm_endpoint": llm_endpoint,
                                 }
                             )
                             if llm_prompt:
@@ -327,7 +330,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                         "prompt": llm_prompt,
                                         "response": llm_response,
                                         "agent_index": idx,
-                                        "endpoint": worker["endpoint"],
+                                        "endpoint": llm_endpoint,
                                     }
                                 )
                             logger.log(
@@ -430,6 +433,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             agent_b_output = str(response.get("output", ""))
                             llm_prompt = response.get("llm_prompt")
                             llm_response = response.get("llm_response")
+                            llm_endpoint = response.get("llm_endpoint") or LLM_SERVER_URL
                             if llm_prompt:
                                 llm_requests.append(
                                     {
@@ -437,6 +441,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                         "label": f"turn_{turn}",
                                         "prompt": llm_prompt,
                                         "response": llm_response,
+                                        "endpoint": llm_endpoint,
                                         "turn": turn,
                                     }
                                 )
@@ -486,6 +491,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                     "label": f"progress_check_{turn}",
                                     "prompt": progress_prompt,
                                     "turn": turn,
+                                    "endpoint": LLM_SERVER_URL,
                                 }
                             )
                             progress_note = call_llm(progress_prompt, headers=headers)
@@ -545,6 +551,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             "source": "agent_a",
                             "label": "final",
                             "prompt": final_prompt,
+                            "endpoint": LLM_SERVER_URL,
                         }
                     )
                     output = call_llm(final_prompt, headers=headers)
