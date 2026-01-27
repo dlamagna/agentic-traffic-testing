@@ -18,6 +18,7 @@ COPY llm /app/llm
 
 ENV PYTHONPATH=/app
 ENV LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
