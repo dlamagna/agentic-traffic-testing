@@ -389,10 +389,11 @@ You can add runtime overrides to that file:
 LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 LLM_TIMEOUT_SECONDS=120
 LLM_MAX_MODEL_LEN=4000
-LLM_MAX_CONCURRENCY=2
 ```
 
-For higher concurrency and better batching, tune vLLM scheduling with:
+The LLM backend uses **AsyncLLMEngine** for true request batching — concurrent requests are automatically batched together by vLLM's scheduler for GPU efficiency.
+
+Tune vLLM scheduling with:
 ```text
 LLM_DTYPE=float16
 LLM_MAX_NUM_SEQS=12
@@ -400,7 +401,41 @@ LLM_MAX_NUM_BATCHED_TOKENS=8192
 LLM_GPU_MEMORY_UTILIZATION=0.90
 ```
 
-`LLM_MAX_CONCURRENCY` controls the number of in-flight requests accepted by the local LLM HTTP server. If you increase it, ensure `LLM_MAX_MODEL_LEN` and the vLLM scheduling values fit your GPU memory budget.
+| Variable | Description |
+|----------|-------------|
+| `LLM_MAX_NUM_SEQS` | Max sequences batched per iteration (controls concurrency) |
+| `LLM_MAX_NUM_BATCHED_TOKENS` | Max total tokens in a batch |
+| `LLM_GPU_MEMORY_UTILIZATION` | Fraction of GPU memory for vLLM (0-1) |
+| `LLM_MAX_MODEL_LEN` | Max context length (prompt + completion tokens) |
+
+### Understanding KV cache and concurrency limits
+
+At startup, vLLM logs useful information about your GPU's capacity:
+
+```
+Available KV cache memory: 2.73 GiB
+GPU KV cache size: 22,320 tokens
+Maximum concurrency for 4,096 tokens per request: 5.45x
+```
+
+**What this means:**
+- After loading the model, 2.73 GB of GPU RAM remains for the KV cache (key-value cache used during inference)
+- The KV cache can hold 22,320 tokens total across all concurrent requests
+- With `max_model_len=4096`, the GPU can handle ~5.45 concurrent requests before queuing
+
+**The formula:**
+```
+max_concurrency ≈ KV_cache_tokens ÷ max_model_len
+```
+
+**If you need more concurrency:**
+| Action | Effect |
+|--------|--------|
+| Reduce `LLM_MAX_MODEL_LEN` (e.g., 2048) | ~2x more concurrent requests |
+| Increase `LLM_GPU_MEMORY_UTILIZATION` | More KV cache (but risk OOM) |
+| Use a smaller model | More free VRAM for KV cache |
+
+Note: `LLM_MAX_NUM_SEQS` sets a *soft* limit on batching. The actual limit is determined by available KV cache memory. If you set `LLM_MAX_NUM_SEQS=12` but only have KV cache for 5 requests, vLLM will queue the rest automatically.
 
 ### Changing the model served by llm-backend
 
