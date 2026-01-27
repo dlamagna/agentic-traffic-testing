@@ -124,13 +124,6 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 tool_call_id=tool_call_id,
             )
 
-            with self.tracer.start_as_current_span(
-                "agent_b.call_llm",
-                kind=SpanKind.CLIENT,
-            ) as span_llm:
-                span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
-                headers: Dict[str, str] = {}
-                propagate.inject(headers)
             role_context_parts = []
             if agent_b_role:
                 role_context_parts.append(f"Role: {agent_b_role}")
@@ -143,7 +136,16 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 else f"You are Agent B.\n\n{subtask}"
             )
             _log_llm_prompt(f"subtask_{agent_index or 'unknown'}", prompt)
-            output = call_llm(prompt, headers=headers)
+
+            with self.tracer.start_as_current_span(
+                "agent_b.call_llm",
+                kind=SpanKind.CLIENT,
+            ) as span_llm:
+                span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
+                headers: Dict[str, str] = {}
+                propagate.inject(headers)
+                output = call_llm(prompt, headers=headers)
+
             llm_request = {
                 "source": "agent_b",
                 "label": f"subtask_{agent_index or 'unknown'}",
