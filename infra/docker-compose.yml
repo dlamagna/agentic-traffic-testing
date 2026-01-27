@@ -12,7 +12,6 @@ services:
       - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN}}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-1}
       - LLM_DTYPE=${LLM_DTYPE:-float16}
       - LLM_MAX_NUM_SEQS=${LLM_MAX_NUM_SEQS:-12}
       - LLM_MAX_NUM_BATCHED_TOKENS=${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
@@ -34,9 +33,9 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()",
         ]
-      interval: 5s
+      interval: 15s
       timeout: 3s
-      retries: 40
+      retries: 20
       start_period: 10s
     deploy:
       resources:
