@@ -48,6 +48,10 @@ LOG_LLM_REQUESTS = os.environ.get("LOG_LLM_REQUESTS", "").lower() in ("1", "true
 LOG_LLM_MAX_CHARS = int(os.environ.get("LLM_LOG_MAX_CHARS", "500"))
 LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "1"))
 _LLM_SEMAPHORE = threading.Semaphore(max(1, LLM_MAX_CONCURRENCY))
+LLM_DTYPE = os.environ.get("LLM_DTYPE")
+LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
+LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
+LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
 LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
     "1",
@@ -133,7 +137,15 @@ def _record_metrics(
 
 
 class VLLMBackend:
-    def __init__(self, model: str, max_model_len: int | None) -> None:
+    def __init__(
+        self,
+        model: str,
+        max_model_len: int | None,
+        dtype: str | None,
+        max_num_seqs: int | None,
+        max_num_batched_tokens: int | None,
+        gpu_memory_utilization: float | None,
+    ) -> None:
         if LLM is None:
             raise RuntimeError(
                 "vLLM is not installed. Please `pip install vllm` or "
@@ -143,6 +155,14 @@ class VLLMBackend:
         llm_kwargs = {"model": model}
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len
+        if dtype:
+            llm_kwargs["dtype"] = dtype
+        if max_num_seqs is not None:
+            llm_kwargs["max_num_seqs"] = max_num_seqs
+        if max_num_batched_tokens is not None:
+            llm_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+        if gpu_memory_utilization is not None:
+            llm_kwargs["gpu_memory_utilization"] = gpu_memory_utilization
         self._llm = LLM(**llm_kwargs)
         self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
         self._tokenizer = None
@@ -299,8 +319,24 @@ class LLMRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"output": text})
 
 
-def run_http_server(host: str, port: int, model_name: str, max_model_len: int | None) -> None:
-    backend = VLLMBackend(model=model_name, max_model_len=max_model_len)
+def run_http_server(
+    host: str,
+    port: int,
+    model_name: str,
+    max_model_len: int | None,
+    dtype: str | None,
+    max_num_seqs: int | None,
+    max_num_batched_tokens: int | None,
+    gpu_memory_utilization: float | None,
+) -> None:
+    backend = VLLMBackend(
+        model=model_name,
+        max_model_len=max_model_len,
+        dtype=dtype,
+        max_num_seqs=max_num_seqs,
+        max_num_batched_tokens=max_num_batched_tokens,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
     LLMRequestHandler.backend = backend  # type: ignore[assignment]
 
     server = ThreadingHTTPServer((host, port), LLMRequestHandler)
@@ -328,9 +364,58 @@ def main(argv: List[str] | None = None) -> None:
         default=None,
         help="Override model max sequence length for KV cache sizing.",
     )
+    parser.add_argument("--dtype", default=None, help="vLLM dtype override (e.g., float16).")
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="Max sequences per iteration (vLLM scheduler).",
+    )
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help="Max batched tokens per iteration (vLLM scheduler).",
+    )
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=None,
+        help="Target GPU memory utilization fraction (0-1).",
+    )
     args = parser.parse_args(argv)
 
-    run_http_server(args.host, args.port, args.model, args.max_model_len)
+    def _env_int(value: str | None) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _env_float(value: str | None) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    dtype = args.dtype or LLM_DTYPE
+    max_num_seqs = args.max_num_seqs or _env_int(LLM_MAX_NUM_SEQS)
+    max_num_batched_tokens = args.max_num_batched_tokens or _env_int(LLM_MAX_NUM_BATCHED_TOKENS)
+    gpu_memory_utilization = args.gpu_memory_utilization or _env_float(LLM_GPU_MEMORY_UTILIZATION)
+
+    run_http_server(
+        args.host,
+        args.port,
+        args.model,
+        args.max_model_len,
+        dtype,
+        max_num_seqs,
+        max_num_batched_tokens,
+        gpu_memory_utilization,
+    )
 
 
 if __name__ == "__main__":

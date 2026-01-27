@@ -13,10 +13,14 @@ services:
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
       - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-1}
+      - LLM_DTYPE=${LLM_DTYPE:-float16}
+      - LLM_MAX_NUM_SEQS=${LLM_MAX_NUM_SEQS:-12}
+      - LLM_MAX_NUM_BATCHED_TOKENS=${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
+      - LLM_GPU_MEMORY_UTILIZATION=${LLM_GPU_MEMORY_UTILIZATION:-0.90}
       - LLM_METRICS_ENABLED=${LLM_METRICS_ENABLED:-1}
       - LLM_METRICS_INCLUDE_TOKENS=${LLM_METRICS_INCLUDE_TOKENS:-1}
       - LLM_METRICS_PREFIX=${LLM_METRICS_PREFIX:-llm}
-    command: ["python3", "-m", "llm.serve_llm", "--model", "meta-llama/Llama-3.1-8B-Instruct", "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "${LLM_MAX_MODEL_LEN:-4000}"]
+    command: ["python3", "-m", "llm.serve_llm", "--model", "meta-llama/Llama-3.1-8B", "--host", "0.0.0.0", "--port", "8000", "--max-model-len", "${LLM_MAX_MODEL_LEN:-4096}", "--dtype", "${LLM_DTYPE:-float16}", "--max-num-seqs", "${LLM_MAX_NUM_SEQS:-12}", "--max-num-batched-tokens", "${LLM_MAX_NUM_BATCHED_TOKENS:-8192}", "--gpu-memory-utilization", "${LLM_GPU_MEMORY_UTILIZATION:-0.90}"]
     ports:
       - "8000:8000"
     networks:
