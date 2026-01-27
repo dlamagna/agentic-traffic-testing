@@ -17,11 +17,12 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 - [5. Experimental idea (MVP)](#5-experimental-idea-mvp)
 - [6. Roadmap / Next Phases](#6-roadmap--next-phases)
 - [7. Repository layout](#7-repository-layout)
-- [8. Quick HTTP smoke test (curl)](#8-quick-http-smoke-test-curl)
-- [9. Chat UI scenarios](#9-chat-ui-scenarios)
-- [10. Shared GPU usage checks (read-only)](#10-shared-gpu-usage-checks-read-only)
-- [11. Health check script](#11-health-check-script)
-- [11. Next steps](#11-next-steps)
+- [8. LLM config](#8-llm-config)
+- [9. Quick HTTP smoke test (curl)](#9-quick-http-smoke-test-curl)
+- [10. Chat UI scenarios](#10-chat-ui-scenarios)
+- [11. Shared GPU usage checks (read-only)](#11-shared-gpu-usage-checks-read-only)
+- [12. Health check script](#12-health-check-script)
+- [13. Next steps](#13-next-steps)
 
 ---
 
@@ -31,49 +32,58 @@ The MVP architecture looks like this:
 
 ```mermaid
 flowchart LR
-    subgraph Host["Physical Server GPU"]
+    %% Physical host
+    subgraph Host["Physical Server (GPU)"]
+        
+        %% Virtual node 1: Agent A
         subgraph Node1["VM / Node 1 - Agent A"]
-            AgentA["Agent A MCP host and LLM client"]
-            AgentALogger["Agent A Telemetry Hooks TaskID AgentID ToolCallID"]
+            AgentA["Agent A (MCP host + LLM client)"]
+            AgentALogger["Agent A Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
         end
 
-        subgraph Node2["VM / Node 2 - Agent B and Tools"]
-            AgentB["Agent B MCP host and LLM client"]
-            Tool1["MCP Tool Server 1 DB or HTTP API"]
-            Tool2["MCP Tool Server 2 Synthetic microservice"]
-            BaselineSvc["Baseline Non agentic Service Fixed microservice chain"]
-            AgentBLogger["Agent B Telemetry Hooks TaskID AgentID ToolCallID"]
+        %% Virtual node 2: Agent B + tools
+        subgraph Node2["VM / Node 2 - Agent B + Tools"]
+            AgentB["Agent B (MCP host + LLM client)"]
+            Tool1["MCP Tool Server 1 (e.g. DB / HTTP API)"]
+            Tool2["MCP Tool Server 2 (e.g. Synthetic microservice)"]
+            BaselineSvc["Baseline Non-agentic Service (e.g. fixed microservice chain)"]
+            AgentBLogger["Agent B Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
         end
 
-        subgraph Node3["VM / Node 3 - LLM or SLM Server"]
-            LLM["Local LLM or SLM Server vLLM or similar"]
+        %% Virtual node 3: Local LLM / SLM server
+        subgraph Node3["VM / Node 3 - LLM / SLM Server"]
+            LLM["Local LLM / SLM Server (vLLM or similar)"]
         end
 
+        %% eBPF observability on each node
         subgraph Obs1["Node 1 eBPF"]
-            BCC1["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
+            BCC1["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
         subgraph Obs2["Node 2 eBPF"]
-            BCC2["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
+            BCC2["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
         subgraph Obs3["Node 3 eBPF"]
-            BCC3["BCC and bpftrace tools tcplife tcpconnect tcprtt tcpretrans"]
+            BCC3["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        MetricsDB["Optional Metrics Store Prometheus or log directory"]
+        %% Optional metrics store on host
+        MetricsDB["(Optional Metrics Store (e.g. Prometheus / logs folder))"]
     end
 
-    User(( "User or Benchmark Driver" )) -->| "User task or intent" | AgentA
-    AgentA -->| "Agent message or subtask" | AgentB
-    AgentA -->| "MCP tool calls" | Tool1
-    AgentB -->| "MCP tool calls" | Tool2
-    AgentA -->| "Service calls" | BaselineSvc
-    AgentB -->| "Service calls" | BaselineSvc
+    %% Traffic paths (logical)
+    User((User / Benchmark Driver)) -->|User task / intent| AgentA
+    AgentA -->|Agent message / subtask| AgentB
+    AgentA -->|MCP tool calls| Tool1
+    AgentB -->|MCP tool calls| Tool2
+    AgentA -->|Service calls| BaselineSvc
+    AgentB -->|Service calls| BaselineSvc
 
-    AgentA -->| "LLM queries" | LLM
-    AgentB -->| "LLM queries" | LLM
+    AgentA -->|LLM queries| LLM
+    AgentB -->|LLM queries| LLM
 
+    %% eBPF data flow
     AgentA --- BCC1
     AgentB --- BCC2
     Tool1 --- BCC2
@@ -81,11 +91,10 @@ flowchart LR
     BaselineSvc --- BCC2
     LLM --- BCC3
 
-    BCC1 -->| "export logs or metrics" | MetricsDB
-    BCC2 -->| "export logs or metrics" | MetricsDB
-    BCC3 -->| "export logs or metrics" | MetricsDB
-
-````
+    BCC1 -->|export logs / metrics| MetricsDB
+    BCC2 -->|export logs / metrics| MetricsDB
+    BCC3 -->|export logs / metrics| MetricsDB 
+```
 
 ### Components
 
@@ -342,13 +351,17 @@ Future phases build on the same core idea but add realism and complexity.
 └── README.md
 ```
 
-The `llm/` directory contains a vLLM-based backend targeting:
+`agents/` hosts Agent A and B. `llm/` contains the local vLLM backend. `infra/` has Docker Compose definitions, and `scripts/` includes helper utilities for running experiments and collecting metrics.
+
+## 8. LLM config
+
+The local LLM backend uses vLLM and defaults to:
 
 ```text
 meta-llama/Llama-3.1-8B-Instruct
 ```
 
-You can run it directly:
+Run it directly:
 
 ```bash
 pip install -r requirements.txt
@@ -368,12 +381,24 @@ Agents can point at this backend by setting `LLM_SERVER_URL`, e.g.:
 export LLM_SERVER_URL="http://llm-backend:8000/chat"
 ```
 
-You can also add runtime overrides to a `.env` file (loaded by Docker Compose), for example:
+### LLM runtime settings (.env)
+
+You can add runtime overrides to a `.env` file (loaded by Docker Compose):
 ```text
 LLM_TIMEOUT_SECONDS=120
 LLM_MAX_MODEL_LEN=4000
 LLM_MAX_CONCURRENCY=2
 ```
+
+For higher concurrency and better batching, tune vLLM scheduling with:
+```text
+LLM_DTYPE=float16
+LLM_MAX_NUM_SEQS=12
+LLM_MAX_NUM_BATCHED_TOKENS=8192
+LLM_GPU_MEMORY_UTILIZATION=0.90
+```
+
+`LLM_MAX_CONCURRENCY` controls the number of in-flight requests accepted by the local LLM HTTP server. If you increase it, ensure `LLM_MAX_MODEL_LEN` and the vLLM scheduling values fit your GPU memory budget.
 
 ### Changing the model served by llm-backend
 
@@ -387,7 +412,6 @@ To serve another model, edit the `command` array for `llm-backend` in `infra/doc
 cd infra
 docker compose up -d --build llm-backend
 ```
-
 
 If you want to point the stack at a different Hugging Face model, keep these files in sync depending on how you launch the backend:
 
@@ -406,7 +430,7 @@ Note: `HF_TOKEN` takes precedence. If it is set but invalid, the container will 
 
 You can evolve this as you move into Kubernetes and programmable networks.
 
-## 8. Quick HTTP smoke test (curl)
+## 9. Quick HTTP smoke test (curl)
 
 Once the stack is running (e.g. `cd infra && docker compose up --build -d llm-backend agent-a agent-b`), you can hit the HTTP endpoints directly. Replace `localhost` with the host that exposes the ports if you are forwarding them from another node.
 
@@ -435,19 +459,20 @@ The `task` field is required for Agent A, `subtask` for Agent B. `scenario` is o
 
 ---
 
-## 9. Chat UI scenarios
+## 10. Chat UI scenarios
 
 The chat UI (`ui/chat/index.html`) exposes a Scenario dropdown with:
 
 - `agentic_simple`: agent-to-LLM single hop.
 - `agentic_multi_hop`: Agent A calls Agent B before answering (behavioral change).
+- `agentic_parallel`: Agent A fans out into parallel Agent B workers and then synthesizes a final response.
 - `tool_call`: placeholder for routing the query to an MCP tool adapted to the task (not implemented yet).
 
-Only `agentic_multi_hop` changes runtime behavior today; `agentic_simple` and `tool_call` are labels used for telemetry and future experiment tracking.
+Only `agentic_multi_hop` and `agentic_parallel` change runtime behavior today; `agentic_simple` and `tool_call` are labels used for telemetry and future experiment tracking.
 
 ---
 
-## 10. Shared GPU usage checks (read-only)
+## 11. Shared GPU usage checks (read-only)
 
 This server is shared. Before running workloads, **check GPU usage and memory without disrupting other users**:
 
@@ -470,7 +495,7 @@ Avoid killing or restarting processes you do not own. If GPU memory is tight, lo
 
 ---
 
-## 11. Health check script
+## 12. Health check script
 
 The `scripts/health_check.py` script provides comprehensive health checks for the entire testbed. It verifies:
 
@@ -559,7 +584,7 @@ If checks fail, the script provides specific error messages and troubleshooting 
 
 ---
 
-## 11. Next steps
+## 13. Next steps
 
 Immediate next steps to make this repo useful:
 
@@ -577,6 +602,5 @@ Immediate next steps to make this repo useful:
    * Start eBPF probes.
    * Dump all logs into `logs/` with timestamps.
 
-From there, you can start collecting and analysing traffic-shape data for your first write-up.
 
 
