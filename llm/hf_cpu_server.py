@@ -5,7 +5,7 @@ Endpoints:
   POST /chat   { "prompt": "text" } -> { "output": "text" }
 
 Environment:
-  MODEL_NAME (default: meta-llama/Llama-3.1-8B-Instruct)
+  LLM_MODEL (or MODEL_NAME) (default: meta-llama/Llama-3.1-8B-Instruct)
   HOST (default: 0.0.0.0)
   PORT (default: 8000)
   HF_TOKEN / HUGGINGFACE_HUB_TOKEN for gated models (optional)
@@ -22,7 +22,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+MODEL_NAME = os.environ.get("LLM_MODEL") or os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 

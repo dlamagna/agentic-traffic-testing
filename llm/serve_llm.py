@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from llm.tracing import get_tracer
 
 
-DEFAULT_MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+DEFAULT_MODEL_NAME = os.environ.get("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 LOG_LLM_REQUESTS = os.environ.get("LOG_LLM_REQUESTS", "").lower() in ("1", "true", "yes", "on")
 LOG_LLM_MAX_CHARS = int(os.environ.get("LLM_LOG_MAX_CHARS", "500"))
 LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "1"))
@@ -278,13 +278,21 @@ class LLMRequestHandler(BaseHTTPRequestHandler):
             error_payload: Optional[Dict[str, str]] = None
             wait_ms = 0
             try:
-                queue_start = time.monotonic()
-                _LLM_SEMAPHORE.acquire()
-                wait_ms = int((time.monotonic() - queue_start) * 1000)
-                span.set_attribute("app.queue_wait_ms", wait_ms)
-                if wait_ms > 0:
-                    print(f"[llm-queue] waited_ms={wait_ms} concurrency={LLM_MAX_CONCURRENCY}")
-                text = self.backend.generate(prompt)
+                with self.tracer.start_as_current_span("llm.wait_for_slot") as wait_span:
+                    queue_start = time.monotonic()
+                    _LLM_SEMAPHORE.acquire()
+                    wait_ms = int((time.monotonic() - queue_start) * 1000)
+                    wait_span.set_attribute("llm.queue_wait_ms", wait_ms)
+                    span.set_attribute("app.queue_wait_ms", wait_ms)
+                    if wait_ms > 0:
+                        print(f"[llm-queue] waited_ms={wait_ms} concurrency={LLM_MAX_CONCURRENCY}")
+
+                with self.tracer.start_as_current_span("llm.generate") as gen_span:
+                    gen_start = time.monotonic()
+                    text = self.backend.generate(prompt)
+                    gen_ms = int((time.monotonic() - gen_start) * 1000)
+                    gen_span.set_attribute("llm.generate_ms", gen_ms)
+
                 prompt_tokens = self.backend.count_tokens(prompt)
                 completion_tokens = self.backend.count_tokens(text)
                 if prompt_tokens is not None:
