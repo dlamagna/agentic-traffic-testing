@@ -10,7 +10,7 @@ from opentelemetry.trace import SpanKind
 
 import httpx
 
-from agents.agent_a.main import AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
+from agents.agent_a.main import AGENT_B_URL, AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 

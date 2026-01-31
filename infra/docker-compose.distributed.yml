@@ -96,7 +96,7 @@ services:
       - AGENT_B_TIMEOUT_SECONDS=${AGENT_B_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -134,7 +134,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -164,7 +164,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -194,7 +194,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -224,7 +224,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -254,7 +254,7 @@ services:
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
     depends_on:
       llm-backend:
         condition: service_healthy
