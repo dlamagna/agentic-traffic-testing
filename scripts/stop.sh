@@ -135,10 +135,11 @@ case "${DEPLOYMENT_MODE}" in
     
     if [[ "${REMOVE_NETWORKS}" == "true" ]]; then
       echo "[*] Removing distributed networks..."
-      docker network rm agentic-traffic-testing_agent_a_network 2>/dev/null || true
-      docker network rm agentic-traffic-testing_agent_b_network 2>/dev/null || true
-      docker network rm agentic-traffic-testing_llm_network 2>/dev/null || true
-      docker network rm agentic-traffic-testing_inter_agent_network 2>/dev/null || true
+      docker network rm infra_agent_a_network 2>/dev/null || true
+      docker network rm infra_agent_b_network 2>/dev/null || true
+      docker network rm infra_llm_network 2>/dev/null || true
+      docker network rm infra_inter_agent_network 2>/dev/null || true
+      docker network rm infra_tools_network 2>/dev/null || true
     fi
     ;;
     

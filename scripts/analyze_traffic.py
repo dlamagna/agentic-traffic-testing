@@ -47,6 +47,7 @@ except ImportError:
 
 # IP address to service mapping for distributed mode
 SERVICE_IPS = {
+    # inter_agent_network IPs (172.23.0.0/24)
     "172.23.0.10": "agent-a",
     "172.23.0.20": "agent-b-1",
     "172.23.0.21": "agent-b-2",
@@ -57,6 +58,8 @@ SERVICE_IPS = {
     "172.23.0.40": "mcp-tool-db",
     "172.23.0.50": "chat-ui",
     "172.23.0.60": "jaeger",
+    # tools_network IPs (172.24.0.0/24)
+    "172.24.0.10": "mcp-tool-db",
 }
 
 

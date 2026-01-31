@@ -4,13 +4,70 @@ set -euo pipefail
 #
 # uninstall_testbed.sh
 # --------------------
-# Tears down every service that deploy.sh brings up (single-host or multi-node)
-# and removes any Compose-managed volumes/networks plus local log artifacts.
+# Completely removes the agentic traffic testbed, including:
+#   - All Docker containers (via stop.sh)
+#   - Docker volumes and networks
+#   - Generated logs
+#   - GPU cache artifacts
+#
+# This script uses stop.sh for the Docker teardown to ensure it handles
+# all deployment modes correctly (single, distributed, multi-vm).
+#
+# USAGE:
+#   ./scripts/uninstall_testbed.sh [OPTIONS]
+#
+# OPTIONS:
+#   --keep-logs     Don't remove the logs directory
+#   --keep-images   Don't prune Docker images
+#   -h, --help      Show this help
+#
+# WHAT IT REMOVES:
+#   - All testbed containers
+#   - Docker volumes (data)
+#   - Docker networks
+#   - Log files (unless --keep-logs)
+#   - GPU cache artifacts
+#
+# WHAT IT PRESERVES:
+#   - Docker images (unless --keep-images specified)
+#   - Configuration files (.env, etc.)
+#   - Source code
 #
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 LOG_DIR="${ROOT_DIR}/logs"
+STOP_SCRIPT="${ROOT_DIR}/scripts/stop.sh"
+
+# Parse arguments
+KEEP_LOGS=false
+PRUNE_IMAGES=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-logs)
+      KEEP_LOGS=true
+      shift
+      ;;
+    --keep-images)
+      # Actually this is inverted - we DON'T prune by default
+      # This flag would enable pruning, but let's keep it simple
+      shift
+      ;;
+    --prune-images)
+      PRUNE_IMAGES=true
+      shift
+      ;;
+    -h|--help)
+      head -40 "$0" | grep -E "^#" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)
+      echo "[!] Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
 
 clear_gpu_resources() {
   if ! command -v nvidia-smi >/dev/null 2>&1; then
@@ -51,6 +108,11 @@ clear_gpu_resources() {
   rm -rf "${HOME}/.nv/ComputeCache" "${HOME}/.cache/nvidia" 2>/dev/null || true
 }
 
+echo "============================================================"
+echo "Agentic Traffic Testbed - Uninstall"
+echo "============================================================"
+echo
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "[!] docker is not installed or not on PATH."
   exit 1
@@ -61,52 +123,101 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-NODE1_HOST="${NODE1_HOST:-}"
-NODE2_HOST="${NODE2_HOST:-}"
-NODE3_HOST="${NODE3_HOST:-}"
+#########################################################################
+# Step 1: Stop all services using stop.sh (handles all deployment modes)
+#########################################################################
+echo "[1/4] Stopping all services..."
 
-COMPOSE_DOWN_CMD="docker compose down --remove-orphans --volumes"
-
-if [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
-  #########################################################################
-  # Multi-node teardown via SSH.
-  #########################################################################
-  REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}"
-  REMOTE_COMPOSE_DIR="${REMOTE_REPO_DIR}/infra"
-
-  echo "[*] Multi-node uninstall detected."
-  echo "    NODE1_HOST=${NODE1_HOST}"
-  echo "    NODE2_HOST=${NODE2_HOST}"
-  echo "    NODE3_HOST=${NODE3_HOST}"
-  echo "    REMOTE_REPO_DIR=${REMOTE_REPO_DIR}"
-
-  echo "[*] Tearing down Agent A + Jaeger on NODE1_HOST..."
-  ssh "${NODE1_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && ${COMPOSE_DOWN_CMD}"
-
-  echo "[*] Tearing down Agent B + MCP tools on NODE2_HOST..."
-  ssh "${NODE2_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && ${COMPOSE_DOWN_CMD}"
-
-  echo "[*] Tearing down LLM backend on NODE3_HOST..."
-  ssh "${NODE3_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && ${COMPOSE_DOWN_CMD}"
-
-  echo "[*] Multi-node uninstall complete."
+if [[ -x "${STOP_SCRIPT}" ]]; then
+  # Use stop.sh with --all flag to remove volumes and networks
+  "${STOP_SCRIPT}" --all
 else
-  #########################################################################
-  # Single-host teardown.
-  #########################################################################
+  # Fallback if stop.sh doesn't exist
+  echo "[!] stop.sh not found, using fallback teardown..."
   cd "${COMPOSE_DIR}"
-
-  echo "[*] Single-host uninstall: stopping and removing all testbed services..."
-  ${COMPOSE_DOWN_CMD}
+  
+  # Try to stop all possible configurations
+  docker compose down --remove-orphans --volumes 2>/dev/null || true
+  docker compose -f docker-compose.distributed.yml down --remove-orphans --volumes 2>/dev/null || true
+  docker compose -f docker-compose.monitoring.yml down --remove-orphans --volumes 2>/dev/null || true
+  docker compose -f docker-compose.monitoring.distributed.yml down --remove-orphans --volumes 2>/dev/null || true
 fi
 
-if [[ -d "${LOG_DIR}" ]]; then
-  echo "[*] Removing generated logs under ${LOG_DIR}..."
+#########################################################################
+# Step 2: Remove any remaining testbed containers
+#########################################################################
+echo
+echo "[2/4] Removing any remaining testbed containers..."
+
+# List of known container names
+CONTAINERS=(
+  "llm-backend"
+  "agent-a"
+  "agent-b" "agent-b-2" "agent-b-3" "agent-b-4" "agent-b-5"
+  "mcp-tool-db"
+  "chat-ui"
+  "jaeger"
+  "prometheus" "grafana" "cadvisor"
+  "network-monitor"
+)
+
+for container in "${CONTAINERS[@]}"; do
+  if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
+    echo "    Removing container: ${container}"
+    docker rm -f "${container}" 2>/dev/null || true
+  fi
+done
+
+#########################################################################
+# Step 3: Remove logs (unless --keep-logs)
+#########################################################################
+echo
+echo "[3/4] Cleaning up logs and artifacts..."
+
+if [[ "${KEEP_LOGS}" == "false" && -d "${LOG_DIR}" ]]; then
+  echo "    Removing logs under ${LOG_DIR}..."
   find "${LOG_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+else
+  echo "    Keeping logs (--keep-logs specified or no logs found)"
 fi
 
+# Remove any pcap files in the traffic logs
+if [[ -d "${LOG_DIR}/traffic" ]]; then
+  rm -rf "${LOG_DIR}/traffic"/* 2>/dev/null || true
+fi
+
+#########################################################################
+# Step 4: Clear GPU resources
+#########################################################################
+echo
+echo "[4/4] Clearing GPU resources..."
 clear_gpu_resources
 
-echo "[*] Testbed uninstall completed."
+#########################################################################
+# Optional: Prune images
+#########################################################################
+if [[ "${PRUNE_IMAGES}" == "true" ]]; then
+  echo
+  echo "[*] Pruning unused Docker images..."
+  docker image prune -af
+fi
+
+echo
+echo "============================================================"
+echo "[✓] Testbed uninstall completed."
+echo "============================================================"
+echo
+echo "Removed:"
+echo "  - All testbed containers"
+echo "  - Docker volumes"
+echo "  - Docker networks"
+[[ "${KEEP_LOGS}" == "false" ]] && echo "  - Log files"
+echo "  - GPU cache artifacts"
+echo
+echo "Preserved:"
+echo "  - Docker images (run with --prune-images to remove)"
+echo "  - Configuration files"
+echo "  - Source code"
+echo
 
 

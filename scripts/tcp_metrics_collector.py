@@ -39,7 +39,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Optional, Set, Tuple
 
-# Service IP mapping for distributed mode
+# Service IP mapping for distributed mode (inter_agent_network IPs)
 SERVICE_IPS = {
     "172.23.0.10": "agent_a",
     "172.23.0.20": "agent_b_1",
@@ -51,6 +51,8 @@ SERVICE_IPS = {
     "172.23.0.40": "mcp_tool_db",
     "172.23.0.50": "chat_ui",
     "172.23.0.60": "jaeger",
+    # Tools network IPs (for traffic within tools_network)
+    "172.24.0.10": "mcp_tool_db",
 }
 
 

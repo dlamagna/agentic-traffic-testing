@@ -5,9 +5,10 @@
 #
 # Network layout:
 #   - agent_a_network (172.20.0.0/24): Agent A's isolated network
-#   - agent_b_network (172.21.0.0/24): Agent B instances + MCP tools
+#   - agent_b_network (172.21.0.0/24): Agent B instances
 #   - llm_network (172.22.0.0/24): LLM backend
 #   - inter_agent_network (172.23.0.0/24): Cross-service communication
+#   - tools_network (172.24.0.0/24): MCP tools/servers
 #
 # Each service connects to its "home" network plus inter_agent_network.
 # This creates observable traffic patterns between logical nodes.
@@ -270,7 +271,7 @@ services:
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
 
   # ---------------------------------------------------------------------------
-  # MCP Tool DB (Node 2 - with Agent B)
+  # MCP Tool DB (Node 4 - Tools Network)
   # ---------------------------------------------------------------------------
   mcp-tool-db:
     build:
@@ -279,13 +280,13 @@ services:
     container_name: mcp-tool-db
     hostname: mcp-tool-db
     environment:
-      - NODE_NAME=node2_toolDB
+      - NODE_NAME=node4_toolDB
       - MCP_TOOL_DB_PORT=8201
     ports:
       - "8201:8201"
     networks:
-      agent_b_network:
-        ipv4_address: ${MCP_TOOL_DB_IP:-172.21.0.20}
+      tools_network:
+        ipv4_address: ${MCP_TOOL_DB_IP:-172.24.0.10}
       inter_agent_network:
         ipv4_address: ${MCP_TOOL_DB_INTER_IP:-172.23.0.40}
 
@@ -352,7 +353,7 @@ networks:
       config:
         - subnet: ${NETWORK_AGENT_A_SUBNET:-172.20.0.0/24}
 
-  # Agent B + tools isolated network
+  # Agent B instances isolated network
   agent_b_network:
     driver: bridge
     ipam:
@@ -372,3 +373,10 @@ networks:
     ipam:
       config:
         - subnet: ${NETWORK_INTER_AGENT_SUBNET:-172.23.0.0/24}
+
+  # MCP Tools/Servers isolated network
+  tools_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_TOOLS_SUBNET:-172.24.0.0/24}

@@ -173,9 +173,10 @@ elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   echo "[*] Distributed deployment: separate Docker networks per logical node."
   echo "    Networks:"
   echo "      - agent_a_network (172.20.0.0/24): Agent A"
-  echo "      - agent_b_network (172.21.0.0/24): Agent B instances + MCP tools"
+  echo "      - agent_b_network (172.21.0.0/24): Agent B instances"
   echo "      - llm_network (172.22.0.0/24): LLM backend"
   echo "      - inter_agent_network (172.23.0.0/24): Cross-service communication"
+  echo "      - tools_network (172.24.0.0/24): MCP tools/servers"
   echo
 
   echo "[*] Building and starting services with distributed network topology..."
