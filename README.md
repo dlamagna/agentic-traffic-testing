@@ -41,11 +41,9 @@ flowchart LR
             AgentALogger["Agent A Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
         end
 
-        %% Virtual node 2: Agent B + tools
-        subgraph Node2["VM / Node 2 - Agent B + Tools"]
+        %% Virtual node 2: Agent B
+        subgraph Node2["VM / Node 2 - Agent B"]
             AgentB["Agent B (MCP host + LLM client)"]
-            Tool1["MCP Tool Server 1 (e.g. DB / HTTP API)"]
-            Tool2["MCP Tool Server 2 (e.g. Synthetic microservice)"]
             BaselineSvc["Baseline Non-agentic Service (e.g. fixed microservice chain)"]
             AgentBLogger["Agent B Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
         end
@@ -53,6 +51,13 @@ flowchart LR
         %% Virtual node 3: Local LLM / SLM server
         subgraph Node3["VM / Node 3 - LLM / SLM Server"]
             LLM["Local LLM / SLM Server (vLLM or similar)"]
+        end
+
+        %% Virtual node 4: MCP Tool Servers
+        subgraph Node4["VM / Node 4 - MCP Tool Servers"]
+            Tool1["MCP Tool Server 1 (e.g. DB / HTTP API)"]
+            Tool2["MCP Tool Server 2 (e.g. Synthetic microservice)"]
+            ToolN["MCP Tool Server N (additional tools)"]
         end
 
         %% eBPF observability on each node
@@ -68,6 +73,10 @@ flowchart LR
             BCC3["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
+        subgraph Obs4["Node 4 eBPF"]
+            BCC4["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
+        end
+
         %% Optional metrics store on host
         MetricsDB["(Optional Metrics Store (e.g. Prometheus / logs folder))"]
     end
@@ -76,6 +85,8 @@ flowchart LR
     User((User / Benchmark Driver)) -->|User task / intent| AgentA
     AgentA -->|Agent message / subtask| AgentB
     AgentA -->|MCP tool calls| Tool1
+    AgentA -->|MCP tool calls| Tool2
+    AgentB -->|MCP tool calls| Tool1
     AgentB -->|MCP tool calls| Tool2
     AgentA -->|Service calls| BaselineSvc
     AgentB -->|Service calls| BaselineSvc
@@ -86,14 +97,16 @@ flowchart LR
     %% eBPF data flow
     AgentA --- BCC1
     AgentB --- BCC2
-    Tool1 --- BCC2
-    Tool2 --- BCC2
     BaselineSvc --- BCC2
     LLM --- BCC3
+    Tool1 --- BCC4
+    Tool2 --- BCC4
+    ToolN --- BCC4
 
     BCC1 -->|export logs / metrics| MetricsDB
     BCC2 -->|export logs / metrics| MetricsDB
-    BCC3 -->|export logs / metrics| MetricsDB 
+    BCC3 -->|export logs / metrics| MetricsDB
+    BCC4 -->|export logs / metrics| MetricsDB
 ```
 
 ### Components
@@ -103,15 +116,19 @@ flowchart LR
   * Agent A: LLM-based agent (MCP host + LLM client).
   * Emits application-level telemetry: `TaskID`, `AgentID`, `ToolCallID`.
 
-* **Node 2 – Agent B + Tools**
+* **Node 2 – Agent B**
 
   * Agent B: second agent (e.g. planner, tool specialist, summariser).
-  * `Tool1` / `Tool2`: MCP tool servers (e.g. DB, HTTP API, synthetic microservice).
   * `BaselineSvc`: non-agentic baseline microservice chain (fixed call graph, no LLM).
 
 * **Node 3 – Local LLM / SLM**
 
   * Local LLM server (e.g. vLLM or similar) serving requests from Agent A and Agent B.
+
+* **Node 4 – MCP Tool Servers** *(separate from agents)*
+
+  * `Tool1` / `Tool2` / `ToolN`: MCP tool servers (e.g. DB, HTTP API, synthetic microservice).
+  * Isolated on a separate network to enable traffic analysis of agent ↔ tool communication.
 
 * **Observability**
 
@@ -238,13 +255,14 @@ sudo tcprtt > logs/tcprtt_node1_agentA.log
 
 ## 5. Experimental idea (MVP)
 
-For a single GPU server with 3 local nodes:
+For a single GPU server with 4 logical nodes (VMs or Docker networks):
 
 1. **Deploy:**
 
    * Node 1: Agent A.
-   * Node 2: Agent B, MCP tool servers, and the non-agentic baseline service.
+   * Node 2: Agent B and the non-agentic baseline service.
    * Node 3: Local LLM / SLM server.
+   * Node 4: MCP Tool Servers (isolated from agents for traffic analysis).
 
 2. **Define scenarios:**
 
@@ -266,6 +284,7 @@ For a single GPU server with 3 local nodes:
    * RTT distributions and tails.
    * Retransmission rates under load.
    * Traffic burst patterns (number and size of packets per task).
+   * Agent ↔ Tool traffic patterns (cross-network communication).
 
 This gives you the first “traffic-shape” insight for agentic vs non-agentic workloads.
 

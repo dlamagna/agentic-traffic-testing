@@ -1,0 +1,382 @@
+# =============================================================================
+# docker-compose.distributed.yml
+# =============================================================================
+# Distributed network topology for agentic traffic analysis.
+#
+# Network layout:
+#   - agent_a_network (172.20.0.0/24): Agent A's isolated network
+#   - agent_b_network (172.21.0.0/24): Agent B instances
+#   - llm_network (172.22.0.0/24): LLM backend
+#   - inter_agent_network (172.23.0.0/24): Cross-service communication
+#   - tools_network (172.24.0.0/24): MCP tools/servers
+#
+# Each service connects to its "home" network plus inter_agent_network.
+# This creates observable traffic patterns between logical nodes.
+#
+# Usage:
+#   Set DEPLOYMENT_MODE=distributed in .env, then run:
+#   ./scripts/deploy.sh
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # LLM Backend (Node 3)
+  # ---------------------------------------------------------------------------
+  llm-backend:
+    build:
+      context: ..
+      dockerfile: llm/Dockerfile
+    container_name: llm-backend
+    hostname: llm-backend
+    environment:
+      - NODE_NAME=node3_llm
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN}
+      - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN}}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - LLM_DTYPE=${LLM_DTYPE:-float16}
+      - LLM_MAX_NUM_SEQS=${LLM_MAX_NUM_SEQS:-12}
+      - LLM_MAX_NUM_BATCHED_TOKENS=${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
+      - LLM_GPU_MEMORY_UTILIZATION=${LLM_GPU_MEMORY_UTILIZATION:-0.90}
+      - LLM_METRICS_ENABLED=${LLM_METRICS_ENABLED:-1}
+      - LLM_METRICS_INCLUDE_TOKENS=${LLM_METRICS_INCLUDE_TOKENS:-1}
+      - LLM_METRICS_PREFIX=${LLM_METRICS_PREFIX:-llm}
+      - LLM_MODEL=${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+    command: >
+      python3 -m llm.serve_llm
+      --model ${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len ${LLM_MAX_MODEL_LEN:-4096}
+      --dtype ${LLM_DTYPE:-float16}
+      --max-num-seqs ${LLM_MAX_NUM_SEQS:-12}
+      --max-num-batched-tokens ${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
+      --gpu-memory-utilization ${LLM_GPU_MEMORY_UTILIZATION:-0.90}
+    ports:
+      - "8000:8000"
+    networks:
+      llm_network:
+        ipv4_address: ${LLM_BACKEND_IP:-172.22.0.10}
+      inter_agent_network:
+        ipv4_address: ${LLM_BACKEND_INTER_IP:-172.23.0.30}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+
+  # ---------------------------------------------------------------------------
+  # Agent A (Node 1)
+  # ---------------------------------------------------------------------------
+  agent-a:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-a
+    hostname: agent-a
+    environment:
+      # In distributed mode, use the inter-agent network IP for LLM
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node1_agentA
+      - AGENT_A_PORT=8101
+      - OTEL_SERVICE_NAME=agent-a
+      # Agent B URLs use inter-agent network IPs
+      - AGENT_B_URLS=http://${AGENT_B_INTER_IP:-172.23.0.20}:8102/subtask,http://${AGENT_B_2_INTER_IP:-172.23.0.21}:8103/subtask,http://${AGENT_B_3_INTER_IP:-172.23.0.22}:8104/subtask,http://${AGENT_B_4_INTER_IP:-172.23.0.23}:8105/subtask,http://${AGENT_B_5_INTER_IP:-172.23.0.24}:8106/subtask
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - AGENT_B_TIMEOUT_SECONDS=${AGENT_B_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8101:8101"
+    command: ["python", "-m", "agents.agent_a.server"]
+    networks:
+      agent_a_network:
+        ipv4_address: ${AGENT_A_IP:-172.20.0.10}
+      inter_agent_network:
+        ipv4_address: ${AGENT_A_INTER_IP:-172.23.0.10}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "agent-b:${AGENT_B_INTER_IP:-172.23.0.20}"
+      - "agent-b-2:${AGENT_B_2_INTER_IP:-172.23.0.21}"
+      - "agent-b-3:${AGENT_B_3_INTER_IP:-172.23.0.22}"
+      - "agent-b-4:${AGENT_B_4_INTER_IP:-172.23.0.23}"
+      - "agent-b-5:${AGENT_B_5_INTER_IP:-172.23.0.24}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  # ---------------------------------------------------------------------------
+  # Agent B instances (Node 2)
+  # ---------------------------------------------------------------------------
+  agent-b:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b
+    hostname: agent-b
+    environment:
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node2_agentB
+      - AGENT_B_PORT=8102
+      - OTEL_SERVICE_NAME=agent-b-1
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8102:8102"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      agent_b_network:
+        ipv4_address: ${AGENT_B_IP:-172.21.0.10}
+      inter_agent_network:
+        ipv4_address: ${AGENT_B_INTER_IP:-172.23.0.20}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  agent-b-2:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-2
+    hostname: agent-b-2
+    environment:
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node2_agentB_2
+      - AGENT_B_PORT=8103
+      - OTEL_SERVICE_NAME=agent-b-2
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8103:8103"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      agent_b_network:
+        ipv4_address: ${AGENT_B_2_IP:-172.21.0.11}
+      inter_agent_network:
+        ipv4_address: ${AGENT_B_2_INTER_IP:-172.23.0.21}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  agent-b-3:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-3
+    hostname: agent-b-3
+    environment:
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node2_agentB_3
+      - AGENT_B_PORT=8104
+      - OTEL_SERVICE_NAME=agent-b-3
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8104:8104"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      agent_b_network:
+        ipv4_address: ${AGENT_B_3_IP:-172.21.0.12}
+      inter_agent_network:
+        ipv4_address: ${AGENT_B_3_INTER_IP:-172.23.0.22}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  agent-b-4:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-4
+    hostname: agent-b-4
+    environment:
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node2_agentB_4
+      - AGENT_B_PORT=8105
+      - OTEL_SERVICE_NAME=agent-b-4
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8105:8105"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      agent_b_network:
+        ipv4_address: ${AGENT_B_4_IP:-172.21.0.13}
+      inter_agent_network:
+        ipv4_address: ${AGENT_B_4_INTER_IP:-172.23.0.23}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  agent-b-5:
+    build:
+      context: ..
+      dockerfile: agents/Dockerfile
+    container_name: agent-b-5
+    hostname: agent-b-5
+    environment:
+      - LLM_SERVER_URL=http://${LLM_BACKEND_INTER_IP:-172.23.0.30}:8000/chat
+      - NODE_NAME=node2_agentB_5
+      - AGENT_B_PORT=8106
+      - OTEL_SERVICE_NAME=agent-b-5
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
+      - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "8106:8106"
+    command: ["python", "-m", "agents.agent_b.server"]
+    networks:
+      agent_b_network:
+        ipv4_address: ${AGENT_B_5_IP:-172.21.0.14}
+      inter_agent_network:
+        ipv4_address: ${AGENT_B_5_INTER_IP:-172.23.0.24}
+    extra_hosts:
+      - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
+      - "jaeger:${JAEGER_IP:-172.23.0.60}"
+
+  # ---------------------------------------------------------------------------
+  # MCP Tool DB (Node 4 - Tools Network)
+  # ---------------------------------------------------------------------------
+  mcp-tool-db:
+    build:
+      context: ..
+      dockerfile: tools/mcp_tool_db/Dockerfile
+    container_name: mcp-tool-db
+    hostname: mcp-tool-db
+    environment:
+      - NODE_NAME=node4_toolDB
+      - MCP_TOOL_DB_PORT=8201
+    ports:
+      - "8201:8201"
+    networks:
+      tools_network:
+        ipv4_address: ${MCP_TOOL_DB_IP:-172.24.0.10}
+      inter_agent_network:
+        ipv4_address: ${MCP_TOOL_DB_INTER_IP:-172.23.0.40}
+
+  # ---------------------------------------------------------------------------
+  # Chat UI (accessible from inter-agent network)
+  # ---------------------------------------------------------------------------
+  chat-ui:
+    build:
+      context: ..
+      dockerfile: ui/Dockerfile
+    container_name: chat-ui
+    hostname: chat-ui
+    ports:
+      - "3000:3000"
+    networks:
+      inter_agent_network:
+        ipv4_address: ${CHAT_UI_IP:-172.23.0.50}
+    depends_on:
+      - agent-a
+      - agent-b
+    extra_hosts:
+      - "agent-a:${AGENT_A_INTER_IP:-172.23.0.10}"
+
+  # ---------------------------------------------------------------------------
+  # Jaeger (tracing - accessible from all agents)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    hostname: jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    networks:
+      inter_agent_network:
+        ipv4_address: ${JAEGER_IP:-172.23.0.60}
+
+  # ---------------------------------------------------------------------------
+  # Network Monitor (optional - for traffic analysis)
+  # ---------------------------------------------------------------------------
+  # Uncomment to enable a privileged container for network debugging
+  # network-monitor:
+  #   image: nicolaka/netshoot
+  #   container_name: network-monitor
+  #   hostname: network-monitor
+  #   cap_add:
+  #     - NET_ADMIN
+  #     - SYS_ADMIN
+  #   networks:
+  #     - inter_agent_network
+  #   volumes:
+  #     - ../logs:/logs
+  #   command: /bin/bash -c "while true; do sleep 3600; done"
+
+# =============================================================================
+# Network Definitions
+# =============================================================================
+networks:
+  # Agent A's isolated network
+  agent_a_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_AGENT_A_SUBNET:-172.20.0.0/24}
+
+  # Agent B instances isolated network
+  agent_b_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_AGENT_B_SUBNET:-172.21.0.0/24}
+
+  # LLM backend isolated network
+  llm_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_LLM_SUBNET:-172.22.0.0/24}
+
+  # Inter-agent communication network (all services join this)
+  inter_agent_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_INTER_AGENT_SUBNET:-172.23.0.0/24}
+
+  # MCP Tools/Servers isolated network
+  tools_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_TOOLS_SUBNET:-172.24.0.0/24}

@@ -1,0 +1,103 @@
+# =============================================================================
+# docker-compose.monitoring.yml
+# =============================================================================
+# Monitoring stack for the Agentic Traffic Testbed.
+#
+# Adds:
+#   - Prometheus (metrics collection)
+#   - Grafana (dashboards and visualization)
+#   - cAdvisor (container metrics including network)
+#
+# Usage:
+#   # With single network mode
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+#   # With distributed mode
+#   docker compose -f docker-compose.distributed.yml -f docker-compose.monitoring.yml up -d
+#
+#   # Or use the deploy script with ENABLE_MONITORING=1
+#
+# Endpoints:
+#   - Grafana:    http://localhost:3001 (admin/admin)
+#   - Prometheus: http://localhost:9090
+#   - cAdvisor:   http://localhost:8080
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Prometheus - Metrics Collection
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    hostname: prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=7d'
+    ports:
+      - "9090:9090"
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana - Dashboards and Visualization
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    hostname: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_HTTP_PORT=3001
+      # Anonymous access for easy viewing
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3001"
+    networks:
+      - agent-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # cAdvisor - Container Metrics
+  # ---------------------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: cadvisor
+    hostname: cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+networks:
+  agent-net:
+    external: true
+    name: infra_agent-net
+
+volumes:
+  prometheus_data:
+  grafana_data:

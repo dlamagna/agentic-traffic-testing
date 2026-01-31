@@ -47,6 +47,21 @@ endpoint_path_for_service() {
     mcp-tool-db)
       echo "/query"
       ;;
+    jaeger)
+      echo ""  # Jaeger UI is at root
+      ;;
+    grafana)
+      echo ""  # Grafana UI is at root
+      ;;
+    prometheus)
+      echo ""  # Prometheus UI is at root
+      ;;
+    cadvisor)
+      echo ""  # cAdvisor UI is at root
+      ;;
+    chat-ui)
+      echo ""  # Chat UI is at root
+      ;;
     *)
       echo ""
       ;;
@@ -80,6 +95,9 @@ def path_for(service):
         return "/subtask"
     if service == "mcp-tool-db":
         return "/query"
+    # Monitoring and UI services (root path)
+    if service in ("jaeger", "grafana", "prometheus", "cadvisor", "chat-ui"):
+        return ""
     return ""
 
 def iter_items():
@@ -144,6 +162,9 @@ def path_for(service):
         return "/subtask"
     if service == "mcp-tool-db":
         return "/query"
+    # Monitoring and UI services (root path)
+    if service in ("jaeger", "grafana", "prometheus", "cadvisor", "chat-ui"):
+        return ""
     return ""
 
 try:
