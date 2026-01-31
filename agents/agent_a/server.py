@@ -11,6 +11,7 @@ from opentelemetry.trace import SpanKind
 import httpx
 
 from agents.agent_a.main import AGENT_B_URL, AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
+from agents.agent_a.orchestrator import AgentVerseOrchestrator
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 
@@ -116,8 +117,63 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_agentverse(self) -> None:
+        """Handle AgentVerse 4-stage workflow requests."""
+        with self.tracer.start_as_current_span("agent_a.agentverse_workflow") as span:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            try:
+                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+
+            task = data.get("task")
+            if not isinstance(task, str) or not task:
+                self._send_json(400, {"error": "Missing 'task' field"})
+                return
+
+            max_iterations = data.get("max_iterations", 3)
+            if not isinstance(max_iterations, int) or max_iterations < 1:
+                max_iterations = 3
+            max_iterations = min(max_iterations, 5)  # Cap at 5
+
+            span.set_attribute("app.task", task)
+            span.set_attribute("app.max_iterations", max_iterations)
+
+            # Create logger and task ID
+            logger = TelemetryLogger(agent_id="AgentA-Orchestrator", scenario="agentic_verse")
+            task_id = logger.new_task_id()
+            span.set_attribute("app.task_id", task_id)
+
+            logger.log(
+                task_id=task_id,
+                event_type="agentverse_request_received",
+                message=f"Received AgentVerse request: {task[:100]}...",
+                extra={"max_iterations": max_iterations},
+            )
+
+            try:
+                # Create orchestrator and run workflow
+                orchestrator = AgentVerseOrchestrator(logger=logger, tracer=self.tracer)
+                result = orchestrator.run_workflow(
+                    task=task,
+                    task_id=task_id,
+                    max_iterations=max_iterations,
+                )
+                
+                self._send_json(200, result)
+            except Exception as exc:
+                logger.log(
+                    task_id=task_id,
+                    event_type="agentverse_error",
+                    message=f"AgentVerse workflow failed: {exc}",
+                )
+                self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
+
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path != "/task":
+        if self.path not in ("/task", "/agentverse"):
             self.send_response(404)
         else:
             self.send_response(204)
@@ -125,6 +181,10 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # type: ignore[override]
+        if self.path == "/agentverse":
+            self._handle_agentverse()
+            return
+        
         if self.path != "/task":
             self._send_json(404, {"error": "Not found"})
             return
