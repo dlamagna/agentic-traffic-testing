@@ -1,0 +1,63 @@
+# Prometheus configuration for Agentic Traffic Testbed
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # cAdvisor - Container metrics (CPU, memory, network)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    metric_relabel_configs:
+      # Keep only agent and LLM container metrics
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: '(agent-a|agent-b.*|llm-backend|mcp-tool-db)'
+        action: keep
+
+  # TCP Metrics Collector (runs on host, captures packet-level metrics)
+  # Start with: sudo python scripts/tcp_metrics_collector.py
+  - job_name: 'tcp-metrics'
+    static_configs:
+      # Use host.docker.internal on Docker Desktop, or host IP on Linux
+      - targets: ['host.docker.internal:9100']
+    scrape_interval: 5s
+    # Fallback for Linux (Docker doesn't have host.docker.internal)
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: 'host.docker.internal:(.*)'
+        target_label: __address__
+        replacement: '172.17.0.1:$1'
+
+  # LLM Backend metrics (if exposed)
+  - job_name: 'llm-backend'
+    static_configs:
+      - targets: ['llm-backend:8000']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Agent A metrics (if we add a /metrics endpoint)
+  - job_name: 'agent-a'
+    static_configs:
+      - targets: ['agent-a:8101']
+    metrics_path: /metrics
+    scrape_interval: 5s
+    # Don't fail if endpoint doesn't exist yet
+    honor_labels: true
+
+  # Agent B metrics
+  - job_name: 'agent-b'
+    static_configs:
+      - targets: 
+        - 'agent-b:8102'
+        - 'agent-b-2:8103'
+        - 'agent-b-3:8104'
+        - 'agent-b-4:8105'
+        - 'agent-b-5:8106'
+    metrics_path: /metrics
+    scrape_interval: 5s
+    honor_labels: true

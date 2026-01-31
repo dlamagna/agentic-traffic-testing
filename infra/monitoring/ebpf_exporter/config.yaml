@@ -1,0 +1,103 @@
+# eBPF Exporter configuration for TCP metrics
+# Reference: https://github.com/cloudflare/ebpf_exporter
+
+programs:
+  # TCP RTT histogram
+  - name: tcp_rtt
+    metrics:
+      histograms:
+        - name: tcp_rtt_microseconds
+          help: TCP RTT distribution in microseconds
+          table: rtt_hist
+          bucket_type: exp2
+          bucket_min: 0
+          bucket_max: 26
+          bucket_multiplier: 1
+          labels:
+            - name: bucket
+              size: 8
+              decoders:
+                - name: uint
+    kprobes:
+      tcp_rcv_established: trace_tcp_rcv
+    code: |
+      #include <uapi/linux/ptrace.h>
+      #include <net/sock.h>
+      #include <net/tcp.h>
+      #include <bcc/proto.h>
+
+      BPF_HISTOGRAM(rtt_hist, u64);
+
+      int trace_tcp_rcv(struct pt_regs *ctx, struct sock *sk) {
+          struct tcp_sock *ts = tcp_sk(sk);
+          u32 srtt = ts->srtt_us >> 3;
+          rtt_hist.increment(bpf_log2l(srtt));
+          return 0;
+      }
+
+  # TCP connection tracking
+  - name: tcp_connections
+    metrics:
+      counters:
+        - name: tcp_connections_total
+          help: Total TCP connections
+          table: conn_count
+          labels:
+            - name: state
+              size: 8
+              decoders:
+                - name: uint
+    tracepoints:
+      sock:inet_sock_set_state: trace_state
+    code: |
+      #include <uapi/linux/ptrace.h>
+      #include <net/sock.h>
+
+      BPF_HASH(conn_count, u64);
+
+      TRACEPOINT_PROBE(sock, inet_sock_set_state) {
+          u64 key = args->newstate;
+          u64 *val = conn_count.lookup(&key);
+          if (val) {
+              (*val)++;
+          } else {
+              u64 one = 1;
+              conn_count.update(&key, &one);
+          }
+          return 0;
+      }
+
+  # TCP retransmissions
+  - name: tcp_retrans
+    metrics:
+      counters:
+        - name: tcp_retransmits_total
+          help: Total TCP retransmissions
+          table: retrans
+          labels:
+            - name: type
+              size: 8
+              decoders:
+                - name: static_map
+                  static_map:
+                    1: timeout
+                    2: fast
+    kprobes:
+      tcp_retransmit_skb: trace_retrans
+    code: |
+      #include <uapi/linux/ptrace.h>
+      #include <net/sock.h>
+
+      BPF_HASH(retrans, u64);
+
+      int trace_retrans(struct pt_regs *ctx, struct sock *sk, struct sk_buff *skb) {
+          u64 key = 1; // timeout retransmit
+          u64 *val = retrans.lookup(&key);
+          if (val) {
+              (*val)++;
+          } else {
+              u64 one = 1;
+              retrans.update(&key, &one);
+          }
+          return 0;
+      }
