@@ -64,6 +64,17 @@ LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").l
     "on",
 )
 LLM_METRICS_PREFIX = os.environ.get("LLM_METRICS_PREFIX", "llm")
+# Whether to apply Llama 3 chat template to raw prompts
+LLM_APPLY_CHAT_TEMPLATE = os.environ.get("LLM_APPLY_CHAT_TEMPLATE", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+LLM_DEFAULT_SYSTEM_PROMPT = os.environ.get(
+    "LLM_DEFAULT_SYSTEM_PROMPT",
+    "You are a helpful AI assistant. Provide clear, concise, and accurate responses.",
+)
 
 _METRICS_READY = LLM_METRICS_ENABLED and Counter is not None and Gauge is not None and Histogram is not None
 
@@ -267,6 +278,49 @@ class AsyncVLLMBackend:
         except Exception:
             return None
 
+    def apply_chat_template(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        """Apply Llama 3 chat template to a raw prompt.
+        
+        Converts a plain text prompt into the proper Llama 3 Instruct format
+        with special tokens for system/user/assistant roles.
+        """
+        if not LLM_APPLY_CHAT_TEMPLATE:
+            return prompt
+        
+        self._resolve_tokenizer()
+        
+        # Build messages in chat format
+        messages = []
+        sys_prompt = system_prompt or LLM_DEFAULT_SYSTEM_PROMPT
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        # Try to use the tokenizer's built-in chat template
+        if self._tokenizer is not None and hasattr(self._tokenizer, "apply_chat_template"):
+            try:
+                formatted = self._tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                return formatted
+            except Exception as e:
+                print(f"[llm] Warning: apply_chat_template failed: {e}, using fallback")
+        
+        # Fallback: manually construct Llama 3 format
+        parts = ["<|begin_of_text|>"]
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            parts.append(f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>")
+        parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+        return "".join(parts)
+
 
 # Global backend instance (set during server startup)
 _backend: Optional[AsyncVLLMBackend] = None
@@ -335,13 +389,23 @@ async def handle_chat(request: web.Request) -> web.Response:
                 INFLIGHT.dec()
             return web.json_response({"error": "Missing 'prompt' field"}, status=400)
 
-        span.set_attribute("app.prompt_length", len(prompt))
+        # Apply chat template for Llama 3 Instruct format
+        system_prompt = data.get("system_prompt")  # Optional override
+        skip_template = data.get("skip_chat_template", False)
+        original_prompt = prompt
+        if not skip_template:
+            prompt = _backend.apply_chat_template(prompt, system_prompt)
+
+        span.set_attribute("app.prompt_length", len(original_prompt))
+        span.set_attribute("app.formatted_prompt_length", len(prompt))
+        span.set_attribute("app.chat_template_applied", not skip_template and LLM_APPLY_CHAT_TEMPLATE)
         if LOG_LLM_REQUESTS:
-            span.set_attribute("app.prompt_preview", prompt[:200])
-        _log_prompt("http", prompt)
+            span.set_attribute("app.prompt_preview", original_prompt[:200])
+        _log_prompt("http", original_prompt)
 
         # Log request start
-        print(f"[llm] req={request_id} START inflight={current_inflight} prompt_len={len(prompt)}", flush=True)
+        template_info = " (templated)" if (not skip_template and LLM_APPLY_CHAT_TEMPLATE) else ""
+        print(f"[llm] req={request_id} START inflight={current_inflight} prompt_len={len(original_prompt)}{template_info}", flush=True)
 
         status = "success"
         prompt_tokens: Optional[int] = None
