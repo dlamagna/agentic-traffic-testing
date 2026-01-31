@@ -30,18 +30,20 @@ flowchart LR
     Worker --> SKPlanner
     Critic --> SKPlanner
 
-    %% LLM backend used by SK
-    LLM["LLM Backend<br>(Llama via vLLM, TGI, Ollama, etc.)"]
-    SKPlanner --> LLM
+    %% LLM backend used by SK (separate node/network)
+    subgraph LLMNode["LLM Node (Separate Network)"]
+        LLM["LLM Backend<br>(Llama via vLLM, TGI, Ollama, etc.)"]
+    end
+    SKPlanner -->|LLM queries| LLM
 
-    %% Tooling layer (SK → MCP → Tools)
-    subgraph ToolsLayer["External Tools and Data Sources"]
+    %% Tooling layer - on separate node/network from agents
+    subgraph ToolsNode["MCP Tools Node (Separate Network)"]
         MCPTools["MCP Tool Servers"]
         HTTPAPI["REST / HTTP APIs"]
         DB["Databases / Internal Services"]
     end
 
-    SKSkills --> MCPTools
+    SKSkills -->|MCP tool calls<br>(cross-network)| MCPTools
     SKSkills --> HTTPAPI
     SKSkills --> DB
 
@@ -49,3 +51,19 @@ flowchart LR
     MCPTools -. "MCP Protocol" .- Orchestrator
 
 ```
+
+## Network Isolation
+
+The architecture separates agents, LLM backend, and MCP tools onto different networks/nodes:
+
+| Component | Network | Purpose |
+|-----------|---------|---------|
+| Agents (Planner, Worker, Critic) | `agent_network` | Inter-agent coordination |
+| LLM Backend | `llm_network` | Model inference |
+| MCP Tool Servers | `mcp_network` | External tool access |
+
+This separation enables:
+- **Traffic analysis**: Observable patterns between agents and tools
+- **Independent scaling**: Tools can scale independently of agents
+- **Security isolation**: Tool access can be controlled at the network level
+- **Latency measurement**: Real network hops between components
