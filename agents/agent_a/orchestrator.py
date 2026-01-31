@@ -1,0 +1,1241 @@
+"""
+AgentVerse Orchestrator Module
+
+Implements the 4-stage AgentVerse workflow:
+1. Expert Recruitment - Dynamically determine agent composition
+2. Collaborative Decision-Making - Horizontal or vertical communication
+3. Action Execution - Execute collaboratively-decided actions
+4. Evaluation - Assess results and provide feedback for iteration
+
+Based on: https://arxiv.org/pdf/2308.10848 (AgentVerse paper)
+"""
+
+import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+
+import httpx
+
+from opentelemetry import context as otel_context
+from opentelemetry import propagate
+from opentelemetry.trace import SpanKind
+
+from agents.common.telemetry import TelemetryLogger
+from agents.common.tracing import get_tracer
+
+
+# Configuration
+LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", "http://localhost:8000/chat")
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
+AGENT_B_TIMEOUT_SECONDS = float(os.environ.get("AGENT_B_TIMEOUT_SECONDS", "120"))
+MAX_PARALLEL_WORKERS = int(os.environ.get("MAX_PARALLEL_WORKERS", "5"))
+DEFAULT_AGENT_B_URL = os.environ.get("AGENT_B_URL", "http://agent-b:8102/subtask")
+AGENT_B_URLS = [
+    url.strip()
+    for url in os.environ.get("AGENT_B_URLS", "").split(",")
+    if url.strip()
+]
+if not AGENT_B_URLS:
+    AGENT_B_URLS = [DEFAULT_AGENT_B_URL]
+
+
+class CommunicationStructure(Enum):
+    HORIZONTAL = "horizontal"  # Democratic - all agents discuss
+    VERTICAL = "vertical"      # Solver + reviewers
+
+
+@dataclass
+class Expert:
+    """Represents a recruited expert agent."""
+    role: str
+    responsibilities: str
+    contract: str
+    endpoint: Optional[str] = None
+    index: int = 0
+
+
+@dataclass
+class RecruitmentResult:
+    """Result of the expert recruitment stage."""
+    experts: List[Expert]
+    communication_structure: CommunicationStructure
+    execution_order: List[str]
+    reasoning: str
+
+
+@dataclass
+class DecisionResult:
+    """Result of the collaborative decision-making stage."""
+    final_decision: str
+    discussion_rounds: List[Dict[str, Any]]
+    consensus_reached: bool
+    structure_used: str
+
+
+@dataclass
+class ExecutionResult:
+    """Result of the action execution stage."""
+    outputs: List[Dict[str, Any]]
+    success_count: int
+    failure_count: int
+
+
+@dataclass
+class EvaluationResult:
+    """Result of the evaluation stage."""
+    goal_achieved: bool
+    score: int
+    feedback: str
+    missing_aspects: List[str]
+    should_iterate: bool
+
+
+@dataclass
+class AgentVerseState:
+    """Complete state of an AgentVerse workflow execution."""
+    task_id: str
+    original_task: str
+    iteration: int = 0
+    max_iterations: int = 3
+    
+    # Stage results
+    recruitment: Optional[RecruitmentResult] = None
+    decision: Optional[DecisionResult] = None
+    execution: Optional[ExecutionResult] = None
+    evaluation: Optional[EvaluationResult] = None
+    
+    # History across iterations
+    iteration_history: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Detailed LLM request/response log for each call
+    llm_requests: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Final output
+    final_output: Optional[str] = None
+    completed: bool = False
+
+
+# ============================================================================
+# Prompts
+# ============================================================================
+
+EXPERT_RECRUITMENT_PROMPT = """You are the Orchestrator (Agent A) in an AgentVerse multi-agent system.
+Your job is to analyze the user's task and determine what expert agents are needed.
+
+User Task:
+{task}
+
+{feedback_context}
+
+Based on this task, determine:
+1. What specialized roles are needed? Choose from: planner, researcher, executor, critic, summarizer
+2. How many instances of each role (1-3 per role, max 5 total agents)?
+3. What specific responsibilities should each role have?
+4. Should agents use horizontal (democratic discussion) or vertical (solver + reviewers) communication?
+
+IMPORTANT: Return ONLY valid JSON with no extra text:
+{{
+  "experts": [
+    {{
+      "role": "planner",
+      "responsibilities": "Break down the task into subtasks with dependencies",
+      "contract": "You are a Planner agent. Your job is to analyze the problem and create a structured plan..."
+    }}
+  ],
+  "communication_structure": "horizontal",
+  "execution_order": ["planner", "researcher", "executor", "critic", "summarizer"],
+  "reasoning": "Brief explanation of why these experts were chosen"
+}}
+"""
+
+HORIZONTAL_DISCUSSION_PROMPT = """You are a {role} agent in a collaborative multi-agent discussion.
+
+Your Contract:
+{contract}
+
+Original Task:
+{task}
+
+Discussion History:
+{discussion_history}
+
+Current Round: {round_num}
+
+Provide your expert input on this task. Consider what others have said.
+If you believe consensus has been reached and no more input is needed, end your response with [CONSENSUS].
+Otherwise, provide constructive input that moves toward a solution.
+"""
+
+VERTICAL_SOLVER_PROMPT = """You are the Solver agent. Your job is to propose a solution.
+
+Your Contract:
+{contract}
+
+Original Task:
+{task}
+
+{previous_proposal}
+{critiques}
+
+Propose a detailed solution to the task. Be specific and actionable.
+"""
+
+VERTICAL_REVIEWER_PROMPT = """You are a {role} Reviewer agent. Your job is to critique the proposed solution.
+
+Your Contract:
+{contract}
+
+Original Task:
+{task}
+
+Proposed Solution:
+{proposal}
+
+Review this proposal critically:
+- Is it correct and complete?
+- Are there any errors or missing aspects?
+- What improvements would you suggest?
+
+If the proposal is acceptable, respond with [APPROVED].
+Otherwise, provide specific, constructive criticism.
+"""
+
+EXECUTION_PROMPT = """You are an {role} agent executing a specific subtask.
+
+Your Contract:
+{contract}
+
+Original Task:
+{task}
+
+Your Assigned Subtask:
+{subtask}
+
+Context from Decision Phase:
+{decision_context}
+
+Execute your subtask and provide a detailed result. Be specific and thorough.
+"""
+
+EVALUATION_PROMPT = """You are the Evaluator agent. Assess whether the goal has been achieved.
+
+Original Task:
+{task}
+
+Agent Results:
+{results}
+
+Iteration: {iteration} of {max_iterations}
+
+Evaluate the results:
+1. Is the original task fully addressed? (yes/no)
+2. Rate the quality of the solution (0-100)
+3. What aspects are missing or could be improved?
+4. Should we iterate with adjusted experts?
+
+IMPORTANT: Return ONLY valid JSON:
+{{
+  "goal_achieved": true,
+  "score": 85,
+  "feedback": "The solution addresses the main points but could improve...",
+  "missing_aspects": ["aspect1", "aspect2"],
+  "should_iterate": false
+}}
+"""
+
+FINAL_SYNTHESIS_PROMPT = """You are the Orchestrator synthesizing the final answer.
+
+Original Task:
+{task}
+
+Iteration History:
+{iteration_summary}
+
+Final Agent Results:
+{results}
+
+Evaluation:
+{evaluation}
+
+Synthesize a clear, comprehensive final answer for the user.
+Include all relevant findings and conclusions from the agent collaboration.
+"""
+
+
+class AgentVerseOrchestrator:
+    """
+    Orchestrator implementing the AgentVerse 4-stage workflow.
+    
+    Stages:
+    1. Expert Recruitment - Dynamically determine agent composition
+    2. Collaborative Decision-Making - Horizontal or vertical communication  
+    3. Action Execution - Execute collaboratively-decided actions
+    4. Evaluation - Assess results and provide feedback for iteration
+    """
+    
+    def __init__(self, logger: TelemetryLogger, tracer=None):
+        self.logger = logger
+        self.tracer = tracer or get_tracer("agent-a-orchestrator")
+        self.http_client = httpx.Client(timeout=LLM_TIMEOUT_SECONDS)
+    
+    def _call_llm(
+        self,
+        prompt: str,
+        headers: Optional[Dict[str, str]] = None
+    ) -> str:
+        """Call the LLM server."""
+        resp = self.http_client.post(
+            LLM_SERVER_URL,
+            json={"prompt": prompt},
+            headers=headers,
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data: Dict[str, Any] = resp.json()
+        return str(data.get("output", ""))
+    
+    def _call_agent_b(
+        self,
+        subtask: str,
+        scenario: str = "agentic_verse",
+        headers: Optional[Dict[str, str]] = None,
+        agent_b_role: Optional[str] = None,
+        agent_b_contract: Optional[str] = None,
+        agent_b_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Call an Agent B instance."""
+        payload: Dict[str, Any] = {"subtask": subtask, "scenario": scenario}
+        if agent_b_role:
+            payload["agent_b_role"] = agent_b_role
+        if agent_b_contract:
+            payload["agent_b_contract"] = agent_b_contract
+        
+        target_url = agent_b_url or DEFAULT_AGENT_B_URL
+        resp = self.http_client.post(
+            target_url,
+            json=payload,
+            headers=headers,
+            timeout=AGENT_B_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data: Dict[str, Any] = resp.json()
+        return {
+            "output": str(data.get("output", "")),
+            "llm_prompt": data.get("llm_prompt"),
+            "llm_response": data.get("llm_response"),
+            "llm_endpoint": data.get("llm_endpoint"),
+        }
+    
+    def _record_llm_request(
+        self,
+        state: AgentVerseState,
+        *,
+        stage: str,
+        label: str,
+        prompt: str,
+        response: str,
+        source: str = "Agent A",
+        agent_role: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        round_num: Optional[int] = None,
+    ) -> None:
+        """Record an LLM request/response for the detailed flow."""
+        seq = len(state.llm_requests) + 1
+        role = agent_role
+        if role is None and source == "Agent A":
+            role = "orchestrator"
+        entry: Dict[str, Any] = {
+            "seq": seq,
+            "iteration": state.iteration,
+            "stage": stage,
+            "label": label,
+            "source": source,
+            "prompt": prompt,
+            "response": response,
+            "endpoint": endpoint or LLM_SERVER_URL,
+        }
+        if role:
+            entry["agent_role"] = role
+        if round_num is not None:
+            entry["round"] = round_num
+        state.llm_requests.append(entry)
+    
+    def _parse_json_response(self, response: str, default: Any = None) -> Any:
+        """Parse JSON from LLM response, handling common issues."""
+        # Try to extract JSON from the response
+        response = response.strip()
+        
+        # If response starts with ```json, extract the content
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.startswith("```"):
+            response = response[3:]
+        if response.endswith("```"):
+            response = response[:-3]
+        
+        response = response.strip()
+        
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            # Try to find JSON object in the response
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start != -1 and end > start:
+                try:
+                    return json.loads(response[start:end])
+                except json.JSONDecodeError:
+                    pass
+            return default
+    
+    # ========================================================================
+    # Stage 1: Expert Recruitment
+    # ========================================================================
+    
+    def recruit_experts(
+        self,
+        state: AgentVerseState,
+        feedback: Optional[str] = None
+    ) -> RecruitmentResult:
+        """
+        Stage 1: Analyze the task and recruit appropriate expert agents.
+        """
+        with self.tracer.start_as_current_span(
+            "orchestrator.recruit_experts",
+            kind=SpanKind.INTERNAL,
+        ) as span:
+            span.set_attribute("app.task_id", state.task_id)
+            span.set_attribute("app.iteration", state.iteration)
+            
+            feedback_context = ""
+            if feedback:
+                feedback_context = f"\nFeedback from previous iteration:\n{feedback}\n"
+            
+            prompt = EXPERT_RECRUITMENT_PROMPT.format(
+                task=state.original_task,
+                feedback_context=feedback_context,
+            )
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_recruitment_start",
+                message="Starting expert recruitment",
+                extra={"iteration": state.iteration},
+            )
+            
+            headers: Dict[str, str] = {}
+            propagate.inject(headers)
+            response = self._call_llm(prompt, headers=headers)
+            
+            self._record_llm_request(
+                state,
+                stage="recruitment",
+                label="expert_recruitment",
+                prompt=prompt,
+                response=response,
+                source="Agent A",
+                agent_role="orchestrator",
+            )
+            
+            parsed = self._parse_json_response(response, {})
+            
+            # Parse experts
+            experts = []
+            raw_experts = parsed.get("experts", [])
+            for idx, expert_data in enumerate(raw_experts[:MAX_PARALLEL_WORKERS]):
+                endpoint = AGENT_B_URLS[idx % len(AGENT_B_URLS)]
+                experts.append(Expert(
+                    role=expert_data.get("role", "executor"),
+                    responsibilities=expert_data.get("responsibilities", ""),
+                    contract=expert_data.get("contract", ""),
+                    endpoint=endpoint,
+                    index=idx,
+                ))
+            
+            # Default experts if none parsed
+            if not experts:
+                experts = [
+                    Expert(
+                        role="executor",
+                        responsibilities="Execute the given task",
+                        contract="You are an executor agent. Complete the assigned task thoroughly.",
+                        endpoint=AGENT_B_URLS[0],
+                        index=0,
+                    )
+                ]
+            
+            # Parse communication structure
+            structure_str = parsed.get("communication_structure", "horizontal")
+            try:
+                structure = CommunicationStructure(structure_str.lower())
+            except ValueError:
+                structure = CommunicationStructure.HORIZONTAL
+            
+            # Use LLM reasoning if provided, else generate fallback from structure
+            raw_reasoning = parsed.get("reasoning", "").strip()
+            if raw_reasoning:
+                reasoning = raw_reasoning
+            else:
+                structure_desc = (
+                    "democratic discussion among all experts"
+                    if structure == CommunicationStructure.HORIZONTAL
+                    else "solver proposes, reviewers critique, solver refines"
+                )
+                reasoning = (
+                    f"Selected {structure.value} communication structure ({structure_desc}) "
+                    f"with {len(experts)} expert(s): {', '.join(e.role for e in experts)}."
+                )
+            
+            result = RecruitmentResult(
+                experts=experts,
+                communication_structure=structure,
+                execution_order=parsed.get("execution_order", [e.role for e in experts]),
+                reasoning=reasoning,
+            )
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_recruitment_complete",
+                message=f"Recruited {len(experts)} experts",
+                extra={
+                    "experts": [e.role for e in experts],
+                    "structure": structure.value,
+                    "reasoning": result.reasoning,
+                },
+            )
+            
+            span.set_attribute("app.expert_count", len(experts))
+            span.set_attribute("app.communication_structure", structure.value)
+            
+            return result
+    
+    # ========================================================================
+    # Stage 2: Collaborative Decision-Making
+    # ========================================================================
+    
+    def collaborative_decision(
+        self,
+        state: AgentVerseState,
+        recruitment: RecruitmentResult,
+    ) -> DecisionResult:
+        """
+        Stage 2: Agents engage in collaborative discussion to decide on approach.
+        """
+        with self.tracer.start_as_current_span(
+            "orchestrator.collaborative_decision",
+            kind=SpanKind.INTERNAL,
+        ) as span:
+            span.set_attribute("app.task_id", state.task_id)
+            span.set_attribute("app.structure", recruitment.communication_structure.value)
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_decision_start",
+                message=f"Starting {recruitment.communication_structure.value} decision-making",
+            )
+            
+            if recruitment.communication_structure == CommunicationStructure.HORIZONTAL:
+                return self._horizontal_discussion(state, recruitment)
+            else:
+                return self._vertical_decision(state, recruitment)
+    
+    def _horizontal_discussion(
+        self,
+        state: AgentVerseState,
+        recruitment: RecruitmentResult,
+        max_rounds: int = 3,
+    ) -> DecisionResult:
+        """Horizontal (democratic) discussion among all agents."""
+        discussion_rounds: List[Dict[str, Any]] = []
+        discussion_history = ""
+        consensus_reached = False
+        
+        for round_num in range(1, max_rounds + 1):
+            round_responses = []
+            all_consensus = True
+            
+            for expert in recruitment.experts:
+                prompt = HORIZONTAL_DISCUSSION_PROMPT.format(
+                    role=expert.role,
+                    contract=expert.contract,
+                    task=state.original_task,
+                    discussion_history=discussion_history or "(No discussion yet)",
+                    round_num=round_num,
+                )
+                
+                try:
+                    headers: Dict[str, str] = {}
+                    propagate.inject(headers)
+                    response = self._call_agent_b(
+                        subtask=prompt,
+                        agent_b_role=expert.role,
+                        agent_b_contract=expert.contract,
+                        agent_b_url=expert.endpoint,
+                        headers=headers,
+                    )
+                    output = response.get("output", "")
+                    llm_prompt = response.get("llm_prompt") or prompt
+                    llm_response = response.get("llm_response") or output
+                    self._record_llm_request(
+                        state,
+                        stage="decision",
+                        label=f"horizontal_discussion_round{round_num}",
+                        prompt=llm_prompt,
+                        response=llm_response,
+                        source=f"agent-b-{expert.index + 1}",
+                        agent_role=expert.role,
+                        endpoint=response.get("llm_endpoint"),
+                        round_num=round_num,
+                    )
+                except Exception as exc:
+                    output = f"[Agent error: {exc}]"
+                
+                round_responses.append({
+                    "expert": expert.role,
+                    "index": expert.index,
+                    "response": output,
+                    "consensus": "[CONSENSUS]" in output,
+                })
+                
+                if "[CONSENSUS]" not in output:
+                    all_consensus = False
+            
+            # Build history for next round
+            round_summary = f"\n--- Round {round_num} ---\n"
+            for resp in round_responses:
+                round_summary += f"{resp['expert'].upper()}: {resp['response']}\n"
+            discussion_history += round_summary
+            
+            discussion_rounds.append({
+                "round": round_num,
+                "responses": round_responses,
+            })
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_discussion_round",
+                message=f"Completed discussion round {round_num}",
+                extra={"round": round_num, "all_consensus": all_consensus},
+            )
+            
+            if all_consensus:
+                consensus_reached = True
+                break
+        
+        # Synthesize final decision from discussion
+        final_decision = self._synthesize_discussion(state, discussion_history)
+        
+        return DecisionResult(
+            final_decision=final_decision,
+            discussion_rounds=discussion_rounds,
+            consensus_reached=consensus_reached,
+            structure_used="horizontal",
+        )
+    
+    def _vertical_decision(
+        self,
+        state: AgentVerseState,
+        recruitment: RecruitmentResult,
+        max_iterations: int = 3,
+    ) -> DecisionResult:
+        """Vertical (solver + reviewers) decision-making."""
+        discussion_rounds: List[Dict[str, Any]] = []
+        
+        # Find solver (first expert) and reviewers (rest)
+        solver = recruitment.experts[0] if recruitment.experts else None
+        reviewers = recruitment.experts[1:] if len(recruitment.experts) > 1 else []
+        
+        if not solver:
+            return DecisionResult(
+                final_decision="No solver agent available",
+                discussion_rounds=[],
+                consensus_reached=False,
+                structure_used="vertical",
+            )
+        
+        proposal = ""
+        critiques = ""
+        
+        for iteration in range(1, max_iterations + 1):
+            # Solver proposes
+            previous_context = ""
+            if proposal:
+                previous_context = f"\nYour previous proposal:\n{proposal}\n"
+            critique_context = ""
+            if critiques:
+                critique_context = f"\nReviewer critiques:\n{critiques}\n"
+            
+            solver_prompt = VERTICAL_SOLVER_PROMPT.format(
+                contract=solver.contract,
+                task=state.original_task,
+                previous_proposal=previous_context,
+                critiques=critique_context,
+            )
+            
+            try:
+                headers: Dict[str, str] = {}
+                propagate.inject(headers)
+                response = self._call_agent_b(
+                    subtask=solver_prompt,
+                    agent_b_role=solver.role,
+                    agent_b_contract=solver.contract,
+                    agent_b_url=solver.endpoint,
+                    headers=headers,
+                )
+                proposal = response.get("output", "")
+                llm_prompt = response.get("llm_prompt") or solver_prompt
+                llm_response = response.get("llm_response") or proposal
+                self._record_llm_request(
+                    state,
+                    stage="decision",
+                    label=f"vertical_solver_iter{iteration}",
+                    prompt=llm_prompt,
+                    response=llm_response,
+                    source=f"agent-b-{solver.index + 1}",
+                    agent_role=solver.role,
+                    endpoint=response.get("llm_endpoint"),
+                    round_num=iteration,
+                )
+            except Exception as exc:
+                proposal = f"[Solver error: {exc}]"
+            
+            # Reviewers critique
+            reviewer_responses = []
+            all_approved = True
+            
+            for reviewer in reviewers:
+                reviewer_prompt = VERTICAL_REVIEWER_PROMPT.format(
+                    role=reviewer.role,
+                    contract=reviewer.contract,
+                    task=state.original_task,
+                    proposal=proposal,
+                )
+                
+                try:
+                    headers = {}
+                    propagate.inject(headers)
+                    response = self._call_agent_b(
+                        subtask=reviewer_prompt,
+                        agent_b_role=reviewer.role,
+                        agent_b_contract=reviewer.contract,
+                        agent_b_url=reviewer.endpoint,
+                        headers=headers,
+                    )
+                    critique = response.get("output", "")
+                    llm_prompt = response.get("llm_prompt") or reviewer_prompt
+                    llm_response = response.get("llm_response") or critique
+                    self._record_llm_request(
+                        state,
+                        stage="decision",
+                        label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
+                        prompt=llm_prompt,
+                        response=llm_response,
+                        source=f"agent-b-{reviewer.index + 1}",
+                        agent_role=reviewer.role,
+                        endpoint=response.get("llm_endpoint"),
+                        round_num=iteration,
+                    )
+                except Exception as exc:
+                    critique = f"[Reviewer error: {exc}]"
+                
+                reviewer_responses.append({
+                    "reviewer": reviewer.role,
+                    "critique": critique,
+                    "approved": "[APPROVED]" in critique,
+                })
+                
+                if "[APPROVED]" not in critique:
+                    all_approved = False
+            
+            critiques = "\n".join([
+                f"{r['reviewer']}: {r['critique']}"
+                for r in reviewer_responses
+            ])
+            
+            discussion_rounds.append({
+                "iteration": iteration,
+                "proposal": proposal,
+                "reviewer_responses": reviewer_responses,
+                "all_approved": all_approved,
+            })
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_vertical_iteration",
+                message=f"Completed vertical iteration {iteration}",
+                extra={"iteration": iteration, "all_approved": all_approved},
+            )
+            
+            if all_approved:
+                break
+        
+        return DecisionResult(
+            final_decision=proposal,
+            discussion_rounds=discussion_rounds,
+            consensus_reached=all_approved if reviewers else True,
+            structure_used="vertical",
+        )
+    
+    def _synthesize_discussion(
+        self,
+        state: AgentVerseState,
+        discussion_history: str,
+    ) -> str:
+        """Synthesize a final decision from discussion history."""
+        prompt = f"""You are the Orchestrator. Synthesize the discussion into a clear action plan.
+
+Original Task:
+{state.original_task}
+
+Discussion:
+{discussion_history}
+
+Provide a clear, actionable summary of what should be done based on the discussion.
+"""
+        
+        headers: Dict[str, str] = {}
+        propagate.inject(headers)
+        response = self._call_llm(prompt, headers=headers)
+        self._record_llm_request(
+            state,
+            stage="decision",
+            label="synthesize_discussion",
+            prompt=prompt,
+            response=response,
+            source="Agent A",
+            agent_role="orchestrator",
+        )
+        return response
+    
+    # ========================================================================
+    # Stage 3: Action Execution
+    # ========================================================================
+    
+    def execute_actions(
+        self,
+        state: AgentVerseState,
+        recruitment: RecruitmentResult,
+        decision: DecisionResult,
+    ) -> ExecutionResult:
+        """
+        Stage 3: Execute the collaboratively-decided actions.
+        """
+        with self.tracer.start_as_current_span(
+            "orchestrator.execute_actions",
+            kind=SpanKind.INTERNAL,
+        ) as span:
+            span.set_attribute("app.task_id", state.task_id)
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_execution_start",
+                message="Starting action execution",
+            )
+            
+            # Create subtasks based on decision
+            subtasks = self._create_subtasks(state, recruitment, decision)
+            
+            outputs: List[Dict[str, Any]] = []
+            success_count = 0
+            failure_count = 0
+            
+            # Execute subtasks in parallel
+            request_ctx = otel_context.get_current()
+            
+            def execute_subtask(
+                ctx: otel_context.Context,
+                expert: Expert,
+                subtask: str,
+            ) -> Dict[str, Any]:
+                token = otel_context.attach(ctx)
+                try:
+                    with self.tracer.start_as_current_span(
+                        f"orchestrator.execute_subtask.{expert.role}",
+                        kind=SpanKind.CLIENT,
+                    ):
+                        prompt = EXECUTION_PROMPT.format(
+                            role=expert.role,
+                            contract=expert.contract,
+                            task=state.original_task,
+                            subtask=subtask,
+                            decision_context=decision.final_decision[:500],
+                        )
+                        
+                        headers: Dict[str, str] = {}
+                        propagate.inject(headers)
+                        response = self._call_agent_b(
+                            subtask=prompt,
+                            agent_b_role=expert.role,
+                            agent_b_contract=expert.contract,
+                            agent_b_url=expert.endpoint,
+                            headers=headers,
+                        )
+                        llm_prompt = response.get("llm_prompt") or prompt
+                        llm_response = response.get("llm_response") or response.get("output", "")
+                        self._record_llm_request(
+                            state,
+                            stage="execution",
+                            label=f"execute_{expert.role}",
+                            prompt=llm_prompt,
+                            response=llm_response,
+                            source=f"agent-b-{expert.index + 1}",
+                            agent_role=expert.role,
+                            endpoint=response.get("llm_endpoint"),
+                        )
+                        return {
+                            "expert": expert.role,
+                            "index": expert.index,
+                            "subtask": subtask,
+                            "output": response.get("output", ""),
+                            "success": True,
+                        }
+                except Exception as exc:
+                    return {
+                        "expert": expert.role,
+                        "index": expert.index,
+                        "subtask": subtask,
+                        "output": f"Execution failed: {exc}",
+                        "success": False,
+                    }
+                finally:
+                    otel_context.detach(token)
+            
+            with ThreadPoolExecutor(max_workers=len(recruitment.experts)) as executor:
+                futures = []
+                for expert, subtask in zip(recruitment.experts, subtasks):
+                    future = executor.submit(
+                        execute_subtask,
+                        request_ctx,
+                        expert,
+                        subtask,
+                    )
+                    futures.append(future)
+                
+                for future in as_completed(futures):
+                    result = future.result()
+                    outputs.append(result)
+                    if result.get("success"):
+                        success_count += 1
+                    else:
+                        failure_count += 1
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_execution_complete",
+                message=f"Execution complete: {success_count} success, {failure_count} failures",
+                extra={"success": success_count, "failures": failure_count},
+            )
+            
+            return ExecutionResult(
+                outputs=outputs,
+                success_count=success_count,
+                failure_count=failure_count,
+            )
+    
+    def _create_subtasks(
+        self,
+        state: AgentVerseState,
+        recruitment: RecruitmentResult,
+        decision: DecisionResult,
+    ) -> List[str]:
+        """Create subtasks for each expert based on the decision."""
+        subtasks = []
+        for expert in recruitment.experts:
+            subtask = f"""Based on your role as {expert.role}:
+
+Responsibilities: {expert.responsibilities}
+
+Execute your part of the plan:
+{decision.final_decision}
+
+Focus on what is relevant to your expertise.
+"""
+            subtasks.append(subtask)
+        return subtasks
+    
+    # ========================================================================
+    # Stage 4: Evaluation
+    # ========================================================================
+    
+    def evaluate_results(
+        self,
+        state: AgentVerseState,
+        execution: ExecutionResult,
+    ) -> EvaluationResult:
+        """
+        Stage 4: Evaluate if the goal has been achieved.
+        """
+        with self.tracer.start_as_current_span(
+            "orchestrator.evaluate_results",
+            kind=SpanKind.INTERNAL,
+        ) as span:
+            span.set_attribute("app.task_id", state.task_id)
+            span.set_attribute("app.iteration", state.iteration)
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_evaluation_start",
+                message="Starting evaluation",
+            )
+            
+            # Format results for evaluation
+            results_text = "\n\n".join([
+                f"[{output['expert']}]:\n{output['output']}"
+                for output in execution.outputs
+            ])
+            
+            prompt = EVALUATION_PROMPT.format(
+                task=state.original_task,
+                results=results_text,
+                iteration=state.iteration + 1,
+                max_iterations=state.max_iterations,
+            )
+            
+            headers: Dict[str, str] = {}
+            propagate.inject(headers)
+            response = self._call_llm(prompt, headers=headers)
+            
+            self._record_llm_request(
+                state,
+                stage="evaluation",
+                label="evaluate_results",
+                prompt=prompt,
+                response=response,
+                source="Agent A",
+                agent_role="orchestrator",
+            )
+            
+            parsed = self._parse_json_response(response, {})
+            
+            # Determine if we should iterate
+            goal_achieved = parsed.get("goal_achieved", False)
+            score = parsed.get("score", 50)
+            should_iterate = parsed.get("should_iterate", False)
+            
+            # Don't iterate if we've reached max or achieved goal
+            if state.iteration + 1 >= state.max_iterations:
+                should_iterate = False
+            if goal_achieved:
+                should_iterate = False
+            
+            result = EvaluationResult(
+                goal_achieved=goal_achieved,
+                score=score,
+                feedback=parsed.get("feedback", ""),
+                missing_aspects=parsed.get("missing_aspects", []),
+                should_iterate=should_iterate,
+            )
+            
+            self.logger.log(
+                task_id=state.task_id,
+                event_type="agentverse_evaluation_complete",
+                message=f"Evaluation: goal_achieved={goal_achieved}, score={score}",
+                extra={
+                    "goal_achieved": goal_achieved,
+                    "score": score,
+                    "should_iterate": should_iterate,
+                },
+            )
+            
+            span.set_attribute("app.goal_achieved", goal_achieved)
+            span.set_attribute("app.score", score)
+            
+            return result
+    
+    # ========================================================================
+    # Main Workflow
+    # ========================================================================
+    
+    def run_workflow(
+        self,
+        task: str,
+        task_id: str,
+        max_iterations: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        Run the complete AgentVerse 4-stage workflow.
+        """
+        with self.tracer.start_as_current_span(
+            "orchestrator.run_workflow",
+            kind=SpanKind.INTERNAL,
+        ) as span:
+            span.set_attribute("app.task_id", task_id)
+            
+            state = AgentVerseState(
+                task_id=task_id,
+                original_task=task,
+                max_iterations=max_iterations,
+            )
+            
+            self.logger.log(
+                task_id=task_id,
+                event_type="agentverse_workflow_start",
+                message="Starting AgentVerse workflow",
+                extra={"max_iterations": max_iterations},
+            )
+            
+            feedback: Optional[str] = None
+            
+            while state.iteration < state.max_iterations:
+                iteration_start = time.time()
+                
+                # Stage 1: Expert Recruitment
+                state.recruitment = self.recruit_experts(state, feedback)
+                
+                # Stage 2: Collaborative Decision-Making
+                state.decision = self.collaborative_decision(state, state.recruitment)
+                
+                # Stage 3: Action Execution
+                state.execution = self.execute_actions(
+                    state, state.recruitment, state.decision
+                )
+                
+                # Stage 4: Evaluation
+                state.evaluation = self.evaluate_results(state, state.execution)
+                
+                # Record iteration
+                iteration_time = time.time() - iteration_start
+                state.iteration_history.append({
+                    "iteration": state.iteration,
+                    "duration_seconds": round(iteration_time, 2),
+                    "recruitment": {
+                        "experts": [e.role for e in state.recruitment.experts],
+                        "structure": state.recruitment.communication_structure.value,
+                    },
+                    "decision": {
+                        "consensus": state.decision.consensus_reached,
+                        "rounds": len(state.decision.discussion_rounds),
+                    },
+                    "execution": {
+                        "success": state.execution.success_count,
+                        "failures": state.execution.failure_count,
+                    },
+                    "evaluation": {
+                        "goal_achieved": state.evaluation.goal_achieved,
+                        "score": state.evaluation.score,
+                    },
+                })
+                
+                # Check if we should continue
+                if not state.evaluation.should_iterate:
+                    break
+                
+                feedback = state.evaluation.feedback
+                state.iteration += 1
+            
+            # Generate final output
+            state.final_output = self._generate_final_output(state)
+            state.completed = True
+            
+            self.logger.log(
+                task_id=task_id,
+                event_type="agentverse_workflow_complete",
+                message="AgentVerse workflow complete",
+                extra={
+                    "iterations": state.iteration + 1,
+                    "final_score": state.evaluation.score if state.evaluation else 0,
+                },
+            )
+            
+            return self._state_to_response(state)
+    
+    def _generate_final_output(self, state: AgentVerseState) -> str:
+        """Generate the final synthesized output."""
+        if not state.execution:
+            return "No execution results available."
+        
+        results_text = "\n\n".join([
+            f"[{output['expert']}]:\n{output['output']}"
+            for output in state.execution.outputs
+        ])
+        
+        iteration_summary = "\n".join([
+            f"Iteration {h['iteration'] + 1}: score={h['evaluation']['score']}, "
+            f"experts={h['recruitment']['experts']}"
+            for h in state.iteration_history
+        ])
+        
+        evaluation_text = ""
+        if state.evaluation:
+            evaluation_text = f"""
+Score: {state.evaluation.score}/100
+Goal Achieved: {state.evaluation.goal_achieved}
+Feedback: {state.evaluation.feedback}
+"""
+        
+        prompt = FINAL_SYNTHESIS_PROMPT.format(
+            task=state.original_task,
+            iteration_summary=iteration_summary or "(Single iteration)",
+            results=results_text,
+            evaluation=evaluation_text,
+        )
+        
+        headers: Dict[str, str] = {}
+        propagate.inject(headers)
+        response = self._call_llm(prompt, headers=headers)
+        self._record_llm_request(
+            state,
+            stage="synthesis",
+            label="final_output",
+            prompt=prompt,
+            response=response,
+            source="Agent A",
+            agent_role="orchestrator",
+        )
+        return response
+    
+    def _state_to_response(self, state: AgentVerseState) -> Dict[str, Any]:
+        """Convert state to API response format."""
+        return {
+            "task_id": state.task_id,
+            "original_task": state.original_task,
+            "completed": state.completed,
+            "iterations": state.iteration + 1,
+            "final_output": state.final_output,
+            
+            # Detailed stage results
+            "stages": {
+                "recruitment": {
+                    "experts": [
+                        {
+                            "role": e.role,
+                            "responsibilities": e.responsibilities,
+                            "endpoint": e.endpoint,
+                        }
+                        for e in (state.recruitment.experts if state.recruitment else [])
+                    ],
+                    "communication_structure": (
+                        state.recruitment.communication_structure.value
+                        if state.recruitment else None
+                    ),
+                    "reasoning": state.recruitment.reasoning if state.recruitment else "",
+                },
+                "decision": {
+                    "final_decision": state.decision.final_decision if state.decision else "",
+                    "consensus_reached": state.decision.consensus_reached if state.decision else False,
+                    "structure_used": state.decision.structure_used if state.decision else "",
+                    "discussion_rounds": state.decision.discussion_rounds if state.decision else [],
+                },
+                "execution": {
+                    "outputs": state.execution.outputs if state.execution else [],
+                    "success_count": state.execution.success_count if state.execution else 0,
+                    "failure_count": state.execution.failure_count if state.execution else 0,
+                },
+                "evaluation": {
+                    "goal_achieved": state.evaluation.goal_achieved if state.evaluation else False,
+                    "score": state.evaluation.score if state.evaluation else 0,
+                    "feedback": state.evaluation.feedback if state.evaluation else "",
+                    "missing_aspects": state.evaluation.missing_aspects if state.evaluation else [],
+                },
+            },
+            
+            # Iteration history
+            "iteration_history": state.iteration_history,
+            
+            # Detailed LLM request/response log for each call
+            "llm_requests": state.llm_requests,
+        }
