@@ -9,8 +9,19 @@
     h1 { margin-bottom: 8px; }
     .layout { display: flex; gap: 16px; align-items: flex-start; }
     .panel { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-width: 1100px; flex: 1 1 auto; }
-    .sidebar { width: 260px; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; }
+    .sidebar { width: 280px; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 12px; flex-shrink: 0; }
     .sidebar h2 { font-size: 16px; margin: 6px 0 12px; }
+    .history-section { margin-top: 16px; padding-top: 16px; border-top: 1px solid #d0d7de; max-height: 400px; overflow-y: auto; }
+    .history-section h3 { font-size: 14px; margin: 0 0 10px; color: #24292f; }
+    .title-bar { margin-bottom: 16px; }
+    .title-bar label { display: inline-block; margin-right: 8px; }
+    .title-bar input { width: 400px; max-width: 100%; }
+    .history-list { display: flex; flex-direction: column; gap: 8px; }
+    .history-item { padding: 10px 12px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+    .history-item:hover { background: #eef2f6; border-color: #0969da; }
+    .history-title { font-weight: 600; font-size: 14px; color: #24292f; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .history-time { font-size: 12px; color: #57606a; }
+    .history-empty { font-size: 13px; color: #57606a; font-style: italic; }
     .template-list { display: flex; flex-direction: column; gap: 8px; }
     .template-btn { text-align: left; padding: 8px 10px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
     .template-btn:hover { background: #eef2f6; }
@@ -45,6 +56,10 @@
 </head>
 <body>
   <h1>Agent Chat Console</h1>
+  <div class="title-bar">
+    <label for="requestTitle">Request Title:</label>
+    <input id="requestTitle" type="text" placeholder="e.g., Test parallel workers">
+  </div>
   <div class="layout">
     <div class="panel">
     <div class="row">
@@ -122,7 +137,6 @@
     <div style="margin-top: 12px;">
       <button id="sendBtn">Send</button>
       <span class="status" id="status"></span>
-      <div class="note">Verbose LLM logs: set <code>LOG_LLM_REQUESTS=1</code> and <code>LLM_LOG_MAX_CHARS</code>.</div>
     </div>
 
     <div style="margin-top: 16px;">
@@ -151,6 +165,13 @@
       <h2>Templates</h2>
       <div id="templateList" class="template-list"></div>
       <button id="clearTemplates" type="button" class="template-btn">Clear</button>
+      <div class="history-section">
+        <h3>Request History</h3>
+        <div id="historyList" class="history-list">
+          <div class="history-empty">No requests yet</div>
+        </div>
+        <button id="clearHistory" type="button" class="template-btn" style="margin-top: 10px;">Clear History</button>
+      </div>
     </aside>
   </div>
 
@@ -177,6 +198,11 @@
     const sendBtn = document.getElementById('sendBtn');
     const templateListEl = document.getElementById('templateList');
     const clearTemplatesBtn = document.getElementById('clearTemplates');
+    const requestTitleEl = document.getElementById('requestTitle');
+    const historyListEl = document.getElementById('historyList');
+    const clearHistoryBtn = document.getElementById('clearHistory');
+
+    let requestHistory = JSON.parse(localStorage.getItem('requestHistory') || '[]');
 
     const roleOptions = [
       { value: '', label: 'none' },
@@ -239,12 +265,80 @@
       }, 500);
     }
 
-    function stopTimer(msg) {
+    function stopTimer(msg, showElapsed = false) {
       if (timerId) clearInterval(timerId);
+      const elapsed = startTs ? ((Date.now() - startTs) / 1000).toFixed(2) : null;
       timerId = null;
       startTs = null;
       statusEl.classList.remove('live');
-      statusEl.textContent = msg;
+      if (showElapsed && elapsed !== null) {
+        statusEl.textContent = `${msg} (${elapsed}s)`;
+      } else {
+        statusEl.textContent = msg;
+      }
+      return elapsed;
+    }
+
+    function saveHistory() {
+      localStorage.setItem('requestHistory', JSON.stringify(requestHistory));
+    }
+
+    function renderHistory() {
+      if (requestHistory.length === 0) {
+        historyListEl.innerHTML = '<div class="history-empty">No requests yet</div>';
+        return;
+      }
+      historyListEl.innerHTML = requestHistory
+        .map((item, index) => `
+          <div class="history-item" data-index="${index}">
+            <div class="history-title">${escapeHtml(item.title)}</div>
+            <div class="history-time">${item.duration}s • ${item.timestamp}</div>
+          </div>
+        `)
+        .join('');
+    }
+
+    function addToHistory(title, duration, data) {
+      const timestamp = new Date().toLocaleString();
+      requestHistory.unshift({ title, duration, timestamp, data });
+      if (requestHistory.length > 50) {
+        requestHistory = requestHistory.slice(0, 50);
+      }
+      saveHistory();
+      renderHistory();
+    }
+
+    function loadHistoryItem(index) {
+      const item = requestHistory[index];
+      if (!item || !item.data) return;
+      const data = item.data;
+      outputA.textContent = data.output || '';
+      outputB.textContent = data.agent_b_output || '';
+      if (Array.isArray(data.agent_b_outputs) && data.agent_b_outputs.length > 0) {
+        const isObjectList = data.agent_b_outputs.every(
+          (it) => it && typeof it === 'object'
+        );
+        if (isObjectList) {
+          outputWorkersEl.innerHTML = renderWorkerTable(data.agent_b_outputs);
+        }
+      } else {
+        outputWorkersEl.innerHTML = '';
+      }
+      if (Array.isArray(data.llm_requests) && data.llm_requests.length > 0) {
+        outputRequestsEl.innerHTML = renderRequestTable(data.llm_requests);
+      } else {
+        outputRequestsEl.innerHTML = '';
+      }
+      rawResp.textContent = JSON.stringify(data, null, 2);
+      badgeA.style.display = data.output ? 'inline-block' : 'none';
+      badgeB.style.display = data.agent_b_output ? 'inline-block' : 'none';
+      statusEl.textContent = `Loaded: ${item.title} (${item.duration}s)`;
+    }
+
+    function clearHistory() {
+      requestHistory = [];
+      saveHistory();
+      renderHistory();
     }
 
     function getDefaultProtocol() {
@@ -407,8 +501,11 @@
       return null;
     }
 
-    function applyTemplateDefaults(defaults) {
+    function applyTemplateDefaults(defaults, templateTitle) {
       if (!defaults) return;
+      if (templateTitle) {
+        requestTitleEl.value = templateTitle;
+      }
       if (defaults.prompt) {
         promptEl.value = defaults.prompt;
       }
@@ -445,7 +542,8 @@
     async function applyTemplate(definition) {
       const template = await loadTemplate(definition.paths);
       if (!template || !template.ui_defaults) return;
-      applyTemplateDefaults(template.ui_defaults);
+      const templateTitle = template.title || definition.label;
+      applyTemplateDefaults(template.ui_defaults, templateTitle);
       renderWorkers();
       applyWorkerDefaults(template.ui_defaults);
     }
@@ -465,6 +563,7 @@
     function clearTemplateFields() {
       scenarioEl.value = '';
       promptEl.value = '';
+      requestTitleEl.value = '';
       agentARoleEl.value = '';
       agentAContractEl.value = '';
       agentBRoleEl.value = '';
@@ -581,7 +680,9 @@
         if (data.agent_b_output) {
           badgeB.style.display = 'inline-block';
         }
-        stopTimer('Done');
+        const elapsed = stopTimer('Done', true);
+        const title = requestTitleEl.value.trim() || `Request at ${new Date().toLocaleTimeString()}`;
+        addToHistory(title, elapsed, data);
       } catch (err) {
         outputA.textContent = '';
         outputB.textContent = '';
@@ -607,6 +708,15 @@
     ensureDefaultEndpoints();
     renderTemplates();
     clearTemplatesBtn.addEventListener('click', clearTemplateFields);
+    renderHistory();
+    clearHistoryBtn.addEventListener('click', clearHistory);
+    historyListEl.addEventListener('click', (e) => {
+      const item = e.target.closest('.history-item');
+      if (item) {
+        const index = parseInt(item.dataset.index, 10);
+        loadHistoryItem(index);
+      }
+    });
   </script>
 </body>
 </html>
