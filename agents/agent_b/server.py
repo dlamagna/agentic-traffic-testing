@@ -49,7 +49,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path != "/subtask":
+        if self.path not in ("/subtask", "/discuss"):
             self.send_response(404)
         else:
             self.send_response(204)
@@ -57,10 +57,19 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # type: ignore[override]
+        if self.path == "/discuss":
+            # Alias for subtask - used in AgentVerse collaborative discussions
+            self._handle_subtask_or_discuss()
+            return
+        
         if self.path != "/subtask":
             self._send_json(404, {"error": "Not found"})
             return
-
+        
+        self._handle_subtask_or_discuss()
+    
+    def _handle_subtask_or_discuss(self) -> None:
+        """Handle both /subtask and /discuss endpoints."""
         carrier = {key: value for key, value in self.headers.items()}
         agent_index = self.headers.get("x-agent-index")
         ctx = propagate.extract(carrier)
@@ -179,7 +188,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
 
 def run() -> None:
     server = ThreadingHTTPServer((HOST, PORT), AgentBRequestHandler)
-    print(f"[*] Agent B HTTP server listening on http://{HOST}:{PORT}/subtask")
+    print(f"[*] Agent B HTTP server listening on http://{HOST}:{PORT}/subtask and /discuss")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
