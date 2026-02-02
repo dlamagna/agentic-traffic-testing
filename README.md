@@ -206,45 +206,7 @@ See `infra/README.md` for deployment details.
 
 ## 4. LLM config
 
-Default model: `meta-llama/Llama-3.1-8B-Instruct`. Run directly:
-
-```bash
-pip install -r requirements.txt
-python -m llm.serve_llm --model meta-llama/Llama-3.1-8B-Instruct --port 8000
-```
-
-Or via Docker / Docker Compose:
-
-```bash
-cd infra
-docker compose up --build llm-backend
-```
-
-Set `LLM_SERVER_URL` (e.g. `http://llm-backend:8000/chat`) for agents. Configure via `infra/.env`:
-```text
-LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
-LLM_TIMEOUT_SECONDS=120
-LLM_MAX_MODEL_LEN=4000
-```
-
-Tune vLLM scheduling:
-```text
-LLM_DTYPE=float16
-LLM_MAX_NUM_SEQS=12
-LLM_MAX_NUM_BATCHED_TOKENS=8192
-LLM_GPU_MEMORY_UTILIZATION=0.90
-```
-
-| Variable | Description |
-|----------|-------------|
-| `LLM_MAX_NUM_SEQS` | Max sequences batched per iteration (controls concurrency) |
-| `LLM_MAX_NUM_BATCHED_TOKENS` | Max total tokens in a batch |
-| `LLM_GPU_MEMORY_UTILIZATION` | Fraction of GPU memory for vLLM (0-1) |
-| `LLM_MAX_MODEL_LEN` | Max context length (prompt + completion tokens) |
-
-Set `LLM_MODEL` in `infra/.env` to change the model. Rebuild with `docker compose up -d --force-recreate llm-backend`.
-
-For gated models, set `HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) in your environment.
+See [`infra/README.md`](infra/README.md) for LLM setup, model configuration, and environment variables.
 
 ## 5. Agent endpoints
 
