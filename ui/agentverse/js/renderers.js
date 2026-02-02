@@ -158,6 +158,45 @@ export function renderEvaluation(evaluation) {
     </div>
   `;
   
+  // Display criteria breakdown if available
+  if (evaluation.criteria) {
+    html += `<div style="margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 6px;">`;
+    html += `<div style="font-weight: 600; margin-bottom: 8px; color: var(--text-primary);">Score Breakdown:</div>`;
+    html += `<div class="criteria-breakdown">`;
+    
+    const criteriaLabels = {
+      completeness: 'Completeness',
+      correctness: 'Correctness',
+      clarity: 'Clarity',
+      relevance: 'Relevance',
+      actionability: 'Actionability'
+    };
+    
+    Object.entries(evaluation.criteria).forEach(([key, value]) => {
+      const label = criteriaLabels[key] || key;
+      const criteriaColor = value >= 70 ? 'var(--success)' : value >= 40 ? 'var(--warning)' : 'var(--error)';
+      html += `
+        <div class="criteria-item">
+          <div class="criteria-label">${escapeHtml(label)}:</div>
+          <div class="criteria-bar">
+            <div class="criteria-bar-fill" style="width: ${value}%; background: ${criteriaColor};"></div>
+            <span class="criteria-value" style="color: ${criteriaColor}">${value}</span>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += `</div></div>`;
+  }
+  
+  // Display rationale if available
+  if (evaluation.rationale) {
+    html += `<div style="margin-top: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 6px; border-left: 3px solid var(--accent);">`;
+    html += `<div style="font-weight: 600; margin-bottom: 6px; color: var(--text-primary);">Score Rationale:</div>`;
+    html += `<div style="color: var(--text-secondary); font-size: 14px; line-height: 1.5;">${escapeHtml(evaluation.rationale)}</div>`;
+    html += `</div>`;
+  }
+  
   if (evaluation.feedback) {
     html += `<p style="margin-top: 12px;"><strong>Feedback:</strong> ${escapeHtml(evaluation.feedback)}</p>`;
   }

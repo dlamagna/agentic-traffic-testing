@@ -404,6 +404,56 @@ button {
   margin-top: 4px;
 }
 
+/* Criteria Breakdown */
+.criteria-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.criteria-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.criteria-label {
+  min-width: 120px;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.criteria-bar {
+  flex: 1;
+  position: relative;
+  height: 24px;
+  background: var(--bg-dark);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.criteria-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  transition: width 0.3s ease;
+  opacity: 0.3;
+}
+
+.criteria-value {
+  position: relative;
+  z-index: 1;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 8px;
+  min-width: 35px;
+  text-align: right;
+}
+
 /* Final Output */
 .final-output {
   background: var(--bg-dark);

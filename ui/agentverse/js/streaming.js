@@ -99,6 +99,9 @@ export class StreamingHandler {
       this.uiState.elements.liveBadge.style.display = 'none';
       this.uiState.elements.statusText.textContent = 'Complete';
       this.uiState.elements.progressFill.style.width = '100%';
+      
+      // Re-enable the button since workflow is complete
+      this.uiState.elements.runBtn.disabled = false;
     }
   }
 
@@ -277,6 +280,9 @@ export class StreamingHandler {
                 this.uiState.updateWorkflowUI(this.uiState.currentData);
                 this.uiState.stopTimer(true);
                 this.uiState.elements.liveBadge.style.display = 'none';
+                this.uiState.elements.statusText.textContent = 'Complete';
+                // Re-enable the button
+                this.uiState.elements.runBtn.disabled = false;
               }
             } catch (e) {
               console.error('Error parsing SSE data:', e, eventDataStr);
