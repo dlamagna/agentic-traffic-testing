@@ -1052,12 +1052,36 @@ Provide the Python code with proper error handling and documentation.`
       
       if (structure === 'horizontal') {
         rounds.forEach((round, idx) => {
+          const responses = round.responses || [];
+          const total = responses.length;
+          const consensusCount = responses.filter(r => r.consensus).length;
+          const missingConsensus = responses
+            .filter(r => !r.consensus)
+            .map(r => r.expert || 'Agent');
+          
+          let consensusSummary;
+          if (total === 0) {
+            consensusSummary = 'No responses';
+          } else if (consensusCount === total) {
+            consensusSummary = 'Consensus reached';
+          } else {
+            consensusSummary = 'Missing consensus from: ' + missingConsensus.map(name => escapeHtml(name)).join(', ');
+          }
+          
           html += `
             <div class="discussion-round">
-              <div class="round-header">Round ${round.round || idx + 1}</div>
-              ${(round.responses || []).map(r => `
+              <div class="round-header">
+                <span>Round ${round.round || idx + 1}</span>
+                <span style="font-size: 12px; color: var(--text-secondary); margin-left: 8px;">
+                  ${consensusSummary}
+                </span>
+              </div>
+              ${responses.map(r => `
                 <div class="round-response">
-                  <div class="role">${escapeHtml(r.expert || 'Agent')}</div>
+                  <div class="role">
+                    ${escapeHtml(r.expert || 'Agent')}
+                    ${r.consensus ? ' ✓' : ''}
+                  </div>
                   <div class="content">${escapeHtml(truncate(r.response, 400))}</div>
                 </div>
               `).join('')}
@@ -1067,14 +1091,35 @@ Provide the Python code with proper error handling and documentation.`
       } else {
         // Vertical structure
         rounds.forEach((round, idx) => {
+          const reviewers = round.reviewer_responses || [];
+          const total = reviewers.length;
+          const approvedCount = reviewers.filter(r => r.approved).length;
+          const missingApprovals = reviewers
+            .filter(r => !r.approved)
+            .map(r => r.reviewer || 'Reviewer');
+          
+          let approvalSummary;
+          if (total === 0) {
+            approvalSummary = 'No reviews';
+          } else if (approvedCount === total) {
+            approvalSummary = 'All reviewers approved';
+          } else {
+            approvalSummary = 'Waiting approval from: ' + missingApprovals.map(name => escapeHtml(name)).join(', ');
+          }
+          
           html += `
             <div class="discussion-round">
-              <div class="round-header">Iteration ${round.iteration || idx + 1}</div>
+              <div class="round-header">
+                <span>Iteration ${round.iteration || idx + 1}</span>
+                <span style="font-size: 12px; color: var(--text-secondary); margin-left: 8px;">
+                  ${approvalSummary}
+                </span>
+              </div>
               <div class="round-response">
                 <div class="role">Solver Proposal</div>
                 <div class="content">${escapeHtml(truncate(round.proposal, 400))}</div>
               </div>
-              ${(round.reviewer_responses || []).map(r => `
+              ${reviewers.map(r => `
                 <div class="round-response">
                   <div class="role">${escapeHtml(r.reviewer)} ${r.approved ? '✓' : ''}</div>
                   <div class="content">${escapeHtml(truncate(r.critique, 300))}</div>
@@ -1288,7 +1333,21 @@ Provide the Python code with proper error handling and documentation.`
         stage2.classList.add('completed');
         badge2.className = 'badge badge-complete';
         badge2.textContent = stages.decision.consensus_reached ? 'Consensus' : 'Decided';
-        results2.innerHTML = renderDiscussion(
+        const solverRole = stages.decision.solver_role || null;
+        const reviewerRoles = Array.isArray(stages.decision.reviewer_roles) ? stages.decision.reviewer_roles : [];
+        let roleSummaryHtml = '';
+        if (solverRole) {
+          roleSummaryHtml += `<p><strong>Solver:</strong> ${escapeHtml(solverRole)}</p>`;
+        } else if (stages.decision.structure_used === 'horizontal' && stages.recruitment && Array.isArray(stages.recruitment.experts)) {
+          const allRoles = stages.recruitment.experts.map(e => e.role).filter(Boolean);
+          if (allRoles.length > 0) {
+            roleSummaryHtml += `<p><strong>Contributors:</strong> ${allRoles.map(r => escapeHtml(r)).join(', ')}</p>`;
+          }
+        }
+        if (reviewerRoles.length > 0) {
+          roleSummaryHtml += `<p><strong>Reviewers:</strong> ${reviewerRoles.map(r => escapeHtml(r)).join(', ')}</p>`;
+        }
+        results2.innerHTML = roleSummaryHtml + renderDiscussion(
           stages.decision.discussion_rounds,
           stages.decision.structure_used
         );
