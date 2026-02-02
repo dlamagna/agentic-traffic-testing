@@ -154,12 +154,16 @@ class AgentVerseOrchestrator:
     def _call_llm(
         self,
         prompt: str,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Call the LLM server."""
+        payload: Dict[str, Any] = {"prompt": prompt}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         resp = self.http_client.post(
             LLM_SERVER_URL,
-            json={"prompt": prompt},
+            json=payload,
             headers=headers,
             timeout=LLM_TIMEOUT_SECONDS,
         )
@@ -1172,13 +1176,26 @@ Focus on what is relevant to your expertise.
             if goal_achieved:
                 should_iterate = False
             
+            feedback = parsed.get("feedback", "") or ""
+            missing_aspects = parsed.get("missing_aspects", [])
+            # Fallback: if LLM returns empty feedback but we should iterate, synthesize from rationale/missing_aspects
+            if not feedback.strip() and should_iterate and (rationale or missing_aspects):
+                parts = []
+                if rationale:
+                    parts.append(f"Previous rationale: {rationale}")
+                if missing_aspects:
+                    parts.append(f"Missing or weak aspects: {', '.join(str(x) for x in missing_aspects)}.")
+                feedback = " ".join(parts).strip() or (
+                    f"Score {score}/100 is below threshold. Consider adjusting the expert team or approach."
+                )
+            
             result = EvaluationResult(
                 goal_achieved=goal_achieved,
                 score=score,
                 criteria=criteria,
                 rationale=rationale,
-                feedback=parsed.get("feedback", ""),
-                missing_aspects=parsed.get("missing_aspects", []),
+                feedback=feedback,
+                missing_aspects=missing_aspects,
                 should_iterate=should_iterate,
             )
             
