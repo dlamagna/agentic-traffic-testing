@@ -116,6 +116,12 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self._set_cors()
         self.end_headers()
         self.wfile.write(body)
+    
+    def _send_sse_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Send a Server-Sent Event."""
+        message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        self.wfile.write(message.encode("utf-8"))
+        self.wfile.flush()
 
     def _handle_agentverse(self) -> None:
         """Handle AgentVerse 4-stage workflow requests."""
@@ -138,9 +144,13 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             if not isinstance(max_iterations, int) or max_iterations < 1:
                 max_iterations = 3
             max_iterations = min(max_iterations, 5)  # Cap at 5
+            
+            # Check if client wants streaming (SSE)
+            stream = data.get("stream", False)
 
             span.set_attribute("app.task", task)
             span.set_attribute("app.max_iterations", max_iterations)
+            span.set_attribute("app.stream", stream)
 
             # Create logger and task ID
             logger = TelemetryLogger(agent_id="AgentA-Orchestrator", scenario="agentic_verse")
@@ -151,26 +161,58 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 task_id=task_id,
                 event_type="agentverse_request_received",
                 message=f"Received AgentVerse request: {task[:100]}...",
-                extra={"max_iterations": max_iterations},
+                extra={"max_iterations": max_iterations, "stream": stream},
             )
 
             try:
-                # Create orchestrator and run workflow
-                orchestrator = AgentVerseOrchestrator(logger=logger, tracer=self.tracer)
-                result = orchestrator.run_workflow(
-                    task=task,
-                    task_id=task_id,
-                    max_iterations=max_iterations,
-                )
-                
-                self._send_json(200, result)
+                if stream:
+                    # Send SSE headers
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self._set_cors()
+                    self.end_headers()
+                    
+                    # Create progress callback for streaming
+                    def progress_callback(progress: Dict[str, Any]) -> None:
+                        self._send_sse_event(progress["event"], progress["data"])
+                    
+                    # Create orchestrator with progress callback
+                    orchestrator = AgentVerseOrchestrator(
+                        logger=logger,
+                        tracer=self.tracer,
+                        progress_callback=progress_callback
+                    )
+                    result = orchestrator.run_workflow(
+                        task=task,
+                        task_id=task_id,
+                        max_iterations=max_iterations,
+                    )
+                    
+                    # Send final result as SSE event
+                    self._send_sse_event("complete", result)
+                    
+                else:
+                    # Non-streaming mode (original behavior)
+                    orchestrator = AgentVerseOrchestrator(logger=logger, tracer=self.tracer)
+                    result = orchestrator.run_workflow(
+                        task=task,
+                        task_id=task_id,
+                        max_iterations=max_iterations,
+                    )
+                    self._send_json(200, result)
+                    
             except Exception as exc:
                 logger.log(
                     task_id=task_id,
                     event_type="agentverse_error",
                     message=f"AgentVerse workflow failed: {exc}",
                 )
-                self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
+                if stream:
+                    self._send_sse_event("error", {"error": str(exc)})
+                else:
+                    self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
         if self.path not in ("/task", "/agentverse"):
