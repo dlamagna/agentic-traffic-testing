@@ -304,6 +304,7 @@ class AgentVerseOrchestrator:
         agent_b_role: Optional[str] = None,
         agent_b_contract: Optional[str] = None,
         agent_b_url: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Call an Agent B instance."""
         payload: Dict[str, Any] = {"subtask": subtask, "scenario": scenario}
@@ -313,20 +314,88 @@ class AgentVerseOrchestrator:
             payload["agent_b_contract"] = agent_b_contract
         
         target_url = agent_b_url or DEFAULT_AGENT_B_URL
-        resp = self.http_client.post(
-            target_url,
-            json=payload,
-            headers=headers,
-            timeout=AGENT_B_TIMEOUT_SECONDS,
+        
+        # Validate URL
+        if not target_url or not isinstance(target_url, str) or not target_url.strip():
+            raise ValueError(f"Invalid Agent B URL: {target_url!r}")
+        
+        # Log the attempt for debugging
+        self.logger.log(
+            task_id=task_id or 'unknown',
+            event_type="agent_b_call_attempt",
+            message=f"Calling Agent B at {target_url}",
+            extra={
+                "url": target_url,
+                "role": agent_b_role,
+                "scenario": scenario,
+            },
         )
-        resp.raise_for_status()
-        data: Dict[str, Any] = resp.json()
-        return {
-            "output": str(data.get("output", "")),
-            "llm_prompt": data.get("llm_prompt"),
-            "llm_response": data.get("llm_response"),
-            "llm_endpoint": data.get("llm_endpoint"),
-        }
+        
+        try:
+            resp = self.http_client.post(
+                target_url,
+                json=payload,
+                headers=headers,
+                timeout=AGENT_B_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            data: Dict[str, Any] = resp.json()
+            return {
+                "output": str(data.get("output", "")),
+                "llm_prompt": data.get("llm_prompt"),
+                "llm_response": data.get("llm_response"),
+                "llm_endpoint": data.get("llm_endpoint"),
+            }
+        except httpx.ConnectError as e:
+            error_msg = (
+                f"Failed to connect to Agent B at {target_url}. "
+                f"Error: {e}. "
+                f"Please verify that the Agent B service is running and reachable. "
+                f"Available URLs: {AGENT_B_URLS}"
+            )
+            self.logger.log(
+                task_id=task_id or 'unknown',
+                event_type="agent_b_connection_error",
+                message=error_msg,
+                extra={
+                    "url": target_url,
+                    "role": agent_b_role,
+                    "available_urls": AGENT_B_URLS,
+                },
+            )
+            raise ConnectionError(error_msg) from e
+        except httpx.TimeoutException as e:
+            error_msg = (
+                f"Timeout connecting to Agent B at {target_url} "
+                f"(timeout: {AGENT_B_TIMEOUT_SECONDS}s)"
+            )
+            self.logger.log(
+                task_id=task_id or 'unknown',
+                event_type="agent_b_timeout_error",
+                message=error_msg,
+                extra={
+                    "url": target_url,
+                    "role": agent_b_role,
+                    "timeout": AGENT_B_TIMEOUT_SECONDS,
+                },
+            )
+            raise TimeoutError(error_msg) from e
+        except httpx.HTTPStatusError as e:
+            error_msg = (
+                f"Agent B returned error status {e.response.status_code} "
+                f"for URL {target_url}: {e.response.text[:200]}"
+            )
+            self.logger.log(
+                task_id=task_id or 'unknown',
+                event_type="agent_b_http_error",
+                message=error_msg,
+                extra={
+                    "url": target_url,
+                    "role": agent_b_role,
+                    "status_code": e.response.status_code,
+                },
+            )
+            raise
     
     def _record_llm_request(
         self,
@@ -444,8 +513,32 @@ class AgentVerseOrchestrator:
             # Parse experts
             experts = []
             raw_experts = parsed.get("experts", [])
+            
+            # Validate AGENT_B_URLS is not empty
+            if not AGENT_B_URLS:
+                raise ValueError(
+                    f"No Agent B URLs configured. Please set AGENT_B_URLS environment variable. "
+                    f"Default URL would be: {DEFAULT_AGENT_B_URL}"
+                )
+            
             for idx, expert_data in enumerate(raw_experts[:MAX_PARALLEL_WORKERS]):
                 endpoint = AGENT_B_URLS[idx % len(AGENT_B_URLS)]
+                
+                # Validate endpoint URL
+                if not endpoint or not isinstance(endpoint, str) or not endpoint.strip():
+                    self.logger.log(
+                        task_id=state.task_id,
+                        event_type="agentverse_invalid_endpoint",
+                        message=f"Invalid endpoint for expert {idx}: {endpoint!r}",
+                        extra={
+                            "expert_index": idx,
+                            "endpoint": endpoint,
+                            "available_urls": AGENT_B_URLS,
+                        },
+                    )
+                    # Fall back to first available URL
+                    endpoint = AGENT_B_URLS[0] if AGENT_B_URLS else DEFAULT_AGENT_B_URL
+                
                 experts.append(Expert(
                     role=expert_data.get("role", "executor"),
                     responsibilities=expert_data.get("responsibilities", ""),
@@ -456,6 +549,11 @@ class AgentVerseOrchestrator:
             
             # Default experts if none parsed
             if not experts:
+                if not AGENT_B_URLS:
+                    raise ValueError(
+                        f"No Agent B URLs available for default expert. "
+                        f"Please set AGENT_B_URLS environment variable."
+                    )
                 experts = [
                     Expert(
                         role="executor",
@@ -495,14 +593,19 @@ class AgentVerseOrchestrator:
                 reasoning=reasoning,
             )
             
+            # Log expert endpoints for debugging
+            expert_endpoints = {e.role: e.endpoint for e in experts}
+            
             self.logger.log(
                 task_id=state.task_id,
                 event_type="agentverse_recruitment_complete",
                 message=f"Recruited {len(experts)} experts",
                 extra={
                     "experts": [e.role for e in experts],
+                    "expert_endpoints": expert_endpoints,
                     "structure": structure.value,
                     "reasoning": result.reasoning,
+                    "available_agent_b_urls": AGENT_B_URLS,
                 },
             )
             
@@ -574,6 +677,7 @@ class AgentVerseOrchestrator:
                         agent_b_contract=expert.contract,
                         agent_b_url=expert.endpoint,
                         headers=headers,
+                        task_id=state.task_id,
                     )
                     output = response.get("output", "")
                     llm_prompt = response.get("llm_prompt") or prompt
@@ -700,6 +804,7 @@ class AgentVerseOrchestrator:
                     agent_b_contract=solver.contract,
                     agent_b_url=solver.endpoint,
                     headers=headers,
+                    task_id=state.task_id,
                 )
                 proposal = response.get("output", "")
                 llm_prompt = response.get("llm_prompt") or solver_prompt
@@ -746,6 +851,7 @@ class AgentVerseOrchestrator:
                             agent_b_contract=reviewer.contract,
                             agent_b_url=reviewer.endpoint,
                             headers=headers,
+                            task_id=state.task_id,
                         )
                         critique = response.get("output", "")
                         llm_prompt = response.get("llm_prompt") or reviewer_prompt
@@ -892,6 +998,25 @@ Provide a clear, actionable summary of what should be done based on the discussi
                         f"orchestrator.execute_subtask.{expert.role}",
                         kind=SpanKind.CLIENT,
                     ):
+                        # Validate expert endpoint
+                        if not expert.endpoint or not isinstance(expert.endpoint, str) or not expert.endpoint.strip():
+                            error_msg = (
+                                f"Expert {expert.role} (index {expert.index}) has invalid endpoint: {expert.endpoint!r}. "
+                                f"Available URLs: {AGENT_B_URLS}"
+                            )
+                            self.logger.log(
+                                task_id=state.task_id,
+                                event_type="agentverse_execution_error",
+                                message=error_msg,
+                                extra={
+                                    "expert_role": expert.role,
+                                    "expert_index": expert.index,
+                                    "endpoint": expert.endpoint,
+                                    "available_urls": AGENT_B_URLS,
+                                },
+                            )
+                            raise ValueError(error_msg)
+                        
                         prompt = EXECUTION_PROMPT.format(
                             role=expert.role,
                             contract=expert.contract,
@@ -908,6 +1033,7 @@ Provide a clear, actionable summary of what should be done based on the discussi
                             agent_b_contract=expert.contract,
                             agent_b_url=expert.endpoint,
                             headers=headers,
+                            task_id=state.task_id,
                         )
                         llm_prompt = response.get("llm_prompt") or prompt
                         llm_response = response.get("llm_response") or response.get("output", "")
