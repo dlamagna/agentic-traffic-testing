@@ -13,7 +13,7 @@ cp .env.example .env
 
 # 3. Deploy from the repo root
 cd ..
-./scripts/deploy.sh
+./scripts/deploy/deploy.sh
 ```
 
 ## Deployment Modes
@@ -104,9 +104,9 @@ Or apply manually:
 
 ```bash
 # Apply/remove/check network emulation
-./scripts/apply_network_emulation.sh apply
-./scripts/apply_network_emulation.sh remove
-./scripts/apply_network_emulation.sh status
+./scripts/traffic/apply_network_emulation.sh apply
+./scripts/traffic/apply_network_emulation.sh remove
+./scripts/traffic/apply_network_emulation.sh status
 ```
 
 ---
@@ -227,19 +227,19 @@ From the repository root:
 
 ```bash
 # Deploy the testbed
-./scripts/deploy.sh
+./scripts/deploy/deploy.sh
 
 # Stop the testbed  
-./scripts/stop.sh
+./scripts/deploy/stop.sh
 
 # Stop and remove volumes
-./scripts/stop.sh --volumes
+./scripts/deploy/stop.sh --volumes
 
 # Apply network emulation (distributed mode)
-./scripts/apply_network_emulation.sh apply
+./scripts/traffic/apply_network_emulation.sh apply
 
 # Check health
-python scripts/health_check.py
+python scripts/monitoring/health_check.py
 ```
 
 ---
@@ -270,7 +270,7 @@ Containers need `NET_ADMIN` capability. The current compose files don't grant th
      - NET_ADMIN
    ```
 
-2. Rebuild: `./scripts/deploy.sh`
+2. Rebuild: `./scripts/deploy/deploy.sh`
 
 ### Port conflicts
 

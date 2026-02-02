@@ -15,7 +15,7 @@
 #
 # Usage:
 #   Set DEPLOYMENT_MODE=distributed in .env, then run:
-#   ./scripts/deploy.sh
+#   ./scripts/deploy/deploy.sh
 # =============================================================================
 
 services:
