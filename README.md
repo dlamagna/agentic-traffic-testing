@@ -12,18 +12,14 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 
 - [1. High-level architecture (MVP)](#1-high-level-architecture-mvp)
 - [2. What is eBPF and why we use it here](#2-what-is-ebpf-and-why-we-use-it-here)
-- [3. Installing eBPF tools (Debian/Ubuntu)](#3-installing-ebpf-tools-debianubuntu)
-- [4. Example commands to collect L3/L4 metrics](#4-example-commands-to-collect-l3l4-metrics)
-- [5. Experimental idea (MVP)](#5-experimental-idea-mvp)
-- [6. Roadmap](#6-roadmap)
-- [7. Repository layout](#7-repository-layout)
-- [8. LLM config](#8-llm-config)
-- [9. Agent endpoints](#9-agent-endpoints)
-- [10. Agent config and roles](#10-agent-config-and-roles)
-- [11. Chat UI scenarios](#11-chat-ui-scenarios)
-- [12. Shared GPU usage checks (read-only)](#12-shared-gpu-usage-checks-read-only)
-- [13. Health check script](#13-health-check-script)
-- [14. Next steps](#14-next-steps)
+  - [Installing eBPF tools (Debian/Ubuntu)](#installing-ebpf-tools-debianubuntu)
+  - [Example commands to collect L3/L4 metrics](#example-commands-to-collect-l3l4-metrics)
+- [3. Repository layout](#3-repository-layout)
+- [4. LLM config](#4-llm-config)
+- [5. Agent endpoints](#5-agent-endpoints)
+- [6. Agent config and roles](#6-agent-config-and-roles)
+- [7. Shared GPU usage checks (read-only)](#7-shared-gpu-usage-checks-read-only)
+- [8. Health check script](#8-health-check-script)
 
 ---
 
@@ -147,9 +143,7 @@ flowchart LR
 
 **eBPF** lets us attach sandboxed programs to kernel events (network, syscalls) without modifying kernel code. We use BCC/bpftrace to observe L3/L4 metrics per flow (RTT, retransmissions, connection lifetimes) without changing agents or tools.
 
----
-
-## 3. Installing eBPF tools (Debian/Ubuntu)
+### Installing eBPF tools (Debian/Ubuntu)
 
 On each node, run:
 
@@ -157,9 +151,7 @@ On each node, run:
 ./scripts/setup/install_ebpf_tools.sh
 ```
 
----
-
-## 4. Example commands to collect L3/L4 metrics
+### Example commands to collect L3/L4 metrics
 
 On each node:
 
@@ -174,32 +166,7 @@ Redirect to logs: `sudo tcprtt > logs/tcprtt_node1.log`
 
 ---
 
-## 5. Experimental idea (MVP)
-
-1. **Deploy** agents, LLM, and tools across logical nodes (VMs or Docker networks).
-
-2. **Scenarios**: Baseline (no LLM), agentic_simple (Agent A → Tool → LLM), agentic_multi_hop (Agent A → Agent B → tools → LLM).
-3. **Run** fixed workloads per scenario; log agent telemetry (TaskID, AgentID, ToolCallID) and eBPF metrics.
-4. **Compare** flow counts, RTT distributions, retransmissions, burst patterns.
-
-This gives you the first “traffic-shape” insight for agentic vs non-agentic workloads.
-
----
-
-## 6. Roadmap
-
-- **Phase 1 (current)**: Single-host MVP with Docker, BCC/bpftrace observability.
-
-- **Phase 2**: Kubernetes + Cilium/Pixie for cluster-wide metrics.
-- **Phase 3**: Programmable underlay (Mininet/P4) for congestion studies.
-
-- **Phase 4**: Multi-cluster, cross-domain agent coordination.
-
- or “”.
-
----
-
-## 7. Repository layout 
+## 3. Repository layout 
 
 
 ```text
@@ -237,7 +204,7 @@ This gives you the first “traffic-shape” insight for agentic vs non-agentic 
 
 See `infra/README.md` for deployment details.
 
-## 8. LLM config
+## 4. LLM config
 
 Default model: `meta-llama/Llama-3.1-8B-Instruct`. Run directly:
 
@@ -279,7 +246,7 @@ Set `LLM_MODEL` in `infra/.env` to change the model. Rebuild with `docker compos
 
 For gated models, set `HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) in your environment.
 
-## 9. Agent endpoints
+## 5. Agent endpoints
 
 **Agent A** (port 8101):
 
@@ -321,7 +288,7 @@ curl -X POST http://localhost:8102/subtask \
 
 ---
 
-## 10. Agent config and roles
+## 6. Agent config and roles
 
 ### Payload fields
 
@@ -361,13 +328,7 @@ All Agent B instances run the same code; roles are passed per-request. The **Age
 
 ---
 
-## 11. Chat UI scenarios
-
-Chat UI (`ui/chat/index.html`): Scenario dropdown with `agentic_simple`, `agentic_multi_hop`, `agentic_parallel`, `tool_call`. Only `agentic_multi_hop` and `agentic_parallel` change runtime behavior today.
-
----
-
-## 12. Shared GPU usage checks (read-only)
+## 7. Shared GPU usage checks (read-only)
 
 ```bash
 nvidia-smi
@@ -378,33 +339,9 @@ Avoid killing processes you don't own. If GPU memory is tight, lower model size 
 
 ---
 
-## 13. Health check script
+## 8. Health check script
 
 ```bash
 python scripts/monitoring/health_check.py
 ```
-
-Checks Docker services, LLM connectivity, agent endpoints, and agent-to-LLM (critical path). Use `--skip-docker` when running outside Docker. For DNS/LLM issues, ensure `LLM_SERVER_URL` matches a reachable URL.
-
----
-
-## 14. Next steps
-
-Immediate next steps to make this repo useful:
-
-1. Implement minimal Agent A and Agent B (even dumb prompts) that:
-
-   * Call MCP tools.
-   * Call the local LLM server.
-   * Emit `TaskID`, `AgentID`, and `ToolCallID` in logs.
-
-2. Implement a simple non-agentic baseline service.
-
-3. Add scripts to:
-
-   * Run one scenario at a time.
-   * Start eBPF probes.
-   * Dump all logs into `logs/` with timestamps.
-
-
 
