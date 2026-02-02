@@ -570,6 +570,36 @@
       margin-top: 12px;
     }
     
+    .flow-view-toggle {
+      display: inline-flex;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      margin-bottom: 12px;
+      background: var(--bg-dark);
+    }
+    
+    .flow-view-toggle button {
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      border-radius: 0;
+      min-width: 80px;
+    }
+    
+    .flow-view-toggle button.active {
+      background: var(--primary);
+      color: #fff;
+    }
+    
+    .flow-view-toggle button:not(.active):hover {
+      background: rgba(255,255,255,0.04);
+    }
+    
     .flow-table {
       width: 100%;
       border-collapse: collapse;
@@ -660,6 +690,75 @@
     .flow-stage-execution { background: #166534; color: #86efac; }
     .flow-stage-evaluation { background: #9a3412; color: #fdba74; }
     .flow-stage-synthesis { background: #0e7490; color: #67e8f9; }
+    
+    /* Flow Graph */
+    .flow-graph-container {
+      background: var(--bg-dark);
+      border-radius: 8px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      overflow: auto;
+      margin-bottom: 12px;
+    }
+    
+    .flow-graph-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    
+    .flow-graph-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border);
+    }
+    
+    .flow-graph-legend-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+    }
+    
+    .flow-graph-svg {
+      min-height: 260px;
+      width: 100%;
+    }
+    
+    .flow-graph-lane {
+      stroke: var(--border);
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+    }
+    
+    .flow-graph-lane-label {
+      fill: var(--text-secondary);
+      font-size: 11px;
+      dominant-baseline: middle;
+    }
+    
+    .flow-graph-edge {
+      stroke-width: 2;
+      fill: none;
+      opacity: 0.9;
+    }
+    
+    .flow-graph-node {
+      stroke: #0f172a;
+      stroke-width: 1;
+    }
+    
+    .flow-graph-node-label {
+      fill: var(--text-primary);
+      font-size: 10px;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -1226,7 +1325,154 @@ Provide the Python code with proper error handling and documentation.`
       return map[stage] || 'flow-stage-recruitment';
     }
     
-    // Render LLM requests table
+    // Get stage color for graph edges
+    function getStageColor(stage) {
+      const map = {
+        recruitment: '#1e40af',
+        decision: '#4c1d95',
+        execution: '#166534',
+        evaluation: '#9a3412',
+        synthesis: '#0e7490',
+        unknown: '#6366f1'
+      };
+      return map[stage] || map.unknown;
+    }
+    
+    // Render LLM requests graph as SVG (vertical swimlanes, Agent A orchestrator-centric)
+    function renderLlmRequestsGraph(requests) {
+      if (!requests || requests.length === 0) {
+        return '<p style="color: var(--text-secondary);">No LLM requests recorded.</p>';
+      }
+      
+      // Build vertical swimlanes: Agent A (orchestrator) + Agent B roles
+      const orchestratorKey = 'Agent A (orchestrator)';
+      const laneOrder = [orchestratorKey];
+      const laneIndex = { [orchestratorKey]: 0 };
+      
+      requests.forEach(req => {
+        const roleRaw = (req.agent_role || '').trim();
+        const roleLower = roleRaw.toLowerCase();
+        if (!roleRaw || roleLower.includes('orchestrator')) {
+          return;
+        }
+        const laneName = `Agent B – ${roleRaw}`;
+        if (laneIndex[laneName] === undefined) {
+          laneIndex[laneName] = laneOrder.length;
+          laneOrder.push(laneName);
+        }
+      });
+      
+      // Ensure at least one Agent B swimlane for clarity
+      if (laneOrder.length === 1) {
+        const fallbackLane = 'Agent B – worker';
+        laneIndex[fallbackLane] = laneOrder.length;
+        laneOrder.push(fallbackLane);
+      }
+      
+      const laneGapX = 140;
+      const paddingX = 80;
+      const paddingY = 40;
+      const stepY = 60;
+      const width = paddingX * 2 + Math.max(1, laneOrder.length - 1) * laneGapX;
+      const height = paddingY * 2 + Math.max(1, requests.length - 1) * stepY;
+      
+      let svg = `
+        <svg class="flow-graph-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L6,3 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+      `;
+      
+      // Lanes (vertical)
+      laneOrder.forEach((name, idx) => {
+        const x = paddingX + idx * laneGapX;
+        svg += `
+          <line class="flow-graph-lane" x1="${x}" y1="30" x2="${x}" y2="${height - 20}"></line>
+          <text class="flow-graph-lane-label" x="${x}" y="20" text-anchor="middle">${escapeHtml(name)}</text>
+        `;
+      });
+      
+      // Edges and nodes (time flows downward)
+      requests.forEach((req, idx) => {
+        const stage = req.stage || 'unknown';
+        const label = req.label || '';
+        const roleRaw = (req.agent_role || '').trim();
+        const roleLower = roleRaw.toLowerCase();
+        
+        let fromKey;
+        let toKey;
+        if (!roleRaw || roleLower.includes('orchestrator')) {
+          // Orchestrator self-directed LLM call
+          fromKey = orchestratorKey;
+          toKey = orchestratorKey;
+        } else {
+          const bLane = laneIndex[`Agent B – ${roleRaw}`] !== undefined
+            ? `Agent B – ${roleRaw}`
+            : laneOrder[1]; // fallback Agent B lane
+          // Model the dependency as Agent B returning results to Agent A
+          fromKey = bLane;
+          toKey = orchestratorKey;
+        }
+        
+        const x1 = paddingX + (laneIndex[fromKey] ?? 0) * laneGapX;
+        const x2 = paddingX + (laneIndex[toKey] ?? 0) * laneGapX;
+        const y = paddingY + idx * stepY;
+        const midX = (x1 + x2) / 2;
+        const color = getStageColor(stage);
+        const title = `#${req.seq} ${stage} – ${label}`;
+        
+        svg += `
+          <g>
+            <title>${escapeHtml(title)}</title>
+            <path
+              class="flow-graph-edge"
+              d="M ${x1} ${y} L ${x2} ${y}"
+              stroke="${color}"
+              marker-end="url(#arrowhead)"
+            ></path>
+            <circle
+              class="flow-graph-node"
+              cx="${midX}"
+              cy="${y}"
+              r="9"
+              fill="${color}"
+            ></circle>
+            <text
+              class="flow-graph-node-label"
+              x="${midX}"
+              y="${y + 3}"
+              text-anchor="middle"
+            >
+              ${req.seq}
+            </text>
+          </g>
+        `;
+      });
+      
+      svg += '</svg>';
+      
+      // Legend
+      const stages = ['recruitment', 'decision', 'execution', 'evaluation', 'synthesis'];
+      const legendItems = stages.map(s => `
+        <div class="flow-graph-legend-item">
+          <span class="flow-graph-legend-swatch" style="background: ${getStageColor(s)};"></span>
+          <span>${s}</span>
+        </div>
+      `).join('');
+      
+      return `
+        <div class="flow-graph-container">
+          <div class="flow-graph-legend">
+            ${legendItems}
+          </div>
+          ${svg}
+        </div>
+      `;
+    }
+    
+    // Render LLM requests (graph + table views with toggle)
     function renderLlmRequestsTable(requests) {
       if (!requests || requests.length === 0) {
         return '<p style="color: var(--text-secondary);">No LLM requests recorded.</p>';
@@ -1266,7 +1512,7 @@ Provide the Python code with proper error handling and documentation.`
         `;
       }).join('');
       
-      return `
+      const tableHtml = `
         <table class="flow-table">
           <thead>
             <tr>
@@ -1284,6 +1530,42 @@ Provide the Python code with proper error handling and documentation.`
           </tbody>
         </table>
       `;
+      
+      const graphHtml = renderLlmRequestsGraph(requests);
+      
+      return `
+        <div class="flow-view-toggle">
+          <button id="flowViewGraphBtn" class="active" type="button" onclick="setFlowView('graph')">Graph</button>
+          <button id="flowViewTableBtn" type="button" onclick="setFlowView('table')">Table</button>
+        </div>
+        <div id="flowGraphView">
+          ${graphHtml}
+        </div>
+        <div id="flowTableView" style="display: none;">
+          ${tableHtml}
+        </div>
+      `;
+    }
+    
+    // Toggle between graph and table views
+    function setFlowView(view) {
+      const graphView = document.getElementById('flowGraphView');
+      const tableView = document.getElementById('flowTableView');
+      const graphBtn = document.getElementById('flowViewGraphBtn');
+      const tableBtn = document.getElementById('flowViewTableBtn');
+      if (!graphView || !tableView || !graphBtn || !tableBtn) return;
+      
+      if (view === 'table') {
+        tableView.style.display = 'block';
+        graphView.style.display = 'none';
+        tableBtn.classList.add('active');
+        graphBtn.classList.remove('active');
+      } else {
+        graphView.style.display = 'block';
+        tableView.style.display = 'none';
+        graphBtn.classList.add('active');
+        tableBtn.classList.remove('active');
+      }
     }
     
     // Toggle flow row expansion
