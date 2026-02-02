@@ -497,6 +497,47 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.final-output-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.final-output-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.final-output-tab {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.final-output-tab:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.final-output-tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+}
+
+.final-output-view-raw {
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .final-output-copy-btn {
@@ -802,11 +843,15 @@ button {
   font-weight: 500;
   font-size: 13px;
   color: var(--text-primary);
+  flex-shrink: 0;
 }
 
 .change-value {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
   gap: 8px;
   font-size: 12px;
 }
@@ -814,6 +859,8 @@ button {
 .change-from,
 .change-to {
   color: var(--text-secondary);
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .change-arrow {

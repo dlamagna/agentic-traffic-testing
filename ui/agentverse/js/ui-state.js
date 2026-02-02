@@ -64,6 +64,9 @@ export class UIState {
     // Reset final output
     this.elements.finalOutputContainer.style.display = 'none';
     this.elements.finalOutput.textContent = '';
+    if (this.elements.finalOutputRaw) {
+      this.elements.finalOutputRaw.textContent = '';
+    }
     
     // Reset raw JSON
     this.elements.rawJson.textContent = '';
@@ -187,10 +190,13 @@ export class UIState {
     // Update progress
     this.elements.progressFill.style.width = '100%';
     
-    // Update final output
+    // Update final output (both formatted and raw views)
     if (data.final_output) {
       this.elements.finalOutputContainer.style.display = 'block';
       this.elements.finalOutput.textContent = data.final_output;
+      if (this.elements.finalOutputRaw) {
+        this.elements.finalOutputRaw.textContent = data.final_output;
+      }
     }
     
     // Update iteration history (ensure we have an array and container exists)

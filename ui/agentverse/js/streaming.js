@@ -94,9 +94,13 @@ export class StreamingHandler {
       document.getElementById('stage4Content').classList.add('expanded');
     }
     else if (data.stage === 'synthesis') {
-      // Show final output
+      // Show final output (both formatted and raw views)
       this.uiState.elements.finalOutputContainer.style.display = 'block';
-      this.uiState.elements.finalOutput.textContent = data.final_output || '';
+      const text = data.final_output || '';
+      this.uiState.elements.finalOutput.textContent = text;
+      if (this.uiState.elements.finalOutputRaw) {
+        this.uiState.elements.finalOutputRaw.textContent = text;
+      }
       
       // Stop timer and hide live badge since synthesis is the final stage
       this.uiState.stopTimer(true);
@@ -233,7 +237,7 @@ export class StreamingHandler {
    * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
    * @param {function} [onCancelled] - Callback when request is cancelled (AbortError)
    */
-  async runWorkflowStreaming(task, endpoint, maxIterations, scoreThreshold = 70, signal = null, onCancelled = null) {
+  async runWorkflowStreaming(task, endpoint, maxIterations, scoreThreshold = 70, signal = null, onCancelled = null, onComplete = null) {
     // Reset and start
     this.uiState.resetUI();
     this.uiState.startTimer();
@@ -394,14 +398,20 @@ export class StreamingHandler {
           this.uiState.stopTimer(true);
           
           // Save to request history
-          if (window.agentverse && window.agentverse.currentRequest) {
-            window.agentverse.saveRequestToHistory(
-              window.agentverse.currentRequest.task,
-              window.agentverse.currentRequest.endpoint,
-              window.agentverse.currentRequest.maxIterations,
-              responseData,
-              window.agentverse.currentRequest.scoreThreshold
-            );
+          try {
+            if (typeof onComplete === 'function') {
+              onComplete(responseData);
+            } else if (window.agentverse && window.agentverse.currentRequest) {
+              window.agentverse.saveRequestToHistory(
+                window.agentverse.currentRequest.task,
+                window.agentverse.currentRequest.endpoint,
+                window.agentverse.currentRequest.maxIterations,
+                responseData,
+                window.agentverse.currentRequest.scoreThreshold
+              );
+            }
+          } catch (historyErr) {
+            console.error('[AgentVerse] Failed to save request history:', historyErr);
           }
           
           return; // Success, exit the error handler

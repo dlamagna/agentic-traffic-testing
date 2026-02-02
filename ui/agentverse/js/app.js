@@ -25,6 +25,7 @@ class AgentVerseApp {
       progressFill: document.getElementById('progressFill'),
       finalOutputContainer: document.getElementById('finalOutputContainer'),
       finalOutput: document.getElementById('finalOutput'),
+      finalOutputRaw: document.getElementById('finalOutputRaw'),
       rawJson: document.getElementById('rawJson'),
       iterationHistory: document.getElementById('iterationHistory'),
       requestHistory: document.getElementById('requestHistory'),
@@ -257,7 +258,9 @@ class AgentVerseApp {
    */
   loadRequestHistory() {
     const history = this.getRequestHistory();
-    const container = this.elements.requestHistory;
+    const container = document.getElementById('requestHistory') || this.elements.requestHistory;
+    
+    if (!container) return;
     
     if (!history || history.length === 0) {
       container.innerHTML = `
@@ -280,10 +283,12 @@ class AgentVerseApp {
       const statusLabel = isCancelled ? 'Cancelled' : `${score}/100`;
       const itemClass = isCancelled ? 'request-history-item request-history-item--cancelled' : 'request-history-item';
 
+      const taskPreview = (entry.task || '').substring(0, 60);
+      const taskFull = entry.task || '';
       html += `
         <div class="${itemClass}" onclick="window.agentverse.loadRequestFromHistory('${entry.id}')">
           <div class="request-history-header">
-            <div class="request-history-title">${this.escapeHtml(entry.task.substring(0, 60))}${entry.task.length > 60 ? '...' : ''}</div>
+            <div class="request-history-title">${this.escapeHtml(taskPreview)}${taskFull.length > 60 ? '...' : ''}</div>
             <div class="request-history-meta">
               <span class="request-history-score" style="color: ${scoreColor}">${statusLabel}</span>
               <span class="request-history-goal">${goalIcon}</span>
@@ -392,6 +397,26 @@ class AgentVerseApp {
   }
 
   /**
+   * Switch between Formatted and Raw final output view
+   */
+  setFinalOutputView(view) {
+    const formattedEl = this.elements.finalOutput;
+    const rawEl = this.elements.finalOutputRaw;
+    if (!formattedEl || !rawEl) return;
+
+    const tabs = document.querySelectorAll('.final-output-tab');
+    tabs?.forEach(t => t.classList.toggle('active', t.dataset.view === view));
+
+    if (view === 'raw') {
+      formattedEl.style.display = 'none';
+      rawEl.style.display = 'block';
+    } else {
+      formattedEl.style.display = 'block';
+      rawEl.style.display = 'none';
+    }
+  }
+
+  /**
    * Run workflow
    */
   async runWorkflow() {
@@ -416,13 +441,17 @@ class AgentVerseApp {
     this.currentAbortController = new AbortController();
     this.showCancelButton();
 
+    const onComplete = (resultData) => {
+      this.saveRequestToHistory(task, endpoint, maxIterations, resultData, scoreThreshold);
+    };
     await this.streamingHandler.runWorkflowStreaming(
       task,
       endpoint,
       maxIterations,
       scoreThreshold,
       this.currentAbortController.signal,
-      () => this.onRequestCancelled()
+      () => this.onRequestCancelled(),
+      onComplete
     );
   }
 
@@ -477,6 +506,7 @@ class AgentVerseApp {
   clearAll() {
     this.elements.taskEl.value = '';
     this.uiState.resetUI();
+    this.setFinalOutputView('formatted');
     if (this.elements.workflowPanel) this.elements.workflowPanel.classList.remove('workflow-panel--cancelled');
     this.hideCancelButton();
     this.elements.iterationHistory.innerHTML = `
