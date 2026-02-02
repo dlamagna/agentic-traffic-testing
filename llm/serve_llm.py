@@ -56,6 +56,7 @@ LLM_DTYPE = os.environ.get("LLM_DTYPE")
 LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
 LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
 LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
 LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
     "1",
@@ -189,7 +190,7 @@ class AsyncVLLMBackend:
 
         engine_args = AsyncEngineArgs(**engine_kwargs)
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
-        self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
+        self._default_sampling = SamplingParams(temperature=0.2, max_tokens=LLM_MAX_TOKENS)
         self._tokenizer = None
         self._tokenizer_ready = False
 
@@ -432,6 +433,13 @@ async def handle_chat(request: web.Request) -> web.Response:
                 INFLIGHT.dec()
             return web.json_response({"error": "Missing 'prompt' field"}, status=400)
 
+        max_tokens = data.get("max_tokens")
+        if max_tokens is not None and not isinstance(max_tokens, int):
+            try:
+                max_tokens = int(max_tokens)
+            except (TypeError, ValueError):
+                max_tokens = None
+
         # Apply chat template for Llama 3 Instruct format
         system_prompt = data.get("system_prompt")  # Optional override
         skip_template = data.get("skip_chat_template", False)
@@ -467,6 +475,7 @@ async def handle_chat(request: web.Request) -> web.Response:
                 prompt,
                 request_id=request_id,
                 log_progress=True,
+                max_tokens=max_tokens,
             )
 
             prompt_tokens = _backend.count_tokens(prompt)
