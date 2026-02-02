@@ -15,7 +15,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from enum import Enum
 
 import httpx
@@ -26,6 +26,16 @@ from opentelemetry.trace import SpanKind
 
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
+from agents.agent_a.prompts import (
+    EXPERT_RECRUITMENT_PROMPT,
+    HORIZONTAL_DISCUSSION_PROMPT,
+    VERTICAL_SOLVER_PROMPT,
+    VERTICAL_REVIEWER_PROMPT,
+    EXECUTION_PROMPT,
+    EVALUATION_PROMPT,
+    FINAL_SYNTHESIS_PROMPT,
+    SYNTHESIZE_DISCUSSION_PROMPT,
+)
 
 
 # Configuration
@@ -91,9 +101,11 @@ class EvaluationResult:
     """Result of the evaluation stage."""
     goal_achieved: bool
     score: int
-    feedback: str
-    missing_aspects: List[str]
-    should_iterate: bool
+    criteria: Optional[Dict[str, int]] = None  # Breakdown: completeness, correctness, clarity, relevance, actionability
+    rationale: Optional[str] = None  # Explanation of how the score was calculated
+    feedback: str = ""
+    missing_aspects: List[str] = field(default_factory=list)
+    should_iterate: bool = False
 
 
 @dataclass
@@ -121,149 +133,6 @@ class AgentVerseState:
     completed: bool = False
 
 
-# ============================================================================
-# Prompts
-# ============================================================================
-
-EXPERT_RECRUITMENT_PROMPT = """You are the Orchestrator (Agent A) in an AgentVerse multi-agent system.
-Your job is to analyze the user's task and determine what expert agents are needed.
-
-User Task:
-{task}
-
-{feedback_context}
-
-Based on this task, determine:
-1. What specialized roles are needed? Choose from: planner, researcher, executor, critic, summarizer
-2. How many instances of each role (1-3 per role, max 5 total agents)?
-3. What specific responsibilities should each role have?
-4. Should agents use horizontal (democratic discussion) or vertical (solver + reviewers) communication?
-
-IMPORTANT: Return ONLY valid JSON with no extra text.
-The JSON MUST have this shape (types, not examples):
-- "experts": list of objects, each with:
-  - "role": one of ["planner", "researcher", "executor", "critic", "summarizer"]
-  - "responsibilities": string describing what this expert will do
-  - "contract": string with detailed instructions for this expert
-- "communication_structure": "horizontal" or "vertical"
-- "execution_order": list of role names in the order they should act
-- "reasoning": brief string explaining why these experts and structure were chosen
-"""
-
-HORIZONTAL_DISCUSSION_PROMPT = """You are a {role} agent in a collaborative multi-agent discussion.
-
-Your Contract:
-{contract}
-
-Original Task:
-{task}
-
-Discussion History:
-{discussion_history}
-
-Current Round: {round_num}
-
-Provide your expert input on this task. Consider what others have said.
-If you believe consensus has been reached and no more input is needed, end your response with [CONSENSUS].
-Otherwise, provide constructive input that moves toward a solution.
-"""
-
-VERTICAL_SOLVER_PROMPT = """You are the Solver agent. Your job is to propose a solution.
-
-Your Contract:
-{contract}
-
-Original Task:
-{task}
-
-{previous_proposal}
-{critiques}
-
-Propose a detailed solution to the task. Be specific and actionable.
-"""
-
-VERTICAL_REVIEWER_PROMPT = """You are a {role} Reviewer agent. Your job is to critique the proposed solution.
-
-Your Contract:
-{contract}
-
-Original Task:
-{task}
-
-Proposed Solution:
-{proposal}
-
-Review this proposal critically:
-- Is it correct and complete?
-- Are there any errors or missing aspects?
-- What improvements would you suggest?
-
-If the proposal is acceptable, respond with [APPROVED].
-Otherwise, provide specific, constructive criticism.
-"""
-
-EXECUTION_PROMPT = """You are an {role} agent executing a specific subtask.
-
-Your Contract:
-{contract}
-
-Original Task:
-{task}
-
-Your Assigned Subtask:
-{subtask}
-
-Context from Decision Phase:
-{decision_context}
-
-Execute your subtask and provide a detailed result. Be specific and thorough.
-"""
-
-EVALUATION_PROMPT = """You are the Evaluator agent. Assess whether the goal has been achieved.
-
-Original Task:
-{task}
-
-Agent Results:
-{results}
-
-Iteration: {iteration} of {max_iterations}
-
-Evaluate the results:
-1. Is the original task fully addressed? (yes/no)
-2. Rate the quality of the solution (0-100)
-3. What aspects are missing or could be improved?
-4. Should we iterate with adjusted experts?
-
-IMPORTANT: Return ONLY valid JSON:
-{{
-  "goal_achieved": true,
-  "score": 85,
-  "feedback": "The solution addresses the main points but could improve...",
-  "missing_aspects": ["aspect1", "aspect2"],
-  "should_iterate": false
-}}
-"""
-
-FINAL_SYNTHESIS_PROMPT = """You are the Orchestrator synthesizing the final answer.
-
-Original Task:
-{task}
-
-Iteration History:
-{iteration_summary}
-
-Final Agent Results:
-{results}
-
-Evaluation:
-{evaluation}
-
-Synthesize a clear, comprehensive final answer for the user.
-Include all relevant findings and conclusions from the agent collaboration.
-"""
-
-
 class AgentVerseOrchestrator:
     """
     Orchestrator implementing the AgentVerse 4-stage workflow.
@@ -275,10 +144,11 @@ class AgentVerseOrchestrator:
     4. Evaluation - Assess results and provide feedback for iteration
     """
     
-    def __init__(self, logger: TelemetryLogger, tracer=None):
+    def __init__(self, logger: TelemetryLogger, tracer=None, progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None):
         self.logger = logger
         self.tracer = tracer or get_tracer("agent-a-orchestrator")
         self.http_client = httpx.Client(timeout=LLM_TIMEOUT_SECONDS)
+        self.progress_callback = progress_callback
     
     def _call_llm(
         self,
@@ -397,6 +267,14 @@ class AgentVerseOrchestrator:
             )
             raise
     
+    def _send_progress(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Send progress update via callback if available."""
+        if self.progress_callback:
+            self.progress_callback({
+                "event": event_type,
+                "data": data
+            })
+    
     def _record_llm_request(
         self,
         state: AgentVerseState,
@@ -430,6 +308,9 @@ class AgentVerseOrchestrator:
         if round_num is not None:
             entry["round"] = round_num
         state.llm_requests.append(entry)
+        
+        # Send progress update with new LLM request
+        self._send_progress("llm_request", entry)
     
     def _parse_json_response(self, response: str, default: Any = None) -> Any:
         """Parse JSON from LLM response, handling common issues."""
@@ -477,6 +358,14 @@ class AgentVerseOrchestrator:
         ) as span:
             span.set_attribute("app.task_id", state.task_id)
             span.set_attribute("app.iteration", state.iteration)
+            
+            # Send progress update: starting recruitment
+            self._send_progress("stage_start", {
+                "stage": "recruitment",
+                "stage_number": 1,
+                "iteration": state.iteration,
+                "message": "Analyzing task and recruiting expert agents..."
+            })
             
             feedback_context = ""
             if feedback:
@@ -612,6 +501,16 @@ class AgentVerseOrchestrator:
             span.set_attribute("app.expert_count", len(experts))
             span.set_attribute("app.communication_structure", structure.value)
             
+            # Send progress update: recruitment complete
+            self._send_progress("stage_complete", {
+                "stage": "recruitment",
+                "stage_number": 1,
+                "iteration": state.iteration,
+                "experts": [{"role": e.role, "responsibilities": e.responsibilities} for e in experts],
+                "communication_structure": structure.value,
+                "reasoning": reasoning
+            })
+            
             return result
     
     # ========================================================================
@@ -633,6 +532,15 @@ class AgentVerseOrchestrator:
             span.set_attribute("app.task_id", state.task_id)
             span.set_attribute("app.structure", recruitment.communication_structure.value)
             
+            # Send progress update: starting decision-making
+            self._send_progress("stage_start", {
+                "stage": "decision",
+                "stage_number": 2,
+                "iteration": state.iteration,
+                "message": f"Starting {recruitment.communication_structure.value} decision-making...",
+                "structure": recruitment.communication_structure.value
+            })
+            
             self.logger.log(
                 task_id=state.task_id,
                 event_type="agentverse_decision_start",
@@ -640,9 +548,21 @@ class AgentVerseOrchestrator:
             )
             
             if recruitment.communication_structure == CommunicationStructure.HORIZONTAL:
-                return self._horizontal_discussion(state, recruitment)
+                result = self._horizontal_discussion(state, recruitment)
             else:
-                return self._vertical_decision(state, recruitment)
+                result = self._vertical_decision(state, recruitment)
+            
+            # Send progress update: decision complete
+            self._send_progress("stage_complete", {
+                "stage": "decision",
+                "stage_number": 2,
+                "iteration": state.iteration,
+                "consensus_reached": result.consensus_reached,
+                "structure": result.structure_used,
+                "rounds": len(result.discussion_rounds)
+            })
+            
+            return result
     
     def _horizontal_discussion(
         self,
@@ -723,6 +643,15 @@ class AgentVerseOrchestrator:
                 message=f"Completed discussion round {round_num}",
                 extra={"round": round_num, "all_consensus": all_consensus},
             )
+            
+            # Send progress update: round complete
+            self._send_progress("discussion_round", {
+                "stage": "decision",
+                "round": round_num,
+                "iteration": state.iteration,
+                "responses": round_responses,
+                "consensus": all_consensus
+            })
             
             if all_consensus:
                 consensus_reached = True
@@ -909,6 +838,16 @@ class AgentVerseOrchestrator:
                 extra={"iteration": iteration, "all_approved": all_approved},
             )
             
+            # Send progress update: vertical iteration complete
+            self._send_progress("vertical_iteration", {
+                "stage": "decision",
+                "iteration": state.iteration,
+                "solver_iteration": iteration,
+                "proposal": proposal[:200] + "..." if len(proposal) > 200 else proposal,
+                "reviewer_responses": reviewer_responses,
+                "all_approved": all_approved
+            })
+            
             if all_approved:
                 break
         
@@ -927,16 +866,10 @@ class AgentVerseOrchestrator:
         discussion_history: str,
     ) -> str:
         """Synthesize a final decision from discussion history."""
-        prompt = f"""You are the Orchestrator. Synthesize the discussion into a clear action plan.
-
-Original Task:
-{state.original_task}
-
-Discussion:
-{discussion_history}
-
-Provide a clear, actionable summary of what should be done based on the discussion.
-"""
+        prompt = SYNTHESIZE_DISCUSSION_PROMPT.format(
+            task=state.original_task,
+            discussion_history=discussion_history,
+        )
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
@@ -970,6 +903,15 @@ Provide a clear, actionable summary of what should be done based on the discussi
             kind=SpanKind.INTERNAL,
         ) as span:
             span.set_attribute("app.task_id", state.task_id)
+            
+            # Send progress update: starting execution
+            self._send_progress("stage_start", {
+                "stage": "execution",
+                "stage_number": 3,
+                "iteration": state.iteration,
+                "message": f"Executing tasks with {len(recruitment.experts)} agents...",
+                "expert_count": len(recruitment.experts)
+            })
             
             self.logger.log(
                 task_id=state.task_id,
@@ -1083,6 +1025,17 @@ Provide a clear, actionable summary of what should be done based on the discussi
                         success_count += 1
                     else:
                         failure_count += 1
+                    
+                    # Send progress update: execution result
+                    self._send_progress("execution_result", {
+                        "stage": "execution",
+                        "iteration": state.iteration,
+                        "expert": result.get("expert"),
+                        "success": result.get("success"),
+                        "output_preview": result.get("output", "")[:200],
+                        "completed": len(outputs),
+                        "total": len(recruitment.experts)
+                    })
             
             self.logger.log(
                 task_id=state.task_id,
@@ -1091,11 +1044,23 @@ Provide a clear, actionable summary of what should be done based on the discussi
                 extra={"success": success_count, "failures": failure_count},
             )
             
-            return ExecutionResult(
+            result = ExecutionResult(
                 outputs=outputs,
                 success_count=success_count,
                 failure_count=failure_count,
             )
+            
+            # Send progress update: execution complete
+            self._send_progress("stage_complete", {
+                "stage": "execution",
+                "stage_number": 3,
+                "iteration": state.iteration,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "total": len(outputs)
+            })
+            
+            return result
     
     def _create_subtasks(
         self,
@@ -1137,6 +1102,14 @@ Focus on what is relevant to your expertise.
             span.set_attribute("app.task_id", state.task_id)
             span.set_attribute("app.iteration", state.iteration)
             
+            # Send progress update: starting evaluation
+            self._send_progress("stage_start", {
+                "stage": "evaluation",
+                "stage_number": 4,
+                "iteration": state.iteration,
+                "message": "Evaluating results and determining if iteration is needed..."
+            })
+            
             self.logger.log(
                 task_id=state.task_id,
                 event_type="agentverse_evaluation_start",
@@ -1177,6 +1150,10 @@ Focus on what is relevant to your expertise.
             score = parsed.get("score", 50)
             should_iterate = parsed.get("should_iterate", False)
             
+            # Extract structured criteria breakdown and rationale
+            criteria = parsed.get("criteria")
+            rationale = parsed.get("rationale")
+            
             # Don't iterate if we've reached max or achieved goal
             if state.iteration + 1 >= state.max_iterations:
                 should_iterate = False
@@ -1186,6 +1163,8 @@ Focus on what is relevant to your expertise.
             result = EvaluationResult(
                 goal_achieved=goal_achieved,
                 score=score,
+                criteria=criteria,
+                rationale=rationale,
                 feedback=parsed.get("feedback", ""),
                 missing_aspects=parsed.get("missing_aspects", []),
                 should_iterate=should_iterate,
@@ -1204,6 +1183,17 @@ Focus on what is relevant to your expertise.
             
             span.set_attribute("app.goal_achieved", goal_achieved)
             span.set_attribute("app.score", score)
+            
+            # Send progress update: evaluation complete
+            self._send_progress("stage_complete", {
+                "stage": "evaluation",
+                "stage_number": 4,
+                "iteration": state.iteration,
+                "goal_achieved": goal_achieved,
+                "score": score,
+                "should_iterate": should_iterate,
+                "feedback": result.feedback
+            })
             
             return result
     
@@ -1244,6 +1234,13 @@ Focus on what is relevant to your expertise.
             while state.iteration < state.max_iterations:
                 iteration_start = time.time()
                 
+                # Send progress update: starting iteration
+                self._send_progress("iteration_start", {
+                    "iteration": state.iteration,
+                    "max_iterations": state.max_iterations,
+                    "message": f"Starting iteration {state.iteration + 1} of {state.max_iterations}..."
+                })
+                
                 # Stage 1: Expert Recruitment
                 state.recruitment = self.recruit_experts(state, feedback)
                 
@@ -1278,6 +1275,8 @@ Focus on what is relevant to your expertise.
                     "evaluation": {
                         "goal_achieved": state.evaluation.goal_achieved,
                         "score": state.evaluation.score,
+                        "criteria": state.evaluation.criteria,
+                        "rationale": state.evaluation.rationale,
                     },
                 })
                 
@@ -1289,8 +1288,23 @@ Focus on what is relevant to your expertise.
                 state.iteration += 1
             
             # Generate final output
+            self._send_progress("stage_start", {
+                "stage": "synthesis",
+                "stage_number": 5,
+                "iteration": state.iteration,
+                "message": "Generating final synthesized output..."
+            })
+            
             state.final_output = self._generate_final_output(state)
             state.completed = True
+            
+            # Send progress update: synthesis complete
+            self._send_progress("stage_complete", {
+                "stage": "synthesis",
+                "stage_number": 5,
+                "iteration": state.iteration,
+                "final_output": state.final_output
+            })
             
             self.logger.log(
                 task_id=task_id,
@@ -1391,6 +1405,8 @@ Feedback: {state.evaluation.feedback}
                 "evaluation": {
                     "goal_achieved": state.evaluation.goal_achieved if state.evaluation else False,
                     "score": state.evaluation.score if state.evaluation else 0,
+                    "criteria": state.evaluation.criteria if state.evaluation else None,
+                    "rationale": state.evaluation.rationale if state.evaluation else None,
                     "feedback": state.evaluation.feedback if state.evaluation else "",
                     "missing_aspects": state.evaluation.missing_aspects if state.evaluation else [],
                 },
