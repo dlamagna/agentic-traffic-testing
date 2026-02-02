@@ -69,6 +69,8 @@ services:
     command: ["python", "-m", "agents.agent_a.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   agent-b:
     build:
@@ -91,6 +93,8 @@ services:
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   agent-b-2:
     build:
@@ -114,6 +118,8 @@ services:
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   agent-b-3:
     build:
@@ -137,6 +143,8 @@ services:
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   agent-b-4:
     build:
@@ -160,6 +168,8 @@ services:
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   agent-b-5:
     build:
@@ -183,6 +193,8 @@ services:
     command: ["python", "-m", "agents.agent_b.server"]
     networks:
       - agent-net
+    cap_add:
+      - NET_ADMIN
 
   mcp-tool-db:
     build:
