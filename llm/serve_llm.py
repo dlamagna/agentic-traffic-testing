@@ -220,9 +220,8 @@ class AsyncVLLMBackend:
         last_token_count = 0
         queue_wait_s: float = 0.0
 
-        # Spans for queue wait and generation live here so that Jaeger
-        # shows accurate timing for each phase.
-        wait_span = _tracer.start_span("llm.wait_for_slot")
+        # Span for time-to-first-token (TTFT): from queuing until the first token.
+        wait_span = _tracer.start_span("llm.time_to_first_token")
         gen_span = None
         gen_start = None
 
@@ -234,7 +233,8 @@ class AsyncVLLMBackend:
                     first = False
                     first_time = time.monotonic()
                     queue_wait_s = first_time - queue_start
-                    wait_span.set_attribute("llm.queue_wait_seconds", queue_wait_s)
+                    # Record TTFT (time to first token)
+                    wait_span.set_attribute("llm_ttft_seconds", queue_wait_s)
                     wait_span.end()
                     wait_span = None
 
