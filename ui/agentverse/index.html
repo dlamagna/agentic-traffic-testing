@@ -48,6 +48,10 @@
             <option value="5">5 iterations (max)</option>
           </select>
           
+          <label for="scoreThreshold">Score threshold for acceptance (0–100)</label>
+          <input id="scoreThreshold" type="number" min="0" max="100" value="70" step="1" placeholder="70" title="Workflow stops when evaluation score meets or exceeds this value. Below this score, another iteration (expert recruitment, decision, execution, evaluation) runs." style="max-width: 120px;">
+          <span style="font-size: 12px; color: var(--text-secondary); display: block; margin-top: -8px; margin-bottom: 12px;">Below this score, workflow runs another iteration.</span>
+          
           <label for="endpoint">Agent A Endpoint</label>
           <input id="endpoint" type="text" placeholder="http://localhost:8101/agentverse">
           
@@ -61,6 +65,7 @@
           
           <div class="button-row">
             <button id="runBtn" class="btn-primary">Run AgentVerse Workflow</button>
+            <button id="cancelBtn" type="button" class="btn-secondary btn-cancel" style="display: none;" onclick="window.agentverse.cancelRequest()" title="Cancel the current request">Cancel request</button>
             <button id="clearBtn" class="btn-secondary">Clear</button>
           </div>
         </div>
@@ -77,6 +82,25 @@
             <div class="empty-state">
               <div class="empty-state-icon">📊</div>
               <p>Run a workflow to see iteration history</p>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Request History -->
+        <div class="card" style="margin-top: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 style="margin: 0;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 3h18v18H3zM7 8h10M7 12h10M7 16h10"/>
+              </svg>
+              Request History
+            </h2>
+            <button id="clearHistoryBtn" class="btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="window.agentverse.clearRequestHistory()">Clear</button>
+          </div>
+          <div id="requestHistory">
+            <div class="empty-state">
+              <div class="empty-state-icon">📋</div>
+              <p>Previous requests will appear here</p>
             </div>
           </div>
         </div>
@@ -183,11 +207,21 @@
         <!-- Final Output -->
         <div id="finalOutputContainer" style="display: none;">
           <div class="final-output">
-            <h3>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 8px;">
-                <polyline points="20 6 9 17 4 12"/>
-              </svg>
-              Final Output
+            <h3 class="final-output-header">
+              <span>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 8px;">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                Final Output
+              </span>
+              <button
+                type="button"
+                class="btn-secondary final-output-copy-btn"
+                onclick="window.agentverse.copyFinalOutput()"
+                title="Copy final output to clipboard"
+              >
+                Copy
+              </button>
             </h3>
             <div class="final-output-content" id="finalOutput"></div>
           </div>
