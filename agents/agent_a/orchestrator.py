@@ -74,6 +74,8 @@ class DecisionResult:
     discussion_rounds: List[Dict[str, Any]]
     consensus_reached: bool
     structure_used: str
+    solver_role: Optional[str] = None
+    reviewer_roles: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -137,19 +139,15 @@ Based on this task, determine:
 3. What specific responsibilities should each role have?
 4. Should agents use horizontal (democratic discussion) or vertical (solver + reviewers) communication?
 
-IMPORTANT: Return ONLY valid JSON with no extra text:
-{{
-  "experts": [
-    {{
-      "role": "planner",
-      "responsibilities": "Break down the task into subtasks with dependencies",
-      "contract": "You are a Planner agent. Your job is to analyze the problem and create a structured plan..."
-    }}
-  ],
-  "communication_structure": "horizontal",
-  "execution_order": ["planner", "researcher", "executor", "critic", "summarizer"],
-  "reasoning": "Brief explanation of why these experts were chosen"
-}}
+IMPORTANT: Return ONLY valid JSON with no extra text.
+The JSON MUST have this shape (types, not examples):
+- "experts": list of objects, each with:
+  - "role": one of ["planner", "researcher", "executor", "critic", "summarizer"]
+  - "responsibilities": string describing what this expert will do
+  - "contract": string with detailed instructions for this expert
+- "communication_structure": "horizontal" or "vertical"
+- "execution_order": list of role names in the order they should act
+- "reasoning": brief string explaining why these experts and structure were chosen
 """
 
 HORIZONTAL_DISCUSSION_PROMPT = """You are a {role} agent in a collaborative multi-agent discussion.
@@ -634,6 +632,8 @@ class AgentVerseOrchestrator:
             discussion_rounds=discussion_rounds,
             consensus_reached=consensus_reached,
             structure_used="horizontal",
+            solver_role=None,
+            reviewer_roles=[e.role for e in recruitment.experts],
         )
     
     def _vertical_decision(
@@ -645,9 +645,22 @@ class AgentVerseOrchestrator:
         """Vertical (solver + reviewers) decision-making."""
         discussion_rounds: List[Dict[str, Any]] = []
         
-        # Find solver (first expert) and reviewers (rest)
-        solver = recruitment.experts[0] if recruitment.experts else None
-        reviewers = recruitment.experts[1:] if len(recruitment.experts) > 1 else []
+        # Find solver and reviewers.
+        # Prefer a planner as solver; if none, fall back to first expert.
+        solver: Optional[Expert] = None
+        reviewers: List[Expert] = []
+
+        if recruitment.experts:
+            planner_solver = next(
+                (e for e in recruitment.experts if e.role == "planner"),
+                None,
+            )
+            if planner_solver is not None:
+                solver = planner_solver
+                reviewers = [e for e in recruitment.experts if e is not planner_solver]
+            else:
+                solver = recruitment.experts[0]
+                reviewers = recruitment.experts[1:] if len(recruitment.experts) > 1 else []
         
         if not solver:
             return DecisionResult(
@@ -655,6 +668,8 @@ class AgentVerseOrchestrator:
                 discussion_rounds=[],
                 consensus_reached=False,
                 structure_used="vertical",
+                solver_role=None,
+                reviewer_roles=[],
             )
         
         proposal = ""
@@ -703,53 +718,71 @@ class AgentVerseOrchestrator:
             except Exception as exc:
                 proposal = f"[Solver error: {exc}]"
             
-            # Reviewers critique
-            reviewer_responses = []
+            # Reviewers critique (in parallel)
+            reviewer_responses: List[Dict[str, Any]] = []
             all_approved = True
-            
-            for reviewer in reviewers:
-                reviewer_prompt = VERTICAL_REVIEWER_PROMPT.format(
-                    role=reviewer.role,
-                    contract=reviewer.contract,
-                    task=state.original_task,
-                    proposal=proposal,
-                )
-                
-                try:
-                    headers = {}
-                    propagate.inject(headers)
-                    response = self._call_agent_b(
-                        subtask=reviewer_prompt,
-                        agent_b_role=reviewer.role,
-                        agent_b_contract=reviewer.contract,
-                        agent_b_url=reviewer.endpoint,
-                        headers=headers,
-                    )
-                    critique = response.get("output", "")
-                    llm_prompt = response.get("llm_prompt") or reviewer_prompt
-                    llm_response = response.get("llm_response") or critique
-                    self._record_llm_request(
-                        state,
-                        stage="decision",
-                        label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
-                        prompt=llm_prompt,
-                        response=llm_response,
-                        source=f"agent-b-{reviewer.index + 1}",
-                        agent_role=reviewer.role,
-                        endpoint=response.get("llm_endpoint"),
-                        round_num=iteration,
-                    )
-                except Exception as exc:
-                    critique = f"[Reviewer error: {exc}]"
-                
-                reviewer_responses.append({
-                    "reviewer": reviewer.role,
-                    "critique": critique,
-                    "approved": "[APPROVED]" in critique,
-                })
-                
-                if "[APPROVED]" not in critique:
-                    all_approved = False
+
+            if reviewers:
+                request_ctx = otel_context.get_current()
+
+                def _reviewer_task(
+                    ctx: otel_context.Context,
+                    reviewer: Expert,
+                ) -> Dict[str, Any]:
+                    token = otel_context.attach(ctx)
+                    try:
+                        reviewer_prompt = VERTICAL_REVIEWER_PROMPT.format(
+                            role=reviewer.role,
+                            contract=reviewer.contract,
+                            task=state.original_task,
+                            proposal=proposal,
+                        )
+
+                        headers: Dict[str, str] = {}
+                        propagate.inject(headers)
+                        response = self._call_agent_b(
+                            subtask=reviewer_prompt,
+                            agent_b_role=reviewer.role,
+                            agent_b_contract=reviewer.contract,
+                            agent_b_url=reviewer.endpoint,
+                            headers=headers,
+                        )
+                        critique = response.get("output", "")
+                        llm_prompt = response.get("llm_prompt") or reviewer_prompt
+                        llm_response = response.get("llm_response") or critique
+                        self._record_llm_request(
+                            state,
+                            stage="decision",
+                            label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
+                            prompt=llm_prompt,
+                            response=llm_response,
+                            source=f"agent-b-{reviewer.index + 1}",
+                            agent_role=reviewer.role,
+                            endpoint=response.get("llm_endpoint"),
+                            round_num=iteration,
+                        )
+                    except Exception as exc:
+                        critique = f"[Reviewer error: {exc}]"
+                    finally:
+                        otel_context.detach(token)
+
+                    return {
+                        "reviewer": reviewer.role,
+                        "critique": critique,
+                        "approved": "[APPROVED]" in critique,
+                    }
+
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=len(reviewers)) as executor:
+                    futures = [
+                        executor.submit(_reviewer_task, request_ctx, reviewer)
+                        for reviewer in reviewers
+                    ]
+                    for future in futures:
+                        reviewer_responses.append(future.result())
+
+                all_approved = all(r.get("approved", False) for r in reviewer_responses)
             
             critiques = "\n".join([
                 f"{r['reviewer']}: {r['critique']}"
@@ -778,6 +811,8 @@ class AgentVerseOrchestrator:
             discussion_rounds=discussion_rounds,
             consensus_reached=all_approved if reviewers else True,
             structure_used="vertical",
+            solver_role=solver.role if solver else None,
+            reviewer_roles=[r.role for r in reviewers],
         )
     
     def _synthesize_discussion(
@@ -1219,6 +1254,8 @@ Feedback: {state.evaluation.feedback}
                     "consensus_reached": state.decision.consensus_reached if state.decision else False,
                     "structure_used": state.decision.structure_used if state.decision else "",
                     "discussion_rounds": state.decision.discussion_rounds if state.decision else [],
+                    "solver_role": state.decision.solver_role if state.decision else None,
+                    "reviewer_roles": state.decision.reviewer_roles if state.decision else [],
                 },
                 "execution": {
                     "outputs": state.execution.outputs if state.execution else [],
