@@ -152,7 +152,7 @@ Required fields:
 Evaluate honestly based on the actual quality of the results. Do not bias toward any particular score range.
 """
 
-FINAL_SYNTHESIS_PROMPT = """You are the Orchestrator synthesizing the final answer.
+FINAL_SYNTHESIS_PROMPT = """You are the Orchestrator producing the FINAL COMPLETE ANSWER for the user.
 
 Original Task:
 {task}
@@ -166,8 +166,17 @@ Final Agent Results:
 Evaluation:
 {evaluation}
 
-Synthesize a clear, comprehensive final answer for the user.
-Include all relevant findings and conclusions from the agent collaboration.
+IMPORTANT INSTRUCTIONS:
+1. Produce a COMPLETE, STANDALONE answer that fully addresses the original task
+2. The user will ONLY see this final output - they will NOT see the agent results above
+3. Include ALL functional details, code, steps, explanations, or solutions from the agent results
+4. Do NOT summarize or truncate - include the FULL content needed to answer the task
+5. Structure the answer clearly with sections/headings if appropriate
+6. If the task asked for code, include the COMPLETE code (not snippets or partial examples)
+7. If the task asked for steps/instructions, include ALL steps with full details
+8. The answer must make complete sense on its own without any additional context
+
+Produce the complete final answer now:
 """
 
 SYNTHESIZE_DISCUSSION_PROMPT = """You are the Orchestrator. Synthesize the discussion into a clear action plan.

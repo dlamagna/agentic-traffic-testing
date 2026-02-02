@@ -1273,7 +1273,7 @@ Focus on what is relevant to your expertise.
                 
                 # Record iteration
                 iteration_time = time.time() - iteration_start
-                state.iteration_history.append({
+                iteration_entry = {
                     "iteration": state.iteration,
                     "duration_seconds": round(iteration_time, 2),
                     "recruitment": {
@@ -1293,7 +1293,14 @@ Focus on what is relevant to your expertise.
                         "score": state.evaluation.score,
                         "criteria": state.evaluation.criteria,
                         "rationale": state.evaluation.rationale,
+                        "feedback": state.evaluation.feedback or "",
                     },
+                }
+                state.iteration_history.append(iteration_entry)
+                
+                # Stream iteration_complete so UI can update iteration history live
+                self._send_progress("iteration_complete", {
+                    "iteration_history": state.iteration_history,
                 })
                 
                 # Check if we should continue
@@ -1381,11 +1388,15 @@ Feedback: {state.evaluation.feedback}
     
     def _state_to_response(self, state: AgentVerseState) -> Dict[str, Any]:
         """Convert state to API response format."""
+        # Calculate total duration from iteration history
+        total_duration = sum(h.get("duration_seconds", 0) for h in state.iteration_history)
+        
         return {
             "task_id": state.task_id,
             "original_task": state.original_task,
             "completed": state.completed,
             "iterations": state.iteration + 1,
+            "duration_seconds": total_duration,
             "final_output": state.final_output,
             
             # Detailed stage results

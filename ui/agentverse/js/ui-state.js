@@ -96,6 +96,9 @@ export class UIState {
     const badge = document.getElementById(`stage${stageNum}Badge`);
     const results = document.getElementById(`stage${stageNum}Results`);
     
+    // Stages 5+ (e.g. synthesis) may not exist in the UI - skip
+    if (!stage || !badge) return;
+    
     // Remove previous states
     stage.classList.remove('active', 'completed', 'error');
     
@@ -112,7 +115,7 @@ export class UIState {
     }
     
     badge.textContent = badgeText;
-    if (content !== undefined) {
+    if (content !== undefined && results) {
       results.innerHTML = content;
     }
   }
@@ -192,8 +195,16 @@ export class UIState {
     
     // Update iteration history (ensure we have an array and container exists)
     const iterationHistory = Array.isArray(data.iteration_history) ? data.iteration_history : [];
+    console.log('[AgentVerse] Rendering iteration history, count:', iterationHistory.length, 'container:', this.elements.iterationHistory);
     if (this.elements.iterationHistory) {
-      renderIterationHistory(iterationHistory, this.elements.iterationHistory);
+      try {
+        renderIterationHistory(iterationHistory, this.elements.iterationHistory);
+        console.log('[AgentVerse] Iteration history rendered successfully');
+      } catch (err) {
+        console.error('[AgentVerse] Failed to render iteration history:', err);
+      }
+    } else {
+      console.warn('[AgentVerse] Iteration history container not found');
     }
     
     // Update detailed flow section

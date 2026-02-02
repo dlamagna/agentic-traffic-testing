@@ -3,7 +3,7 @@
  */
 
 import { escapeHtml, truncate } from './utils.js';
-import { renderExperts, renderLlmRequestsTable } from './renderers.js';
+import { renderExperts, renderLlmRequestsTable, renderIterationHistory } from './renderers.js';
 
 export class StreamingHandler {
   constructor(uiState) {
@@ -50,6 +50,10 @@ export class StreamingHandler {
     
     else if (event === 'vertical_iteration') {
       this._handleVerticalIteration(data);
+    }
+    
+    else if (event === 'iteration_complete') {
+      this._handleIterationComplete(data);
     }
     
     else if (event === 'error') {
@@ -208,6 +212,23 @@ export class StreamingHandler {
   }
 
   /**
+   * Handle iteration complete - update iteration history panel live
+   */
+  _handleIterationComplete(data) {
+    const history = Array.isArray(data.iteration_history) ? data.iteration_history : [];
+    if (this.uiState.currentData) {
+      this.uiState.currentData.iteration_history = history;
+    }
+    if (this.uiState.elements.iterationHistory) {
+      try {
+        renderIterationHistory(history, this.uiState.elements.iterationHistory);
+      } catch (err) {
+        console.error('[AgentVerse] Failed to render iteration history:', err);
+      }
+    }
+  }
+
+  /**
    * Run workflow with streaming
    * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
    * @param {function} [onCancelled] - Callback when request is cancelled (AbortError)
@@ -283,22 +304,38 @@ export class StreamingHandler {
                 } else {
                   this.uiState.currentData = parsedData;
                 }
+                console.log('[AgentVerse] Complete event received, data:', parsedData);
+                console.log('[AgentVerse] Merged currentData:', this.uiState.currentData);
+                console.log('[AgentVerse] iteration_history:', this.uiState.currentData?.iteration_history);
+                
                 this.uiState.updateWorkflowUI(this.uiState.currentData);
                 this.uiState.stopTimer(true);
                 this.uiState.elements.liveBadge.style.display = 'none';
                 this.uiState.elements.statusText.textContent = 'Complete';
-                // Re-enable the button
+                
+                // Re-enable the button and hide cancel
                 this.uiState.elements.runBtn.disabled = false;
+                if (window.agentverse && window.agentverse.hideCancelButton) {
+                  window.agentverse.hideCancelButton();
+                }
                 
                 // Save to request history
                 if (window.agentverse && window.agentverse.currentRequest) {
-                  window.agentverse.saveRequestToHistory(
-                    window.agentverse.currentRequest.task,
-                    window.agentverse.currentRequest.endpoint,
-                    window.agentverse.currentRequest.maxIterations,
-                    this.uiState.currentData,
-                    window.agentverse.currentRequest.scoreThreshold
-                  );
+                  console.log('[AgentVerse] Saving to request history...');
+                  try {
+                    window.agentverse.saveRequestToHistory(
+                      window.agentverse.currentRequest.task,
+                      window.agentverse.currentRequest.endpoint,
+                      window.agentverse.currentRequest.maxIterations,
+                      this.uiState.currentData,
+                      window.agentverse.currentRequest.scoreThreshold
+                    );
+                    console.log('[AgentVerse] Request history saved successfully');
+                  } catch (historyErr) {
+                    console.error('[AgentVerse] Failed to save request history:', historyErr);
+                  }
+                } else {
+                  console.warn('[AgentVerse] Cannot save to history: window.agentverse or currentRequest missing');
                 }
               }
             } catch (e) {

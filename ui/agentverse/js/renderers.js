@@ -331,6 +331,15 @@ function renderIterationDetails(iteration, idx, previousIteration) {
   html += '<div class="iteration-evaluation">';
   html += '<div class="evaluation-header">Evaluation Results</div>';
   
+  // Feedback passed to next iteration's recruitment (only stage that receives it)
+  if (evaluation.feedback && evaluation.feedback.trim()) {
+    html += `<div class="iteration-feedback-section">
+      <div class="iteration-feedback-label">Feedback → Next recruitment</div>
+      <div class="iteration-feedback-content">${escapeHtml(evaluation.feedback)}</div>
+      <div class="iteration-feedback-hint">This feedback is passed only to the recruitment stage of the next iteration to help select or adjust the expert team.</div>
+    </div>`;
+  }
+  
   if (evaluation.rationale) {
     html += `<div class="evaluation-rationale">
       <div class="evaluation-label">Rationale:</div>

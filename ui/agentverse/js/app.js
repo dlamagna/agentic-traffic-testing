@@ -222,11 +222,20 @@ class AgentVerseApp {
     
     try {
       localStorage.setItem('agentverse_request_history', JSON.stringify(history));
+      console.log('[AgentVerse] Saved to localStorage, history length:', history.length);
     } catch (e) {
-      console.warn('Could not save request history:', e);
+      console.warn('[AgentVerse] Could not save request history:', e);
     }
+    console.log('[AgentVerse] Request history container:', this.elements.requestHistory);
     if (this.elements.requestHistory) {
-      this.loadRequestHistory();
+      try {
+        this.loadRequestHistory();
+        console.log('[AgentVerse] loadRequestHistory() completed');
+      } catch (e) {
+        console.error('[AgentVerse] Failed to load request history:', e);
+      }
+    } else {
+      console.warn('[AgentVerse] Request history container not found');
     }
   }
 
@@ -343,7 +352,13 @@ class AgentVerseApp {
    * Copy final output to clipboard
    */
   copyFinalOutput() {
-    const text = this.elements.finalOutput?.textContent || '';
+    // Try to get from the stored data first (full text), fallback to DOM
+    const storedFinalOutput = this.uiState?.currentData?.final_output;
+    const domText = this.elements.finalOutput?.textContent || '';
+    const text = storedFinalOutput || domText;
+    
+    console.log('[AgentVerse] Copy: stored length:', storedFinalOutput?.length, 'DOM length:', domText.length);
+    
     if (!text.trim()) {
       alert('No final output to copy yet.');
       return;
@@ -373,9 +388,7 @@ class AgentVerseApp {
       doFallbackCopy();
     }
 
-    // Optional: light feedback without cluttering UI
-    // eslint-disable-next-line no-alert
-    alert('Final output copied to clipboard.');
+    alert(`Copied ${text.length} characters to clipboard.`);
   }
 
   /**
