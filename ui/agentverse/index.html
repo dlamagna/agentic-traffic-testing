@@ -1,0 +1,1451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentVerse - Multi-Agent Collaboration</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-light: #3b82f6;
+      --success: #16a34a;
+      --warning: #ca8a04;
+      --error: #dc2626;
+      --bg-dark: #0f172a;
+      --bg-card: #1e293b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --border: #334155;
+    }
+    
+    * { box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #1e3a8a 0%, #7c3aed 100%);
+      padding: 20px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .header-links {
+      display: flex;
+      gap: 16px;
+    }
+    
+    .header-links a {
+      color: var(--text-primary);
+      text-decoration: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.1);
+      transition: background 0.2s;
+    }
+    
+    .header-links a:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    
+    .container {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    
+    .layout {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 24px;
+    }
+    
+    @media (max-width: 1200px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    
+    .card h2 {
+      margin: 0 0 16px 0;
+      font-size: 18px;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+    
+    input, textarea, select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-dark);
+      color: var(--text-primary);
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+    }
+    
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    
+    button {
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: var(--primary-light);
+    }
+    
+    .btn-primary:disabled {
+      background: #475569;
+      cursor: not-allowed;
+    }
+    
+    .btn-secondary {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    
+    .btn-secondary:hover {
+      background: var(--bg-dark);
+    }
+    
+    .button-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    
+    /* Workflow Visualization */
+    .workflow-container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .workflow-stage {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+    
+    .workflow-stage.active {
+      border-color: var(--primary);
+      box-shadow: 0 0 20px rgba(37, 99, 235, 0.2);
+    }
+    
+    .workflow-stage.completed {
+      border-color: var(--success);
+    }
+    
+    .workflow-stage.error {
+      border-color: var(--error);
+    }
+    
+    .stage-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      background: rgba(0,0,0,0.2);
+      cursor: pointer;
+    }
+    
+    .stage-header:hover {
+      background: rgba(0,0,0,0.3);
+    }
+    
+    .stage-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 600;
+      font-size: 16px;
+    }
+    
+    .stage-number {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+    
+    .workflow-stage.active .stage-number {
+      background: var(--primary);
+    }
+    
+    .workflow-stage.completed .stage-number {
+      background: var(--success);
+    }
+    
+    .stage-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    
+    .stage-status .badge {
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .badge-pending { background: var(--border); color: var(--text-secondary); }
+    .badge-running { background: var(--primary); color: white; }
+    .badge-complete { background: var(--success); color: white; }
+    .badge-error { background: var(--error); color: white; }
+    
+    .stage-content {
+      padding: 0;
+      max-height: 0;
+      overflow: hidden;
+      transition: all 0.3s;
+    }
+    
+    .stage-content.expanded {
+      padding: 20px;
+      max-height: 2000px;
+    }
+    
+    .stage-details {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    
+    /* Expert Cards */
+    .expert-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    
+    .expert-card {
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    
+    .expert-role {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 4px;
+      text-transform: capitalize;
+    }
+    
+    .expert-responsibilities {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    
+    /* Discussion Rounds */
+    .discussion-round {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg-dark);
+      border-radius: 8px;
+      border-left: 3px solid var(--primary);
+    }
+    
+    .round-header {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 8px;
+      color: var(--primary-light);
+    }
+    
+    .round-response {
+      margin-top: 8px;
+      padding: 8px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 6px;
+    }
+    
+    .round-response .role {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    
+    .round-response .content {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    
+    /* Execution Results */
+    .execution-result {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--bg-dark);
+      border-radius: 8px;
+    }
+    
+    .execution-result.success {
+      border-left: 3px solid var(--success);
+    }
+    
+    .execution-result.failure {
+      border-left: 3px solid var(--error);
+    }
+    
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    
+    .result-expert {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .result-output {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    
+    /* Evaluation */
+    .evaluation-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    
+    .eval-metric {
+      background: var(--bg-dark);
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    
+    .eval-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--primary-light);
+    }
+    
+    .eval-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    
+    /* Final Output */
+    .final-output {
+      background: var(--bg-dark);
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 16px;
+      border: 1px solid var(--success);
+    }
+    
+    .final-output h3 {
+      margin: 0 0 12px 0;
+      color: var(--success);
+      font-size: 16px;
+    }
+    
+    .final-output-content {
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+    
+    /* Progress Indicator */
+    .progress-bar {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: var(--primary);
+      transition: width 0.3s;
+    }
+    
+    /* Iteration Tabs */
+    .iteration-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    
+    .iteration-tab {
+      padding: 8px 16px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    
+    .iteration-tab:hover {
+      border-color: var(--primary);
+    }
+    
+    .iteration-tab.active {
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+    
+    /* Status Bar */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      background: var(--bg-dark);
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+    
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+    
+    .status-indicator.running {
+      background: var(--primary);
+      animation: pulse 1.5s infinite;
+    }
+    
+    .status-indicator.complete {
+      background: var(--success);
+    }
+    
+    .status-indicator.error {
+      background: var(--error);
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .status-text {
+      font-size: 14px;
+    }
+    
+    .status-time {
+      margin-left: auto;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    
+    /* Collapsible Sections */
+    .collapsible-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    
+    .collapsible-header .arrow {
+      transition: transform 0.2s;
+    }
+    
+    .collapsible-header.expanded .arrow {
+      transform: rotate(90deg);
+    }
+    
+    /* Raw JSON Toggle */
+    .raw-toggle {
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    
+    .raw-json {
+      margin-top: 8px;
+      padding: 12px;
+      background: var(--bg-dark);
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+      display: none;
+    }
+    
+    .raw-json.visible {
+      display: block;
+    }
+    
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-secondary);
+    }
+    
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+    
+    /* Detailed Flow Table */
+    .detailed-flow-content {
+      margin-top: 12px;
+    }
+    
+    .flow-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    
+    .flow-table th,
+    .flow-table td {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    
+    .flow-table th {
+      background: rgba(0,0,0,0.3);
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    
+    .flow-table tbody tr {
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .flow-table tbody tr:hover {
+      background: rgba(37, 99, 235, 0.1);
+    }
+    
+    .flow-table tbody tr.expanded {
+      background: rgba(37, 99, 235, 0.08);
+    }
+    
+    .flow-table .seq-col { width: 50px; }
+    .flow-table .stage-col { width: 100px; }
+    .flow-table .label-col { width: 180px; }
+    .flow-table .source-col { width: 90px; }
+    .flow-table .role-col { width: 90px; }
+    .flow-table .preview-col { min-width: 200px; }
+    
+    .flow-detail-row td {
+      background: var(--bg-dark) !important;
+      padding: 0;
+      border-top: none;
+    }
+    
+    .flow-detail-cell {
+      padding: 16px !important;
+    }
+    
+    .flow-detail-section {
+      margin-bottom: 16px;
+    }
+    
+    .flow-detail-section:last-child {
+      margin-bottom: 0;
+    }
+    
+    .flow-detail-label {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+    
+    .flow-detail-content {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+      background: rgba(0,0,0,0.3);
+      padding: 12px;
+      border-radius: 6px;
+    }
+    
+    .flow-stage-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    
+    .flow-stage-recruitment { background: #1e40af; color: #93c5fd; }
+    .flow-stage-decision { background: #4c1d95; color: #c4b5fd; }
+    .flow-stage-execution { background: #166534; color: #86efac; }
+    .flow-stage-evaluation { background: #9a3412; color: #fdba74; }
+    .flow-stage-synthesis { background: #0e7490; color: #67e8f9; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+        <path d="M2 12h20"/>
+      </svg>
+      AgentVerse
+    </h1>
+    <nav class="header-links">
+      <a href="../chat/">Classic Chat</a>
+      <a href="https://arxiv.org/pdf/2308.10848" target="_blank">Paper</a>
+      <a href="https://github.com/OpenBMB/AgentVerse" target="_blank">GitHub</a>
+    </nav>
+  </header>
+  
+  <div class="container">
+    <div class="layout">
+      <!-- Left Panel: Input -->
+      <div class="input-panel">
+        <div class="card">
+          <h2>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            Task Input
+          </h2>
+          
+          <label for="task">Task Description</label>
+          <textarea id="task" placeholder="Describe your task. AgentVerse will automatically recruit expert agents and coordinate their collaboration."></textarea>
+          
+          <label for="maxIterations">Max Iterations</label>
+          <select id="maxIterations">
+            <option value="1">1 iteration (single pass)</option>
+            <option value="2">2 iterations</option>
+            <option value="3" selected>3 iterations (default)</option>
+            <option value="4">4 iterations</option>
+            <option value="5">5 iterations (max)</option>
+          </select>
+          
+          <label for="endpoint">Agent A Endpoint</label>
+          <input id="endpoint" type="text" placeholder="http://localhost:8101/agentverse">
+          
+          <label>Example Tasks</label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="loadExample('math')">Math Problem</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="loadExample('research')">Research Task</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="loadExample('consulting')">Consulting</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="loadExample('coding')">Coding Task</button>
+          </div>
+          
+          <div class="button-row">
+            <button id="runBtn" class="btn-primary">Run AgentVerse Workflow</button>
+            <button id="clearBtn" class="btn-secondary">Clear</button>
+          </div>
+        </div>
+        
+        <!-- Iteration History -->
+        <div class="card" style="margin-top: 16px;">
+          <h2>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            Iteration History
+          </h2>
+          <div id="iterationHistory">
+            <div class="empty-state">
+              <div class="empty-state-icon">📊</div>
+              <p>Run a workflow to see iteration history</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Panel: Workflow Visualization -->
+      <div class="workflow-panel">
+        <!-- Status Bar -->
+        <div class="status-bar">
+          <div class="status-indicator" id="statusIndicator"></div>
+          <span class="status-text" id="statusText">Ready</span>
+          <span class="status-time" id="statusTime"></span>
+        </div>
+        
+        <!-- Progress Bar -->
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+        
+        <!-- Workflow Stages -->
+        <div class="workflow-container">
+          <!-- Stage 1: Expert Recruitment -->
+          <div class="workflow-stage" id="stage1">
+            <div class="stage-header" onclick="toggleStage('stage1')">
+              <div class="stage-title">
+                <div class="stage-number">1</div>
+                <span>Expert Recruitment</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage1Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage1Content">
+              <div class="stage-details">
+                <p>The orchestrator analyzes your task and dynamically recruits specialized expert agents.</p>
+                <div id="stage1Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 2: Collaborative Decision-Making -->
+          <div class="workflow-stage" id="stage2">
+            <div class="stage-header" onclick="toggleStage('stage2')">
+              <div class="stage-title">
+                <div class="stage-number">2</div>
+                <span>Collaborative Decision-Making</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage2Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage2Content">
+              <div class="stage-details">
+                <p>Agents engage in discussion (horizontal or vertical) to decide on the approach.</p>
+                <div id="stage2Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 3: Action Execution -->
+          <div class="workflow-stage" id="stage3">
+            <div class="stage-header" onclick="toggleStage('stage3')">
+              <div class="stage-title">
+                <div class="stage-number">3</div>
+                <span>Action Execution</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage3Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage3Content">
+              <div class="stage-details">
+                <p>Agents execute their assigned tasks based on the collaborative decision.</p>
+                <div id="stage3Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 4: Evaluation -->
+          <div class="workflow-stage" id="stage4">
+            <div class="stage-header" onclick="toggleStage('stage4')">
+              <div class="stage-title">
+                <div class="stage-number">4</div>
+                <span>Evaluation</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage4Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage4Content">
+              <div class="stage-details">
+                <p>The orchestrator evaluates results and decides whether to iterate.</p>
+                <div id="stage4Results"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Final Output -->
+        <div id="finalOutputContainer" style="display: none;">
+          <div class="final-output">
+            <h3>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 8px;">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              Final Output
+            </h3>
+            <div class="final-output-content" id="finalOutput"></div>
+          </div>
+        </div>
+        
+        <!-- Detailed AgentVerse Flow -->
+        <div id="detailedFlowSection" class="card" style="margin-top: 24px; display: none;">
+          <div class="collapsible-header expanded" onclick="toggleDetailedFlow()">
+            <span class="arrow">▼</span>
+            <h2 style="margin: 0;">See detailed agentverse flow</h2>
+          </div>
+          <div id="detailedFlowContent" class="detailed-flow-content">
+            <p class="stage-details" style="margin-bottom: 12px;">Every LLM request and response in execution order. Click a row to expand prompt/response details.</p>
+            <div id="llmRequestsTable"></div>
+          </div>
+        </div>
+        
+        <!-- Raw JSON Toggle -->
+        <div class="raw-toggle" onclick="toggleRawJson()">
+          <span id="rawToggleText">Show Raw JSON Response</span>
+        </div>
+        <pre class="raw-json" id="rawJson"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // DOM Elements
+    const taskEl = document.getElementById('task');
+    const maxIterationsEl = document.getElementById('maxIterations');
+    const endpointEl = document.getElementById('endpoint');
+    const runBtn = document.getElementById('runBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const statusIndicator = document.getElementById('statusIndicator');
+    const statusText = document.getElementById('statusText');
+    const statusTime = document.getElementById('statusTime');
+    const progressFill = document.getElementById('progressFill');
+    const finalOutputContainer = document.getElementById('finalOutputContainer');
+    const finalOutput = document.getElementById('finalOutput');
+    const rawJson = document.getElementById('rawJson');
+    const iterationHistory = document.getElementById('iterationHistory');
+    
+    // State
+    let startTime = null;
+    let timerInterval = null;
+    let currentData = null;
+    
+    // Example tasks
+    const exampleTasks = {
+      math: `A school is designing a small amusement park with three rides. The first ride costs $500 to build and makes $20 per ride. The second ride costs $700 and makes $25 per ride. The third ride costs $900 and makes $30 per ride.
+
+The school has a budget of $2000 and wants to maximize revenue in 1 day if 100 students ride each ride at most once.
+
+Determine which rides to build and calculate the expected total revenue.`,
+      research: `Research the current state of renewable energy adoption globally. Focus on:
+1. Leading countries in solar and wind energy
+2. Key technological advancements in the past 3 years
+3. Economic factors driving adoption
+4. Challenges and barriers to wider adoption
+
+Provide a comprehensive summary with key findings and recommendations for a company looking to invest in this sector.`,
+      consulting: `A mid-sized e-commerce company wants to implement AI-powered customer service to reduce support costs and improve response times. They currently handle 10,000 support tickets per month with a team of 15 agents.
+
+Provide recommendations considering:
+- Available AI/chatbot solutions
+- Expected cost savings vs implementation costs
+- Impact on customer experience
+- Implementation timeline and risks
+- Training requirements for existing staff`,
+      coding: `Design and implement a task management system with the following features:
+1. Create, read, update, and delete tasks
+2. Assign priority levels (low, medium, high, urgent)
+3. Set due dates and track overdue tasks
+4. Filter and sort tasks by various criteria
+5. Simple command-line interface
+
+Provide the Python code with proper error handling and documentation.`
+    };
+    
+    // Load example task
+    function loadExample(type) {
+      if (exampleTasks[type]) {
+        taskEl.value = exampleTasks[type];
+      }
+    }
+    
+    // Initialize
+    function init() {
+      const protocol = window.location.protocol === 'file:' ? 'http:' : window.location.protocol;
+      const host = window.location.hostname || 'localhost';
+      endpointEl.value = `${protocol}//${host}:8101/agentverse`;
+    }
+    
+    init();
+    
+    // Toggle stage expansion
+    function toggleStage(stageId) {
+      const content = document.getElementById(stageId + 'Content');
+      content.classList.toggle('expanded');
+    }
+    
+    // Toggle detailed flow section
+    function toggleDetailedFlow() {
+      const content = document.getElementById('detailedFlowContent');
+      const header = document.querySelector('#detailedFlowSection .collapsible-header');
+      content.style.display = content.style.display === 'none' ? 'block' : 'none';
+      header.classList.toggle('expanded', content.style.display !== 'none');
+    }
+    
+    // Toggle raw JSON
+    function toggleRawJson() {
+      const el = document.getElementById('rawJson');
+      const toggle = document.getElementById('rawToggleText');
+      el.classList.toggle('visible');
+      toggle.textContent = el.classList.contains('visible') ? 'Hide Raw JSON Response' : 'Show Raw JSON Response';
+    }
+    
+    // Update timer
+    function updateTimer() {
+      if (!startTime) return;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      statusTime.textContent = `${elapsed}s`;
+    }
+    
+    // Start timer
+    function startTimer() {
+      startTime = Date.now();
+      statusIndicator.className = 'status-indicator running';
+      statusText.textContent = 'Running workflow...';
+      timerInterval = setInterval(updateTimer, 100);
+    }
+    
+    // Stop timer
+    function stopTimer(success = true) {
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = null;
+      statusIndicator.className = success ? 'status-indicator complete' : 'status-indicator error';
+      statusText.textContent = success ? 'Complete' : 'Error';
+    }
+    
+    // Reset UI
+    function resetUI() {
+      // Reset stages
+      for (let i = 1; i <= 4; i++) {
+        const stage = document.getElementById(`stage${i}`);
+        const badge = document.getElementById(`stage${i}Badge`);
+        const results = document.getElementById(`stage${i}Results`);
+        stage.classList.remove('active', 'completed', 'error');
+        badge.className = 'badge badge-pending';
+        badge.textContent = 'Pending';
+        results.innerHTML = '';
+      }
+      
+      // Reset progress
+      progressFill.style.width = '0%';
+      
+      // Reset final output
+      finalOutputContainer.style.display = 'none';
+      finalOutput.textContent = '';
+      
+      // Reset raw JSON
+      rawJson.textContent = '';
+      rawJson.classList.remove('visible');
+      document.getElementById('rawToggleText').textContent = 'Show Raw JSON Response';
+      
+      // Reset detailed flow
+      const detailedSection = document.getElementById('detailedFlowSection');
+      detailedSection.style.display = 'none';
+      document.getElementById('llmRequestsTable').innerHTML = '';
+      
+      // Reset status
+      statusIndicator.className = 'status-indicator';
+      statusText.textContent = 'Ready';
+      statusTime.textContent = '';
+    }
+    
+    // Escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    // Truncate text
+    function truncate(text, maxLen = 300) {
+      if (!text || text.length <= maxLen) return text;
+      return text.substring(0, maxLen) + '...';
+    }
+    
+    // Render expert cards
+    function renderExperts(experts) {
+      if (!experts || experts.length === 0) return '<p>No experts recruited.</p>';
+      
+      return `
+        <div class="expert-grid">
+          ${experts.map(e => `
+            <div class="expert-card">
+              <div class="expert-role">${escapeHtml(e.role)}</div>
+              <div class="expert-responsibilities">${escapeHtml(truncate(e.responsibilities, 100))}</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
+    // Render discussion rounds
+    function renderDiscussion(rounds, structure) {
+      if (!rounds || rounds.length === 0) return '<p>No discussion recorded.</p>';
+      
+      let html = `<p><strong>Structure:</strong> ${escapeHtml(structure)}</p>`;
+      
+      if (structure === 'horizontal') {
+        rounds.forEach((round, idx) => {
+          html += `
+            <div class="discussion-round">
+              <div class="round-header">Round ${round.round || idx + 1}</div>
+              ${(round.responses || []).map(r => `
+                <div class="round-response">
+                  <div class="role">${escapeHtml(r.expert || 'Agent')}</div>
+                  <div class="content">${escapeHtml(truncate(r.response, 400))}</div>
+                </div>
+              `).join('')}
+            </div>
+          `;
+        });
+      } else {
+        // Vertical structure
+        rounds.forEach((round, idx) => {
+          html += `
+            <div class="discussion-round">
+              <div class="round-header">Iteration ${round.iteration || idx + 1}</div>
+              <div class="round-response">
+                <div class="role">Solver Proposal</div>
+                <div class="content">${escapeHtml(truncate(round.proposal, 400))}</div>
+              </div>
+              ${(round.reviewer_responses || []).map(r => `
+                <div class="round-response">
+                  <div class="role">${escapeHtml(r.reviewer)} ${r.approved ? '✓' : ''}</div>
+                  <div class="content">${escapeHtml(truncate(r.critique, 300))}</div>
+                </div>
+              `).join('')}
+            </div>
+          `;
+        });
+      }
+      
+      return html;
+    }
+    
+    // Render execution results
+    function renderExecution(outputs, successCount, failureCount) {
+      if (!outputs || outputs.length === 0) return '<p>No execution results.</p>';
+      
+      let html = `<p><strong>Success:</strong> ${successCount} | <strong>Failed:</strong> ${failureCount}</p>`;
+      
+      outputs.forEach(output => {
+        const statusClass = output.success ? 'success' : 'failure';
+        html += `
+          <div class="execution-result ${statusClass}">
+            <div class="result-header">
+              <span class="result-expert">${escapeHtml(output.expert)}</span>
+              <span class="badge ${output.success ? 'badge-complete' : 'badge-error'}">${output.success ? 'Success' : 'Failed'}</span>
+            </div>
+            <div class="result-output">${escapeHtml(truncate(output.output, 500))}</div>
+          </div>
+        `;
+      });
+      
+      return html;
+    }
+    
+    // Render evaluation
+    function renderEvaluation(evaluation) {
+      if (!evaluation) return '<p>No evaluation results.</p>';
+      
+      const scoreColor = evaluation.score >= 70 ? 'var(--success)' : evaluation.score >= 40 ? 'var(--warning)' : 'var(--error)';
+      
+      let html = `
+        <div class="evaluation-summary">
+          <div class="eval-metric">
+            <div class="eval-value" style="color: ${scoreColor}">${evaluation.score}</div>
+            <div class="eval-label">Score</div>
+          </div>
+          <div class="eval-metric">
+            <div class="eval-value" style="color: ${evaluation.goal_achieved ? 'var(--success)' : 'var(--warning)'}">${evaluation.goal_achieved ? '✓' : '✗'}</div>
+            <div class="eval-label">Goal Achieved</div>
+          </div>
+        </div>
+      `;
+      
+      if (evaluation.feedback) {
+        html += `<p style="margin-top: 12px;"><strong>Feedback:</strong> ${escapeHtml(evaluation.feedback)}</p>`;
+      }
+      
+      if (evaluation.missing_aspects && evaluation.missing_aspects.length > 0) {
+        html += `<p><strong>Missing:</strong> ${evaluation.missing_aspects.map(a => escapeHtml(a)).join(', ')}</p>`;
+      }
+      
+      return html;
+    }
+    
+    // Render iteration history
+    function renderIterationHistory(history) {
+      if (!history || history.length === 0) {
+        iterationHistory.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📊</div>
+            <p>Run a workflow to see iteration history</p>
+          </div>
+        `;
+        return;
+      }
+      
+      let html = '<div class="iteration-tabs">';
+      history.forEach((h, idx) => {
+        const score = h.evaluation?.score || 0;
+        const scoreIcon = score >= 70 ? '✓' : score >= 40 ? '~' : '✗';
+        html += `<div class="iteration-tab">${scoreIcon} Iter ${idx + 1} (${score}/100)</div>`;
+      });
+      html += '</div>';
+      
+      html += '<div style="font-size: 13px; color: var(--text-secondary);">';
+      history.forEach((h, idx) => {
+        html += `<p><strong>Iteration ${idx + 1}:</strong> ${h.recruitment?.experts?.join(', ') || 'N/A'} | Duration: ${h.duration_seconds || 0}s</p>`;
+      });
+      html += '</div>';
+      
+      iterationHistory.innerHTML = html;
+    }
+    
+    // Get stage badge class
+    function getStageBadgeClass(stage) {
+      const map = {
+        recruitment: 'flow-stage-recruitment',
+        decision: 'flow-stage-decision',
+        execution: 'flow-stage-execution',
+        evaluation: 'flow-stage-evaluation',
+        synthesis: 'flow-stage-synthesis'
+      };
+      return map[stage] || 'flow-stage-recruitment';
+    }
+    
+    // Render LLM requests table
+    function renderLlmRequestsTable(requests) {
+      if (!requests || requests.length === 0) {
+        return '<p style="color: var(--text-secondary);">No LLM requests recorded.</p>';
+      }
+      
+      const rows = requests.map((req, idx) => {
+        const stage = req.stage || 'unknown';
+        const label = req.label || '';
+        const source = req.source || '—';
+        const role = req.agent_role || (req.source === 'Agent A' ? 'orchestrator' : '—');
+        const promptPreview = truncate(req.prompt || '', 80);
+        const responsePreview = truncate(req.response || '', 80);
+        
+        return `
+          <tr data-seq="${req.seq}" onclick="toggleFlowRow(${req.seq})">
+            <td class="seq-col">${req.seq}</td>
+            <td class="stage-col"><span class="flow-stage-badge ${getStageBadgeClass(stage)}">${escapeHtml(stage)}</span></td>
+            <td class="label-col">${escapeHtml(label)}</td>
+            <td class="source-col">${escapeHtml(source)}</td>
+            <td class="role-col">${escapeHtml(role)}</td>
+            <td class="preview-col"><span title="${escapeHtml(req.prompt || '')}">${escapeHtml(promptPreview)}</span></td>
+            <td class="preview-col"><span title="${escapeHtml(req.response || '')}">${escapeHtml(responsePreview)}</span></td>
+          </tr>
+          <tr class="flow-detail-row" id="flow-detail-${req.seq}" style="display: none;">
+            <td colspan="7" class="flow-detail-cell">
+              <div class="flow-detail-section">
+                <div class="flow-detail-label">Request (Prompt)</div>
+                <div class="flow-detail-content">${escapeHtml(req.prompt || '(empty)')}</div>
+              </div>
+              <div class="flow-detail-section">
+                <div class="flow-detail-label">Response</div>
+                <div class="flow-detail-content">${escapeHtml(req.response || '(empty)')}</div>
+              </div>
+              ${req.endpoint ? `<div class="flow-detail-section"><div class="flow-detail-label">Endpoint</div><div class="flow-detail-content">${escapeHtml(req.endpoint)}</div></div>` : ''}
+            </td>
+          </tr>
+        `;
+      }).join('');
+      
+      return `
+        <table class="flow-table">
+          <thead>
+            <tr>
+              <th class="seq-col">#</th>
+              <th class="stage-col">Stage</th>
+              <th class="label-col">Label</th>
+              <th class="source-col">Source</th>
+              <th class="role-col">Role</th>
+              <th class="preview-col">Prompt (preview)</th>
+              <th class="preview-col">Response (preview)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+    
+    // Toggle flow row expansion
+    function toggleFlowRow(seq) {
+      const detailRow = document.getElementById('flow-detail-' + seq);
+      if (!detailRow) return;
+      const parentRow = detailRow.previousElementSibling;
+      if (detailRow.style.display === 'none') {
+        detailRow.style.display = 'table-row';
+        if (parentRow) parentRow.classList.add('expanded');
+      } else {
+        detailRow.style.display = 'none';
+        if (parentRow) parentRow.classList.remove('expanded');
+      }
+    }
+    
+    // Update workflow UI with response data
+    function updateWorkflowUI(data) {
+      currentData = data;
+      
+      // Update raw JSON
+      rawJson.textContent = JSON.stringify(data, null, 2);
+      
+      // Update stages
+      const stages = data.stages || {};
+      
+      // Stage 1: Recruitment
+      const stage1 = document.getElementById('stage1');
+      const badge1 = document.getElementById('stage1Badge');
+      const results1 = document.getElementById('stage1Results');
+      if (stages.recruitment && stages.recruitment.experts) {
+        stage1.classList.add('completed');
+        badge1.className = 'badge badge-complete';
+        badge1.textContent = `${stages.recruitment.experts.length} Experts`;
+        results1.innerHTML = `
+          <p><strong>Structure:</strong> ${escapeHtml(stages.recruitment.communication_structure || 'horizontal')}</p>
+          <p><strong>Reasoning:</strong> ${escapeHtml(stages.recruitment.reasoning || 'N/A')}</p>
+          ${renderExperts(stages.recruitment.experts)}
+        `;
+      }
+      
+      // Stage 2: Decision
+      const stage2 = document.getElementById('stage2');
+      const badge2 = document.getElementById('stage2Badge');
+      const results2 = document.getElementById('stage2Results');
+      if (stages.decision) {
+        stage2.classList.add('completed');
+        badge2.className = 'badge badge-complete';
+        badge2.textContent = stages.decision.consensus_reached ? 'Consensus' : 'Decided';
+        results2.innerHTML = renderDiscussion(
+          stages.decision.discussion_rounds,
+          stages.decision.structure_used
+        );
+      }
+      
+      // Stage 3: Execution
+      const stage3 = document.getElementById('stage3');
+      const badge3 = document.getElementById('stage3Badge');
+      const results3 = document.getElementById('stage3Results');
+      if (stages.execution) {
+        stage3.classList.add('completed');
+        badge3.className = 'badge badge-complete';
+        badge3.textContent = `${stages.execution.success_count}/${stages.execution.outputs?.length || 0}`;
+        results3.innerHTML = renderExecution(
+          stages.execution.outputs,
+          stages.execution.success_count,
+          stages.execution.failure_count
+        );
+      }
+      
+      // Stage 4: Evaluation
+      const stage4 = document.getElementById('stage4');
+      const badge4 = document.getElementById('stage4Badge');
+      const results4 = document.getElementById('stage4Results');
+      if (stages.evaluation) {
+        stage4.classList.add('completed');
+        badge4.className = stages.evaluation.goal_achieved ? 'badge badge-complete' : 'badge badge-pending';
+        badge4.textContent = `${stages.evaluation.score}/100`;
+        results4.innerHTML = renderEvaluation(stages.evaluation);
+      }
+      
+      // Update progress
+      progressFill.style.width = '100%';
+      
+      // Update final output
+      if (data.final_output) {
+        finalOutputContainer.style.display = 'block';
+        finalOutput.textContent = data.final_output;
+      }
+      
+      // Update iteration history
+      renderIterationHistory(data.iteration_history);
+      
+      // Update detailed flow section
+      const detailedSection = document.getElementById('detailedFlowSection');
+      const llmTableEl = document.getElementById('llmRequestsTable');
+      if (data.llm_requests && data.llm_requests.length > 0) {
+        detailedSection.style.display = 'block';
+        llmTableEl.innerHTML = renderLlmRequestsTable(data.llm_requests);
+      }
+      
+      // Expand stages with content
+      if (stages.recruitment) toggleStage('stage1');
+      if (data.final_output) {
+        document.getElementById('stage4Content').classList.add('expanded');
+      }
+    }
+    
+    // Run workflow
+    async function runWorkflow() {
+      const task = taskEl.value.trim();
+      if (!task) {
+        alert('Please enter a task description.');
+        return;
+      }
+      
+      const endpoint = endpointEl.value.trim();
+      if (!endpoint) {
+        alert('Please enter the Agent A endpoint.');
+        return;
+      }
+      
+      const maxIterations = parseInt(maxIterationsEl.value, 10);
+      
+      // Reset and start
+      resetUI();
+      startTimer();
+      runBtn.disabled = true;
+      
+      // Set stages to running
+      const stage1 = document.getElementById('stage1');
+      const badge1 = document.getElementById('stage1Badge');
+      stage1.classList.add('active');
+      badge1.className = 'badge badge-running';
+      badge1.textContent = 'Running...';
+      progressFill.style.width = '10%';
+      
+      try {
+        const controller = new AbortController();
+        const timeoutMs = 300000; // 5 minutes
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            task: task,
+            max_iterations: maxIterations
+          })
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        updateWorkflowUI(data);
+        stopTimer(true);
+        
+      } catch (error) {
+        console.error('Workflow error:', error);
+        stopTimer(false);
+        
+        // Mark all stages as error
+        for (let i = 1; i <= 4; i++) {
+          const stage = document.getElementById(`stage${i}`);
+          const badge = document.getElementById(`stage${i}Badge`);
+          stage.classList.remove('active');
+          stage.classList.add('error');
+          badge.className = 'badge badge-error';
+          badge.textContent = 'Error';
+        }
+        
+        rawJson.textContent = error.message;
+        rawJson.classList.add('visible');
+        
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+    
+    // Clear
+    function clearAll() {
+      taskEl.value = '';
+      resetUI();
+      iterationHistory.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">📊</div>
+          <p>Run a workflow to see iteration history</p>
+        </div>
+      `;
+    }
+    
+    // Event listeners
+    runBtn.addEventListener('click', runWorkflow);
+    clearBtn.addEventListener('click', clearAll);
+    
+    // Keyboard shortcut
+    taskEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        runWorkflow();
+      }
+    });
+  </script>
+</body>
+</html>
