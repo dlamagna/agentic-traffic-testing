@@ -145,7 +145,7 @@ Required fields:
   * "relevance": integer 0-100
   * "actionability": integer 0-100
 - "rationale": string - explanation of how the overall score was calculated based on the criteria
-- "feedback": string - your assessment of the solution quality and any improvements needed
+- "feedback": string - REQUIRED when score is below threshold: actionable guidance for the next iteration's recruitment (e.g. which expert types to add/change, what gaps to address). Always provide this when score < 80 so the next iteration can improve.
 - "missing_aspects": array of strings - aspects that are missing or could be improved (empty array [] if none)
 - "should_iterate": boolean - whether to iterate with adjusted experts
 
