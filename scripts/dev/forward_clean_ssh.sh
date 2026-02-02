@@ -7,7 +7,7 @@ set -euo pipefail
 # Kill any local listeners on requested ports, then SSH with -L forwards.
 #
 # Usage:
-#   ./scripts/forward_clean_ssh.sh --ports "8000,8101,8102" --host saturn
+#   ./scripts/dev/forward_clean_ssh.sh --ports "8000,8101,8102" --host saturn
 #
 
 ports_csv=""

@@ -10,10 +10,7 @@ This script:
 3. Exposes metrics on a Prometheus-compatible /metrics endpoint
 
 Run with sudo (required for packet capture):
-    sudo python scripts/tcp_metrics_collector.py --interface br-<network_id>
-
-Or specify a pcap file:
-    python scripts/tcp_metrics_collector.py --pcap logs/traffic/capture.pcap
+    sudo python scripts/monitoring/tcp_metrics_collector.py --interface br-<network_id>
 
 Metrics exposed:
     - tcp_packets_total: Total packets by direction and service

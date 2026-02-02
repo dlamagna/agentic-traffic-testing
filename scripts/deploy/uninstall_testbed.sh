@@ -14,7 +14,7 @@ set -euo pipefail
 # all deployment modes correctly (single, distributed, multi-vm).
 #
 # USAGE:
-#   ./scripts/uninstall_testbed.sh [OPTIONS]
+#   ./scripts/deploy/uninstall_testbed.sh [OPTIONS]
 #
 # OPTIONS:
 #   --keep-logs     Don't remove the logs directory
@@ -34,10 +34,10 @@ set -euo pipefail
 #   - Source code
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 LOG_DIR="${ROOT_DIR}/logs"
-STOP_SCRIPT="${ROOT_DIR}/scripts/stop.sh"
+STOP_SCRIPT="${ROOT_DIR}/scripts/deploy/stop.sh"
 
 # Parse arguments
 KEEP_LOGS=false
@@ -219,5 +219,3 @@ echo "  - Docker images (run with --prune-images to remove)"
 echo "  - Configuration files"
 echo "  - Source code"
 echo
-
-

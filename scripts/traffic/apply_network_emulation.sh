@@ -13,7 +13,7 @@ set -euo pipefail
 #   NETWORK_LOSS_PERCENT  - Packet loss percentage (default: 0)
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 
 # Load .env file if it exists

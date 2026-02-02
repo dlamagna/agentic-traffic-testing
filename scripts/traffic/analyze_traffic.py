@@ -13,9 +13,9 @@ It produces metrics and visualizations for comparing agentic vs non-agentic
 traffic patterns.
 
 USAGE:
-    python scripts/analyze_traffic.py --pcap logs/traffic/packets_*.pcap
-    python scripts/analyze_traffic.py --pcap capture.pcap --telemetry logs/agent_telemetry/
-    python scripts/analyze_traffic.py --help
+    python scripts/traffic/analyze_traffic.py --pcap logs/traffic/packets_*.pcap
+    python scripts/traffic/analyze_traffic.py --pcap capture.pcap --telemetry logs/agent_telemetry/
+    python scripts/traffic/analyze_traffic.py --help
 
 PREREQUISITES:
     pip install scapy pandas matplotlib

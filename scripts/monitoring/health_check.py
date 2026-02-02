@@ -12,9 +12,9 @@ It checks:
 - DNS resolution for container names
 
 Usage:
-    python scripts/health_check.py
-    python scripts/health_check.py --llm-url http://localhost:8000/chat
-    python scripts/health_check.py --docker-compose-dir infra
+    python scripts/monitoring/health_check.py
+    python scripts/monitoring/health_check.py --llm-url http://localhost:8000/chat
+    python scripts/monitoring/health_check.py --docker-compose-dir infra
 """
 
 import argparse

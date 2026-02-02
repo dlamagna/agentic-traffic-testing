@@ -8,10 +8,10 @@ set -euo pipefail
 #
 # For the MVP, this script is intended to run on EACH NODE separately.
 # You can run it in the background before starting an experiment:
-#   ./scripts/collect_metrics.sh &
+#   ./scripts/traffic/collect_metrics.sh &
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs"
 NODE_NAME="${NODE_NAME:-node_unspecified}"  # set NODE_NAME env per node (e.g. node1_agentA)
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -42,6 +42,3 @@ start_tool "tcpretrans" "${NODE_LOG_DIR}/tcpretrans.log"
 
 echo "[*] eBPF collectors started in background for node '${NODE_NAME}'."
 echo "    Use 'ps aux | grep tcp' to see running tools and 'kill' to stop them when done."
-
-
-

@@ -4,9 +4,9 @@ Quick helper to send a single request to Agent A or Agent B and print the reply.
 
 Examples
 --------
-  python scripts/query_agent.py a "Summarise the latest metrics"
-  python scripts/query_agent.py b "Generate a test plan" --scenario agentic_multi_hop
-  python scripts/query_agent.py a "Hello" --url http://localhost:8101/task
+  python scripts/experiment/query_agent.py a "Summarise the latest metrics"
+  python scripts/experiment/query_agent.py b "Generate a test plan" --scenario agentic_multi_hop
+  python scripts/experiment/query_agent.py a "Hello" --url http://localhost:8101/task
 """
 
 import argparse
@@ -52,4 +52,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -7,7 +7,7 @@ set -euo pipefail
 # NODE1 host in multi-node mode. Can be sourced by other scripts (e.g. deploy.sh)
 # or run directly.
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 
 deploy_ui_single_host() {
@@ -37,4 +37,3 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     deploy_ui_single_host
   fi
 fi
-
