@@ -115,6 +115,7 @@ class AgentVerseState:
     original_task: str
     iteration: int = 0
     max_iterations: int = 3
+    success_threshold: int = 70  # Score (0-100) required to accept and stop iterating
     
     # Stage results
     recruitment: Optional[RecruitmentResult] = None
@@ -1150,11 +1151,22 @@ Focus on what is relevant to your expertise.
             score = parsed.get("score", 50)
             should_iterate = parsed.get("should_iterate", False)
             
-            # Extract structured criteria breakdown and rationale
+            # Extract structured criteria breakdown and rationale (before overriding)
             criteria = parsed.get("criteria")
             rationale = parsed.get("rationale")
             
-            # Don't iterate if we've reached max or achieved goal
+            # Apply user's success threshold as source of truth:
+            # - Score >= threshold: accept and stop.
+            # - Score < threshold: do not accept; force another iteration (ignore LLM's goal_achieved).
+            if state.success_threshold > 0:
+                if score >= state.success_threshold:
+                    goal_achieved = True
+                    should_iterate = False
+                else:
+                    goal_achieved = False
+                    should_iterate = True  # Always try again when below threshold (until max iterations)
+            
+            # Don't iterate if we've reached max iterations
             if state.iteration + 1 >= state.max_iterations:
                 should_iterate = False
             if goal_achieved:
@@ -1206,20 +1218,24 @@ Focus on what is relevant to your expertise.
         task: str,
         task_id: str,
         max_iterations: int = 3,
+        success_threshold: int = 70,
     ) -> Dict[str, Any]:
         """
         Run the complete AgentVerse 4-stage workflow.
+        success_threshold: score (0-100) required to accept and stop iterating.
         """
         with self.tracer.start_as_current_span(
             "orchestrator.run_workflow",
             kind=SpanKind.INTERNAL,
         ) as span:
             span.set_attribute("app.task_id", task_id)
+            span.set_attribute("app.success_threshold", success_threshold)
             
             state = AgentVerseState(
                 task_id=task_id,
                 original_task=task,
                 max_iterations=max_iterations,
+                success_threshold=min(100, max(0, success_threshold)),
             )
             
             self.logger.log(
