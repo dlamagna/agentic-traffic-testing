@@ -209,7 +209,7 @@ export function renderEvaluation(evaluation) {
 }
 
 /**
- * Render iteration history
+ * Render iteration history with enhanced tracking and comparison
  */
 export function renderIterationHistory(history, container) {
   if (!history || history.length === 0) {
@@ -222,21 +222,307 @@ export function renderIterationHistory(history, container) {
     return;
   }
   
-  let html = '<div class="iteration-tabs">';
+  // Score progression chart
+  const scores = history.map(h => h.evaluation?.score || 0);
+  const maxScore = Math.max(...scores, 100);
+  const minScore = Math.min(...scores, 0);
+  const scoreRange = maxScore - minScore || 1;
+  
+  let html = '<div class="iteration-history-container">';
+  
+  // Score progression visualization
+  html += '<div class="score-progression">';
+  html += '<div class="score-progression-header">';
+  html += '<span class="score-progression-title">Score Progression</span>';
+  html += '<span class="score-progression-subtitle">Click an iteration to view details</span>';
+  html += '</div>';
+  html += '<div class="score-progression-chart">';
+  scores.forEach((score, idx) => {
+    const prevScore = idx > 0 ? scores[idx - 1] : null;
+    const scoreChange = prevScore !== null ? score - prevScore : null;
+    const heightPercent = ((score - minScore) / scoreRange) * 100;
+    const scoreColor = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--error)';
+    const changeClass = scoreChange !== null 
+      ? (scoreChange > 0 ? 'improved' : scoreChange < 0 ? 'worsened' : 'unchanged')
+      : '';
+    const changeIcon = scoreChange !== null
+      ? (scoreChange > 0 ? '↑' : scoreChange < 0 ? '↓' : '→')
+      : '';
+    
+    html += `
+      <div class="score-bar-container" data-iteration="${idx}" onclick="window.agentverse.selectIteration(${idx})">
+        <div class="score-bar-wrapper">
+          <div class="score-bar" style="height: ${heightPercent}%; background: ${scoreColor};" title="Score: ${score}/100"></div>
+          <div class="score-value">${score}</div>
+        </div>
+        <div class="score-label">Iter ${idx + 1}</div>
+        ${scoreChange !== null ? `<div class="score-change ${changeClass}">${changeIcon} ${Math.abs(scoreChange)}</div>` : ''}
+      </div>
+    `;
+  });
+  html += '</div>';
+  html += '</div>';
+  
+  // Iteration tabs
+  html += '<div class="iteration-tabs">';
   history.forEach((h, idx) => {
     const score = h.evaluation?.score || 0;
+    const goalAchieved = h.evaluation?.goal_achieved || false;
     const scoreIcon = score >= 70 ? '✓' : score >= 40 ? '~' : '✗';
-    html += `<div class="iteration-tab">${scoreIcon} Iter ${idx + 1} (${score}/100)</div>`;
+    const tabClass = idx === 0 ? 'active' : '';
+    const scoreColor = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--error)';
+    
+    html += `<div class="iteration-tab ${tabClass}" data-iteration="${idx}" onclick="window.agentverse.selectIteration(${idx})">
+      <span class="iteration-tab-icon">${scoreIcon}</span>
+      <span class="iteration-tab-number">Iter ${idx + 1}</span>
+      <span class="iteration-tab-score" style="color: ${scoreColor}">${score}/100</span>
+      ${goalAchieved ? '<span class="iteration-tab-badge">Goal ✓</span>' : ''}
+    </div>`;
   });
   html += '</div>';
   
-  html += '<div style="font-size: 13px; color: var(--text-secondary);">';
+  // Iteration details panels
+  html += '<div class="iteration-details-container">';
   history.forEach((h, idx) => {
-    html += `<p><strong>Iteration ${idx + 1}:</strong> ${h.recruitment?.experts?.join(', ') || 'N/A'} | Duration: ${h.duration_seconds || 0}s</p>`;
+    const isActive = idx === 0 ? 'active' : '';
+    html += `<div class="iteration-details ${isActive}" data-iteration="${idx}">`;
+    html += renderIterationDetails(h, idx, idx > 0 ? history[idx - 1] : null);
+    html += '</div>';
   });
+  html += '</div>';
+  
   html += '</div>';
   
   container.innerHTML = html;
+}
+
+/**
+ * Render detailed view for a single iteration
+ */
+function renderIterationDetails(iteration, idx, previousIteration) {
+  const evaluation = iteration.evaluation || {};
+  const score = evaluation.score || 0;
+  const goalAchieved = evaluation.goal_achieved || false;
+  const scoreColor = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--error)';
+  
+  let html = '';
+  
+  // Header with score
+  html += `<div class="iteration-header">
+    <div class="iteration-header-main">
+      <h3 class="iteration-title">Iteration ${idx + 1} Details</h3>
+      <div class="iteration-score-large" style="color: ${scoreColor}">${score}/100</div>
+    </div>
+    <div class="iteration-meta">
+      <span>Duration: ${iteration.duration_seconds || 0}s</span>
+      ${goalAchieved ? '<span class="goal-badge">Goal Achieved ✓</span>' : '<span class="goal-badge failed">Goal Not Met ✗</span>'}
+    </div>
+  </div>`;
+  
+  // Changes from previous iteration
+  if (previousIteration) {
+    html += '<div class="iteration-changes">';
+    html += '<div class="changes-header">Changes from Previous Iteration</div>';
+    html += renderIterationChanges(iteration, previousIteration);
+    html += '</div>';
+  }
+  
+  // Evaluation breakdown
+  html += '<div class="iteration-evaluation">';
+  html += '<div class="evaluation-header">Evaluation Results</div>';
+  
+  if (evaluation.rationale) {
+    html += `<div class="evaluation-rationale">
+      <div class="evaluation-label">Rationale:</div>
+      <div class="evaluation-content">${escapeHtml(evaluation.rationale)}</div>
+    </div>`;
+  }
+  
+  if (evaluation.criteria) {
+    html += '<div class="evaluation-criteria">';
+    html += '<div class="evaluation-label">Score Breakdown:</div>';
+    const criteriaLabels = {
+      completeness: 'Completeness',
+      correctness: 'Correctness',
+      clarity: 'Clarity',
+      relevance: 'Relevance',
+      actionability: 'Actionability'
+    };
+    
+    Object.entries(evaluation.criteria).forEach(([key, value]) => {
+      const label = criteriaLabels[key] || key;
+      const criteriaColor = value >= 70 ? 'var(--success)' : value >= 40 ? 'var(--warning)' : 'var(--error)';
+      const prevValue = previousIteration?.evaluation?.criteria?.[key];
+      const change = prevValue !== undefined ? value - prevValue : null;
+      const changeIndicator = change !== null
+        ? (change > 0 ? `<span class="criteria-change improved">+${change}</span>` 
+           : change < 0 ? `<span class="criteria-change worsened">${change}</span>`
+           : '<span class="criteria-change unchanged">→</span>')
+        : '';
+      
+      html += `
+        <div class="criteria-item-detailed">
+          <div class="criteria-label-detailed">${escapeHtml(label)}:</div>
+          <div class="criteria-bar-detailed">
+            <div class="criteria-bar-fill-detailed" style="width: ${value}%; background: ${criteriaColor};"></div>
+            <span class="criteria-value-detailed" style="color: ${criteriaColor}">${value}</span>
+          </div>
+          ${changeIndicator}
+        </div>
+      `;
+    });
+    html += '</div>';
+  }
+  
+  html += '</div>';
+  
+  // Stage summaries
+  html += '<div class="iteration-stages">';
+  html += '<div class="stages-header">Stage Summaries</div>';
+  
+  // Recruitment
+  if (iteration.recruitment) {
+    html += `<div class="stage-summary">
+      <div class="stage-summary-header">
+        <span class="stage-summary-title">Expert Recruitment</span>
+      </div>
+      <div class="stage-summary-content">
+        <div><strong>Experts:</strong> ${(iteration.recruitment.experts || []).map(e => escapeHtml(e)).join(', ') || 'N/A'}</div>
+        <div><strong>Structure:</strong> ${escapeHtml(iteration.recruitment.structure || 'N/A')}</div>
+      </div>
+    </div>`;
+  }
+  
+  // Decision
+  if (iteration.decision) {
+    html += `<div class="stage-summary">
+      <div class="stage-summary-header">
+        <span class="stage-summary-title">Decision-Making</span>
+      </div>
+      <div class="stage-summary-content">
+        <div><strong>Consensus:</strong> ${iteration.decision.consensus ? '✓ Reached' : '✗ Not reached'}</div>
+        <div><strong>Rounds:</strong> ${iteration.decision.rounds || 0}</div>
+      </div>
+    </div>`;
+  }
+  
+  // Execution
+  if (iteration.execution) {
+    html += `<div class="stage-summary">
+      <div class="stage-summary-header">
+        <span class="stage-summary-title">Execution</span>
+      </div>
+      <div class="stage-summary-content">
+        <div><strong>Success:</strong> ${iteration.execution.success || 0}</div>
+        <div><strong>Failures:</strong> ${iteration.execution.failures || 0}</div>
+      </div>
+    </div>`;
+  }
+  
+  html += '</div>';
+  
+  return html;
+}
+
+/**
+ * Render changes between two iterations
+ */
+function renderIterationChanges(current, previous) {
+  const changes = [];
+  
+  // Score change
+  const currentScore = current.evaluation?.score || 0;
+  const prevScore = previous.evaluation?.score || 0;
+  const scoreChange = currentScore - prevScore;
+  if (scoreChange !== 0) {
+    const changeClass = scoreChange > 0 ? 'improved' : 'worsened';
+    changes.push({
+      type: 'score',
+      label: 'Score',
+      change: `${scoreChange > 0 ? '+' : ''}${scoreChange}`,
+      class: changeClass,
+      from: prevScore,
+      to: currentScore
+    });
+  }
+  
+  // Experts change
+  const currentExperts = (current.recruitment?.experts || []).sort().join(',');
+  const prevExperts = (previous.recruitment?.experts || []).sort().join(',');
+  if (currentExperts !== prevExperts) {
+    changes.push({
+      type: 'experts',
+      label: 'Expert Team',
+      change: 'Changed',
+      class: 'changed',
+      from: prevExperts || 'None',
+      to: currentExperts || 'None'
+    });
+  }
+  
+  // Structure change
+  const currentStructure = current.recruitment?.structure || '';
+  const prevStructure = previous.recruitment?.structure || '';
+  if (currentStructure !== prevStructure) {
+    changes.push({
+      type: 'structure',
+      label: 'Communication Structure',
+      change: 'Changed',
+      class: 'changed',
+      from: prevStructure || 'None',
+      to: currentStructure || 'None'
+    });
+  }
+  
+  // Consensus change
+  const currentConsensus = current.decision?.consensus || false;
+  const prevConsensus = previous.decision?.consensus || false;
+  if (currentConsensus !== prevConsensus) {
+    changes.push({
+      type: 'consensus',
+      label: 'Consensus',
+      change: currentConsensus ? 'Achieved' : 'Lost',
+      class: currentConsensus ? 'improved' : 'worsened',
+      from: prevConsensus ? 'Yes' : 'No',
+      to: currentConsensus ? 'Yes' : 'No'
+    });
+  }
+  
+  // Execution success change
+  const currentSuccess = current.execution?.success || 0;
+  const prevSuccess = previous.execution?.success || 0;
+  if (currentSuccess !== prevSuccess) {
+    changes.push({
+      type: 'execution',
+      label: 'Execution Success',
+      change: `${currentSuccess - prevSuccess > 0 ? '+' : ''}${currentSuccess - prevSuccess}`,
+      class: currentSuccess > prevSuccess ? 'improved' : 'worsened',
+      from: prevSuccess,
+      to: currentSuccess
+    });
+  }
+  
+  if (changes.length === 0) {
+    return '<div class="no-changes">No significant changes detected</div>';
+  }
+  
+  let html = '<div class="changes-list">';
+  changes.forEach(change => {
+    html += `
+      <div class="change-item ${change.class}">
+        <div class="change-label">${escapeHtml(change.label)}</div>
+        <div class="change-value">
+          <span class="change-from">${escapeHtml(String(change.from))}</span>
+          <span class="change-arrow">→</span>
+          <span class="change-to">${escapeHtml(String(change.to))}</span>
+          <span class="change-indicator">${escapeHtml(change.change)}</span>
+        </div>
+      </div>
+    `;
+  });
+  html += '</div>';
+  
+  return html;
 }
 
 /**
@@ -247,8 +533,9 @@ export function renderLlmRequestsGraph(requests) {
     return '<p style="color: var(--text-secondary);">No LLM requests recorded.</p>';
   }
   
-  // Build vertical swimlanes: Agent A (orchestrator) + Agent B roles
+  // Build vertical swimlanes: Agent A (orchestrator) + Agent B roles + LLM Backend
   const orchestratorKey = 'Agent A (orchestrator)';
+  const llmBackendKey = 'LLM Backend';
   const laneOrder = [orchestratorKey];
   const laneIndex = { [orchestratorKey]: 0 };
   
@@ -272,10 +559,14 @@ export function renderLlmRequestsGraph(requests) {
     laneOrder.push(fallbackLane);
   }
   
+  // Add LLM Backend as the last lane
+  laneIndex[llmBackendKey] = laneOrder.length;
+  laneOrder.push(llmBackendKey);
+  
   const laneGapX = 140;
   const paddingX = 80;
   const paddingY = 40;
-  const stepY = 60;
+  const stepY = 80; // Increased to accommodate multiple edges per request
   const width = paddingX * 2 + Math.max(1, laneOrder.length - 1) * laneGapX;
   const height = paddingY * 2 + Math.max(1, requests.length - 1) * stepY;
   
@@ -298,60 +589,191 @@ export function renderLlmRequestsGraph(requests) {
   });
   
   // Edges and nodes (time flows downward)
+  // For Agent B calls, we show multiple edges: A→B (message), B→LLM (call), B→A (return)
   requests.forEach((req, idx) => {
     const stage = req.stage || 'unknown';
     const label = req.label || '';
     const roleRaw = (req.agent_role || '').trim();
     const roleLower = roleRaw.toLowerCase();
+    const source = (req.source || '').trim();
     
-    let fromKey;
-    let toKey;
-    if (!roleRaw || roleLower.includes('orchestrator')) {
-      // Orchestrator self-directed LLM call
-      fromKey = orchestratorKey;
-      toKey = orchestratorKey;
-    } else {
-      const bLane = laneIndex[`Agent B – ${roleRaw}`] !== undefined
-        ? `Agent B – ${roleRaw}`
-        : laneOrder[1]; // fallback Agent B lane
-      // Model the dependency as Agent B returning results to Agent A
-      fromKey = bLane;
-      toKey = orchestratorKey;
-    }
+    // Check if this is an Agent B LLM call (source starts with "agent-b-")
+    const isAgentBCall = source.toLowerCase().startsWith('agent-b-');
+    const isAgentACall = !roleRaw || roleLower.includes('orchestrator') || source === 'Agent A';
     
-    const x1 = paddingX + (laneIndex[fromKey] ?? 0) * laneGapX;
-    const x2 = paddingX + (laneIndex[toKey] ?? 0) * laneGapX;
-    const y = paddingY + idx * stepY;
-    const midX = (x1 + x2) / 2;
+    const baseY = paddingY + idx * stepY;
     const color = getStageColor(stage);
     const title = `#${req.seq} ${stage} – ${label}`;
     
-    svg += `
-      <g>
-        <title>${escapeHtml(title)}</title>
-        <path
-          class="flow-graph-edge"
-          d="M ${x1} ${y} L ${x2} ${y}"
-          stroke="${color}"
-          marker-end="url(#arrowhead)"
-        ></path>
-        <circle
-          class="flow-graph-node"
-          cx="${midX}"
-          cy="${y}"
-          r="9"
-          fill="${color}"
-        ></circle>
-        <text
-          class="flow-graph-node-label"
-          x="${midX}"
-          y="${y + 3}"
-          text-anchor="middle"
-        >
-          ${req.seq}
-        </text>
-      </g>
-    `;
+    if (isAgentACall) {
+      // Agent A's direct LLM call: Agent A → LLM Backend
+      const x1 = paddingX + (laneIndex[orchestratorKey] ?? 0) * laneGapX;
+      const x2 = paddingX + (laneIndex[llmBackendKey] ?? 0) * laneGapX;
+      const midX = (x1 + x2) / 2;
+      
+      svg += `
+        <g>
+          <title>${escapeHtml(title)}</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${x1} ${baseY} L ${x2} ${baseY}"
+            stroke="${color}"
+            marker-end="url(#arrowhead)"
+          ></path>
+          <circle
+            class="flow-graph-node"
+            cx="${midX}"
+            cy="${baseY}"
+            r="9"
+            fill="${color}"
+          ></circle>
+          <text
+            class="flow-graph-node-label"
+            x="${midX}"
+            y="${baseY + 3}"
+            text-anchor="middle"
+          >
+            ${req.seq}
+          </text>
+        </g>
+      `;
+    } else if (isAgentBCall) {
+      // Agent B's LLM call: Show complete flow
+      // 1. Agent A → Agent B (message sent)
+      // 2. Agent B → LLM Backend (LLM call)
+      // 3. Agent B → Agent A (results returned)
+      const bLane = laneIndex[`Agent B – ${roleRaw}`] !== undefined
+        ? `Agent B – ${roleRaw}`
+        : laneOrder[1]; // fallback Agent B lane
+      
+      const xA = paddingX + (laneIndex[orchestratorKey] ?? 0) * laneGapX;
+      const xB = paddingX + (laneIndex[bLane] ?? 0) * laneGapX;
+      const xLLM = paddingX + (laneIndex[llmBackendKey] ?? 0) * laneGapX;
+      
+      const y1 = baseY - 15; // Message sent
+      const y2 = baseY;      // LLM call
+      const y3 = baseY + 15; // Results returned
+      
+      // Edge 1: Agent A → Agent B (message sent)
+      svg += `
+        <g>
+          <title>${escapeHtml(title)} - Message sent</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xA} ${y1} L ${xB} ${y1}"
+            stroke="${color}"
+            stroke-opacity="0.6"
+            stroke-width="2"
+            marker-end="url(#arrowhead)"
+          ></path>
+        </g>
+      `;
+      
+      // Edge 2: Agent B → LLM Backend (LLM call)
+      svg += `
+        <g>
+          <title>${escapeHtml(title)}</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xB} ${y2} L ${xLLM} ${y2}"
+            stroke="${color}"
+            marker-end="url(#arrowhead)"
+          ></path>
+          <circle
+            class="flow-graph-node"
+            cx="${(xB + xLLM) / 2}"
+            cy="${y2}"
+            r="9"
+            fill="${color}"
+          ></circle>
+          <text
+            class="flow-graph-node-label"
+            x="${(xB + xLLM) / 2}"
+            y="${y2 + 3}"
+            text-anchor="middle"
+          >
+            ${req.seq}
+          </text>
+        </g>
+      `;
+      
+      // Edge 3: Agent B → Agent A (results returned)
+      svg += `
+        <g>
+          <title>${escapeHtml(title)} - Results returned</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xB} ${y3} L ${xA} ${y3}"
+            stroke="${color}"
+            stroke-opacity="0.6"
+            stroke-width="2"
+            marker-end="url(#arrowhead)"
+          ></path>
+        </g>
+      `;
+    } else {
+      // Fallback: treat as Agent B call with same multi-edge flow
+      const bLane = laneIndex[`Agent B – ${roleRaw}`] !== undefined
+        ? `Agent B – ${roleRaw}`
+        : laneOrder[1];
+      
+      const xA = paddingX + (laneIndex[orchestratorKey] ?? 0) * laneGapX;
+      const xB = paddingX + (laneIndex[bLane] ?? 0) * laneGapX;
+      const xLLM = paddingX + (laneIndex[llmBackendKey] ?? 0) * laneGapX;
+      
+      const y1 = baseY - 15;
+      const y2 = baseY;
+      const y3 = baseY + 15;
+      
+      svg += `
+        <g>
+          <title>${escapeHtml(title)} - Message sent</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xA} ${y1} L ${xB} ${y1}"
+            stroke="${color}"
+            stroke-opacity="0.6"
+            stroke-width="2"
+            marker-end="url(#arrowhead)"
+          ></path>
+        </g>
+        <g>
+          <title>${escapeHtml(title)}</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xB} ${y2} L ${xLLM} ${y2}"
+            stroke="${color}"
+            marker-end="url(#arrowhead)"
+          ></path>
+          <circle
+            class="flow-graph-node"
+            cx="${(xB + xLLM) / 2}"
+            cy="${y2}"
+            r="9"
+            fill="${color}"
+          ></circle>
+          <text
+            class="flow-graph-node-label"
+            x="${(xB + xLLM) / 2}"
+            y="${y2 + 3}"
+            text-anchor="middle"
+          >
+            ${req.seq}
+          </text>
+        </g>
+        <g>
+          <title>${escapeHtml(title)} - Results returned</title>
+          <path
+            class="flow-graph-edge"
+            d="M ${xB} ${y3} L ${xA} ${y3}"
+            stroke="${color}"
+            stroke-opacity="0.6"
+            stroke-width="2"
+            marker-end="url(#arrowhead)"
+          ></path>
+        </g>
+      `;
+    }
   });
   
   svg += '</svg>';

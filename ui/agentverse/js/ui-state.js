@@ -83,6 +83,9 @@ export class UIState {
     
     // Hide live badge
     this.elements.liveBadge.style.display = 'none';
+    
+    // Clear cancelled state on workflow panel
+    if (this.elements.workflowPanel) this.elements.workflowPanel.classList.remove('workflow-panel--cancelled');
   }
 
   /**
@@ -187,8 +190,11 @@ export class UIState {
       this.elements.finalOutput.textContent = data.final_output;
     }
     
-    // Update iteration history
-    renderIterationHistory(data.iteration_history, this.elements.iterationHistory);
+    // Update iteration history (ensure we have an array and container exists)
+    const iterationHistory = Array.isArray(data.iteration_history) ? data.iteration_history : [];
+    if (this.elements.iterationHistory) {
+      renderIterationHistory(iterationHistory, this.elements.iterationHistory);
+    }
     
     // Update detailed flow section
     const detailedSection = document.getElementById('detailedFlowSection');

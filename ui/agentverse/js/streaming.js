@@ -209,27 +209,33 @@ export class StreamingHandler {
 
   /**
    * Run workflow with streaming
+   * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
+   * @param {function} [onCancelled] - Callback when request is cancelled (AbortError)
    */
-  async runWorkflowStreaming(task, endpoint, maxIterations) {
+  async runWorkflowStreaming(task, endpoint, maxIterations, scoreThreshold = 70, signal = null, onCancelled = null) {
     // Reset and start
     this.uiState.resetUI();
     this.uiState.startTimer();
     this.uiState.elements.runBtn.disabled = true;
-    this.uiState.currentData = { max_iterations: maxIterations };
+    this.uiState.currentData = { max_iterations: maxIterations, success_threshold: scoreThreshold };
     
     // Show live badge
     this.uiState.elements.liveBadge.style.display = 'inline-flex';
     
+    const fetchOptions = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: task,
+        max_iterations: maxIterations,
+        success_threshold: scoreThreshold,
+        stream: true
+      })
+    };
+    if (signal) fetchOptions.signal = signal;
+    
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: task,
-          max_iterations: maxIterations,
-          stream: true
-        })
-      });
+      const response = await fetch(endpoint, fetchOptions);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -283,6 +289,17 @@ export class StreamingHandler {
                 this.uiState.elements.statusText.textContent = 'Complete';
                 // Re-enable the button
                 this.uiState.elements.runBtn.disabled = false;
+                
+                // Save to request history
+                if (window.agentverse && window.agentverse.currentRequest) {
+                  window.agentverse.saveRequestToHistory(
+                    window.agentverse.currentRequest.task,
+                    window.agentverse.currentRequest.endpoint,
+                    window.agentverse.currentRequest.maxIterations,
+                    this.uiState.currentData,
+                    window.agentverse.currentRequest.scoreThreshold
+                  );
+                }
               }
             } catch (e) {
               console.error('Error parsing SSE data:', e, eventDataStr);
@@ -325,6 +342,7 @@ export class StreamingHandler {
             body: JSON.stringify({
               task: task,
               max_iterations: maxIterations,
+              success_threshold: scoreThreshold,
               stream: false
             })
           });
@@ -337,6 +355,18 @@ export class StreamingHandler {
           const responseData = await response.json();
           this.uiState.updateWorkflowUI(responseData);
           this.uiState.stopTimer(true);
+          
+          // Save to request history
+          if (window.agentverse && window.agentverse.currentRequest) {
+            window.agentverse.saveRequestToHistory(
+              window.agentverse.currentRequest.task,
+              window.agentverse.currentRequest.endpoint,
+              window.agentverse.currentRequest.maxIterations,
+              responseData,
+              window.agentverse.currentRequest.scoreThreshold
+            );
+          }
+          
           return; // Success, exit the error handler
         } catch (retryError) {
           console.error('Non-streaming retry failed:', retryError);
@@ -358,6 +388,7 @@ export class StreamingHandler {
       
     } finally {
       this.uiState.elements.runBtn.disabled = false;
+      if (window.agentverse && window.agentverse.hideCancelButton) window.agentverse.hideCancelButton();
     }
   }
 }
