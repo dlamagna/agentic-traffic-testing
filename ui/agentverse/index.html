@@ -214,16 +214,23 @@
                 </svg>
                 Final Output
               </span>
-              <button
-                type="button"
-                class="btn-secondary final-output-copy-btn"
-                onclick="window.agentverse.copyFinalOutput()"
-                title="Copy final output to clipboard"
-              >
-                Copy
-              </button>
+              <div class="final-output-actions">
+                <div class="final-output-tabs">
+                  <button type="button" class="final-output-tab active" data-view="formatted" onclick="window.agentverse.setFinalOutputView('formatted')">Formatted</button>
+                  <button type="button" class="final-output-tab" data-view="raw" onclick="window.agentverse.setFinalOutputView('raw')">Raw</button>
+                </div>
+                <button
+                  type="button"
+                  class="btn-secondary final-output-copy-btn"
+                  onclick="window.agentverse.copyFinalOutput()"
+                  title="Copy final output to clipboard"
+                >
+                  Copy
+                </button>
+              </div>
             </h3>
-            <div class="final-output-content" id="finalOutput"></div>
+            <div class="final-output-content final-output-view-formatted" id="finalOutput"></div>
+            <div class="final-output-content final-output-view-raw" id="finalOutputRaw" style="display: none;"></div>
           </div>
         </div>
         
