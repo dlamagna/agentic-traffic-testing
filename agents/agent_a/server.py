@@ -145,11 +145,17 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 max_iterations = 3
             max_iterations = min(max_iterations, 5)  # Cap at 5
             
+            success_threshold = data.get("success_threshold", 70)
+            if not isinstance(success_threshold, (int, float)):
+                success_threshold = 70
+            success_threshold = min(100, max(0, int(success_threshold)))
+            
             # Check if client wants streaming (SSE)
             stream = data.get("stream", False)
 
             span.set_attribute("app.task", task)
             span.set_attribute("app.max_iterations", max_iterations)
+            span.set_attribute("app.success_threshold", success_threshold)
             span.set_attribute("app.stream", stream)
 
             # Create logger and task ID
@@ -188,6 +194,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         task=task,
                         task_id=task_id,
                         max_iterations=max_iterations,
+                        success_threshold=success_threshold,
                     )
                     
                     # Send final result as SSE event
@@ -200,6 +207,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         task=task,
                         task_id=task_id,
                         max_iterations=max_iterations,
+                        success_threshold=success_threshold,
                     )
                     self._send_json(200, result)
                     
