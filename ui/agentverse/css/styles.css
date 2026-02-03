@@ -1281,6 +1281,7 @@ button {
 .flow-table .label-col { width: 180px; }
 .flow-table .source-col { width: 90px; }
 .flow-table .role-col { width: 90px; }
+.flow-table .start-time-col { width: 180px; font-size: 12px; white-space: nowrap; }
 .flow-table .duration-col { width: 90px; text-align: right; white-space: nowrap; }
 .flow-table .preview-col { min-width: 200px; }
 

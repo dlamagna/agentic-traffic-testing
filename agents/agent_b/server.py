@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
@@ -151,6 +152,8 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 "agent_b.call_llm",
                 kind=SpanKind.CLIENT,
             ) as span_llm:
+                start_time_utc = datetime.now(timezone.utc).isoformat()
+                span_llm.set_attribute("app.request_start_time_utc", start_time_utc)
                 span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)

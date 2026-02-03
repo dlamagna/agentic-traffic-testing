@@ -14,6 +14,7 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -166,6 +167,8 @@ class AgentVerseOrchestrator:
         # Create a dedicated client span for each LLM HTTP request so we can
         # surface trace/span IDs in the raw request JSON (no UI changes needed).
         with self.tracer.start_as_current_span("agent_a.call_llm", kind=SpanKind.CLIENT) as span_llm:
+            start_time_utc = datetime.now(timezone.utc).isoformat()
+            span_llm.set_attribute("app.request_start_time_utc", start_time_utc)
             span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
             if max_tokens is not None:
                 span_llm.set_attribute("llm.max_tokens", int(max_tokens))
@@ -320,11 +323,13 @@ class AgentVerseOrchestrator:
         request_id: Optional[str] = None,
         otel: Optional[Dict[str, Any]] = None,
         llm_meta: Optional[Dict[str, Any]] = None,
+        start_time_utc: Optional[str] = None,
     ) -> None:
         """Record an LLM request/response for the detailed flow.
 
         duration_seconds: end-to-end task duration (LLM call for Agent A direct calls,
         or full Agent B round-trip including network, Agent B processing, and LLM call).
+        start_time_utc: ISO 8601 UTC timestamp when the request started (for tracing and UI).
         """
         seq = len(state.llm_requests) + 1
         role = agent_role
@@ -340,6 +345,8 @@ class AgentVerseOrchestrator:
             "response": response,
             "endpoint": endpoint or LLM_SERVER_URL,
         }
+        if start_time_utc is not None:
+            entry["start_time_utc"] = start_time_utc
         if request_id is not None:
             entry["request_id"] = request_id
         if otel is not None:
@@ -443,6 +450,7 @@ class AgentVerseOrchestrator:
             t0 = time.time()
             response, llm_trace_meta = self._call_llm(prompt, headers=headers)
             duration = time.time() - t0
+            start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
 
             self._record_llm_request(
                 state,
@@ -456,6 +464,7 @@ class AgentVerseOrchestrator:
                 request_id=request_id,
                 otel=llm_trace_meta.get("otel"),
                 llm_meta=llm_trace_meta.get("llm_backend"),
+                start_time_utc=start_time_utc,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -664,6 +673,7 @@ class AgentVerseOrchestrator:
                         task_id=state.task_id,
                     )
                     duration = time.time() - t0
+                    start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                     output = response.get("output", "")
                     llm_prompt = response.get("llm_prompt") or prompt
                     llm_response = response.get("llm_response") or output
@@ -681,6 +691,7 @@ class AgentVerseOrchestrator:
                         request_id=request_id,
                         otel=response.get("otel"),
                         llm_meta=response.get("llm_meta"),
+                        start_time_utc=start_time_utc,
                     )
                 except Exception as exc:
                     output = f"[Agent error: {exc}]"
@@ -808,6 +819,7 @@ class AgentVerseOrchestrator:
                     task_id=state.task_id,
                 )
                 duration = time.time() - t0
+                start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                 proposal = response.get("output", "")
                 llm_prompt = response.get("llm_prompt") or solver_prompt
                 llm_response = response.get("llm_response") or proposal
@@ -825,6 +837,7 @@ class AgentVerseOrchestrator:
                     request_id=request_id,
                     otel=response.get("otel"),
                     llm_meta=response.get("llm_meta"),
+                    start_time_utc=start_time_utc,
                 )
             except Exception as exc:
                 proposal = f"[Solver error: {exc}]"
@@ -863,6 +876,7 @@ class AgentVerseOrchestrator:
                             task_id=state.task_id,
                         )
                         duration = time.time() - t0
+                        start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                         critique = response.get("output", "")
                         llm_prompt = response.get("llm_prompt") or reviewer_prompt
                         llm_response = response.get("llm_response") or critique
@@ -880,6 +894,7 @@ class AgentVerseOrchestrator:
                             request_id=request_id,
                             otel=response.get("otel"),
                             llm_meta=response.get("llm_meta"),
+                            start_time_utc=start_time_utc,
                         )
                     except Exception as exc:
                         critique = f"[Reviewer error: {exc}]"
@@ -1075,6 +1090,7 @@ class AgentVerseOrchestrator:
                             task_id=state.task_id,
                         )
                         duration = time.time() - t0
+                        start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                         llm_prompt = response.get("llm_prompt") or prompt
                         llm_response = response.get("llm_response") or response.get("output", "")
                         self._record_llm_request(
@@ -1090,6 +1106,7 @@ class AgentVerseOrchestrator:
                             request_id=request_id,
                             otel=response.get("otel"),
                             llm_meta=response.get("llm_meta"),
+                            start_time_utc=start_time_utc,
                         )
                         return {
                             "expert": expert.role,
@@ -1238,6 +1255,7 @@ Focus on what is relevant to your expertise.
             t0 = time.time()
             response, llm_trace_meta = self._call_llm(prompt, headers=headers)
             duration = time.time() - t0
+            start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
 
             self._record_llm_request(
                 state,
@@ -1251,6 +1269,7 @@ Focus on what is relevant to your expertise.
                 request_id=request_id,
                 otel=llm_trace_meta.get("otel"),
                 llm_meta=llm_trace_meta.get("llm_backend"),
+                start_time_utc=start_time_utc,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -1501,6 +1520,7 @@ Feedback: {state.evaluation.feedback}
         t0 = time.time()
         response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=4096)
         duration = time.time() - t0
+        start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
         self._record_llm_request(
             state,
             stage="synthesis",
@@ -1513,6 +1533,7 @@ Feedback: {state.evaluation.feedback}
             request_id=request_id,
             otel=llm_trace_meta.get("otel"),
             llm_meta=llm_trace_meta.get("llm_backend"),
+            start_time_utc=start_time_utc,
         )
         return response
     

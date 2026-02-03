@@ -842,6 +842,9 @@ export function renderLlmRequestsTable(requests) {
     const promptPreview = truncate(req.prompt || '', 80);
     const responsePreview = truncate(req.response || '', 80);
     const durationStr = req.duration_seconds != null ? `${req.duration_seconds}s` : '—';
+    const startTimeStr = req.start_time_utc
+      ? new Date(req.start_time_utc).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')
+      : '—';
     const reqJson = JSON.stringify(req, null, 2);
     const reqJsonEscaped = escapeHtml(reqJson);
     
@@ -853,12 +856,13 @@ export function renderLlmRequestsTable(requests) {
         <td class="label-col">${escapeHtml(label)}</td>
         <td class="source-col">${escapeHtml(source)}</td>
         <td class="role-col">${escapeHtml(role)}</td>
+        <td class="start-time-col" title="Request start time (UTC)">${escapeHtml(startTimeStr)}</td>
         <td class="duration-col" title="End-to-end task duration (includes Agent B round-trip where applicable)">${durationStr}</td>
         <td class="preview-col"><span title="${escapeHtml(req.prompt || '')}">${escapeHtml(promptPreview)}</span></td>
         <td class="preview-col"><span title="${escapeHtml(req.response || '')}">${escapeHtml(responsePreview)}</span></td>
       </tr>
       <tr class="flow-detail-row" id="flow-detail-${req.seq}" style="display: none;">
-        <td colspan="9" class="flow-detail-cell">
+        <td colspan="10" class="flow-detail-cell">
           <div class="flow-detail-section">
             <div class="flow-detail-label">Request (Prompt)</div>
             <div class="flow-detail-content">${escapeHtml(req.prompt || '(empty)')}</div>
@@ -888,6 +892,7 @@ export function renderLlmRequestsTable(requests) {
           <th class="label-col">Label</th>
           <th class="source-col">Source</th>
           <th class="role-col">Role</th>
+          <th class="start-time-col" title="Request start time (UTC)">Start time</th>
           <th class="duration-col" title="End-to-end task duration">Task duration</th>
           <th class="preview-col">Prompt (preview)</th>
           <th class="preview-col">Response (preview)</th>
