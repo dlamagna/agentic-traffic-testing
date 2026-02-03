@@ -292,8 +292,13 @@ class AgentVerseOrchestrator:
         agent_role: Optional[str] = None,
         endpoint: Optional[str] = None,
         round_num: Optional[int] = None,
+        duration_seconds: Optional[float] = None,
     ) -> None:
-        """Record an LLM request/response for the detailed flow."""
+        """Record an LLM request/response for the detailed flow.
+
+        duration_seconds: end-to-end task duration (LLM call for Agent A direct calls,
+        or full Agent B round-trip including network, Agent B processing, and LLM call).
+        """
         seq = len(state.llm_requests) + 1
         role = agent_role
         if role is None and source == "Agent A":
@@ -312,6 +317,8 @@ class AgentVerseOrchestrator:
             entry["agent_role"] = role
         if round_num is not None:
             entry["round"] = round_num
+        if duration_seconds is not None:
+            entry["duration_seconds"] = round(duration_seconds, 2)
         state.llm_requests.append(entry)
         
         # Send progress update with new LLM request
@@ -390,8 +397,10 @@ class AgentVerseOrchestrator:
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
+            t0 = time.time()
             response = self._call_llm(prompt, headers=headers)
-            
+            duration = time.time() - t0
+
             self._record_llm_request(
                 state,
                 stage="recruitment",
@@ -400,6 +409,7 @@ class AgentVerseOrchestrator:
                 response=response,
                 source="Agent A",
                 agent_role="orchestrator",
+                duration_seconds=duration,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -596,6 +606,7 @@ class AgentVerseOrchestrator:
                 try:
                     headers: Dict[str, str] = {}
                     propagate.inject(headers)
+                    t0 = time.time()
                     response = self._call_agent_b(
                         subtask=prompt,
                         agent_b_role=expert.role,
@@ -604,6 +615,7 @@ class AgentVerseOrchestrator:
                         headers=headers,
                         task_id=state.task_id,
                     )
+                    duration = time.time() - t0
                     output = response.get("output", "")
                     llm_prompt = response.get("llm_prompt") or prompt
                     llm_response = response.get("llm_response") or output
@@ -617,6 +629,7 @@ class AgentVerseOrchestrator:
                         agent_role=expert.role,
                         endpoint=response.get("llm_endpoint"),
                         round_num=round_num,
+                        duration_seconds=duration,
                     )
                 except Exception as exc:
                     output = f"[Agent error: {exc}]"
@@ -732,6 +745,7 @@ class AgentVerseOrchestrator:
             try:
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)
+                t0 = time.time()
                 response = self._call_agent_b(
                     subtask=solver_prompt,
                     agent_b_role=solver.role,
@@ -740,6 +754,7 @@ class AgentVerseOrchestrator:
                     headers=headers,
                     task_id=state.task_id,
                 )
+                duration = time.time() - t0
                 proposal = response.get("output", "")
                 llm_prompt = response.get("llm_prompt") or solver_prompt
                 llm_response = response.get("llm_response") or proposal
@@ -753,6 +768,7 @@ class AgentVerseOrchestrator:
                     agent_role=solver.role,
                     endpoint=response.get("llm_endpoint"),
                     round_num=iteration,
+                    duration_seconds=duration,
                 )
             except Exception as exc:
                 proposal = f"[Solver error: {exc}]"
@@ -779,6 +795,7 @@ class AgentVerseOrchestrator:
 
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        t0 = time.time()
                         response = self._call_agent_b(
                             subtask=reviewer_prompt,
                             agent_b_role=reviewer.role,
@@ -787,6 +804,7 @@ class AgentVerseOrchestrator:
                             headers=headers,
                             task_id=state.task_id,
                         )
+                        duration = time.time() - t0
                         critique = response.get("output", "")
                         llm_prompt = response.get("llm_prompt") or reviewer_prompt
                         llm_response = response.get("llm_response") or critique
@@ -800,6 +818,7 @@ class AgentVerseOrchestrator:
                             agent_role=reviewer.role,
                             endpoint=response.get("llm_endpoint"),
                             round_num=iteration,
+                            duration_seconds=duration,
                         )
                     except Exception as exc:
                         critique = f"[Reviewer error: {exc}]"
@@ -878,7 +897,10 @@ class AgentVerseOrchestrator:
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
-        response = self._call_llm(prompt, headers=headers)
+        t0 = time.time()
+        # Allow a larger completion for the final synthesized answer
+        response = self._call_llm(prompt, headers=headers, max_tokens=2048)
+        duration = time.time() - t0
         self._record_llm_request(
             state,
             stage="decision",
@@ -887,6 +909,7 @@ class AgentVerseOrchestrator:
             response=response,
             source="Agent A",
             agent_role="orchestrator",
+            duration_seconds=duration,
         )
         return response
     
@@ -974,6 +997,7 @@ class AgentVerseOrchestrator:
                         
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        t0 = time.time()
                         response = self._call_agent_b(
                             subtask=prompt,
                             agent_b_role=expert.role,
@@ -982,6 +1006,7 @@ class AgentVerseOrchestrator:
                             headers=headers,
                             task_id=state.task_id,
                         )
+                        duration = time.time() - t0
                         llm_prompt = response.get("llm_prompt") or prompt
                         llm_response = response.get("llm_response") or response.get("output", "")
                         self._record_llm_request(
@@ -993,6 +1018,7 @@ class AgentVerseOrchestrator:
                             source=f"agent-b-{expert.index + 1}",
                             agent_role=expert.role,
                             endpoint=response.get("llm_endpoint"),
+                            duration_seconds=duration,
                         )
                         return {
                             "expert": expert.role,
@@ -1136,8 +1162,10 @@ Focus on what is relevant to your expertise.
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
+            t0 = time.time()
             response = self._call_llm(prompt, headers=headers)
-            
+            duration = time.time() - t0
+
             self._record_llm_request(
                 state,
                 stage="evaluation",
@@ -1146,6 +1174,7 @@ Focus on what is relevant to your expertise.
                 response=response,
                 source="Agent A",
                 agent_role="orchestrator",
+                duration_seconds=duration,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -1391,7 +1420,9 @@ Feedback: {state.evaluation.feedback}
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
-        response = self._call_llm(prompt, headers=headers)
+        t0 = time.time()
+        response = self._call_llm(prompt, headers=headers, max_tokens=4096)
+        duration = time.time() - t0
         self._record_llm_request(
             state,
             stage="synthesis",
@@ -1400,6 +1431,7 @@ Feedback: {state.evaluation.feedback}
             response=response,
             source="Agent A",
             agent_role="orchestrator",
+            duration_seconds=duration,
         )
         return response
     
