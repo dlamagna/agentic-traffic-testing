@@ -1281,6 +1281,7 @@ button {
 .flow-table .label-col { width: 180px; }
 .flow-table .source-col { width: 90px; }
 .flow-table .role-col { width: 90px; }
+.flow-table .duration-col { width: 90px; text-align: right; white-space: nowrap; }
 .flow-table .preview-col { min-width: 200px; }
 
 .flow-detail-row td {
@@ -1318,6 +1319,13 @@ button {
   background: rgba(0,0,0,0.3);
   padding: 12px;
   border-radius: 6px;
+}
+
+.flow-detail-json {
+  display: block;
+  margin: 0;
+  font-size: 11px;
+  max-height: 400px;
 }
 
 .flow-stage-badge {
@@ -1401,6 +1409,29 @@ button {
   fill: var(--text-primary);
   font-size: 10px;
   pointer-events: none;
+}
+
+.flow-graph-tooltip {
+  position: fixed;
+  z-index: 10000;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.95);
+  color: var(--text-primary);
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  max-width: 400px;
+  white-space: normal;
+}
+
+.flow-graph-tooltip[aria-hidden="true"] {
+  display: none;
+}
+
+.flow-graph-tooltip[aria-hidden="false"] {
+  display: block;
 }
 
 /* Request History */

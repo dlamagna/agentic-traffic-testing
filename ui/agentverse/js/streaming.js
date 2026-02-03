@@ -94,13 +94,12 @@ export class StreamingHandler {
       document.getElementById('stage4Content').classList.add('expanded');
     }
     else if (data.stage === 'synthesis') {
-      // Show final output (both formatted and raw views)
-      this.uiState.elements.finalOutputContainer.style.display = 'block';
-      const text = data.final_output || '';
-      this.uiState.elements.finalOutput.textContent = text;
-      if (this.uiState.elements.finalOutputRaw) {
-        this.uiState.elements.finalOutputRaw.textContent = text;
-      }
+      // Merge synthesis result into current data and run full UI update.
+      // This ensures final output is shown and raw JSON is populated even if
+      // the "complete" event is delayed or fails (e.g. large payload).
+      const merged = { ...(this.uiState.currentData || {}), final_output: data.final_output || '' };
+      this.uiState.currentData = merged;
+      this.uiState.updateWorkflowUI(merged);
       
       // Stop timer and hide live badge since synthesis is the final stage
       this.uiState.stopTimer(true);
@@ -110,6 +109,21 @@ export class StreamingHandler {
       
       // Re-enable the button since workflow is complete
       this.uiState.elements.runBtn.disabled = false;
+      
+      // Save to history now (in case "complete" event never arrives)
+      if (window.agentverse?.currentRequest) {
+        try {
+          window.agentverse.saveRequestToHistory(
+            window.agentverse.currentRequest.task,
+            window.agentverse.currentRequest.endpoint,
+            window.agentverse.currentRequest.maxIterations,
+            merged,
+            window.agentverse.currentRequest.scoreThreshold
+          );
+        } catch (e) {
+          console.warn('[AgentVerse] Failed to save to history on synthesis complete:', e);
+        }
+      }
     }
   }
 
@@ -316,6 +330,14 @@ export class StreamingHandler {
                 this.uiState.stopTimer(true);
                 this.uiState.elements.liveBadge.style.display = 'none';
                 this.uiState.elements.statusText.textContent = 'Complete';
+                // Auto-show raw JSON when workflow completes and scroll to it
+                if (this.uiState.elements.rawJson) {
+                  this.uiState.elements.rawJson.classList.add('visible');
+                  const rawSection = document.getElementById('rawJsonSection');
+                  if (rawSection) rawSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+                const rawToggleText = document.getElementById('rawToggleText');
+                if (rawToggleText) rawToggleText.textContent = 'Hide';
                 
                 // Re-enable the button and hide cancel
                 this.uiState.elements.runBtn.disabled = false;

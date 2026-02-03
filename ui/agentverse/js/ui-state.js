@@ -69,9 +69,12 @@ export class UIState {
     }
     
     // Reset raw JSON
-    this.elements.rawJson.textContent = '';
-    this.elements.rawJson.classList.remove('visible');
-    document.getElementById('rawToggleText').textContent = 'Show Raw JSON Response';
+    if (this.elements.rawJson) {
+      this.elements.rawJson.textContent = '';
+      this.elements.rawJson.classList.remove('visible');
+    }
+    const rawTog = document.getElementById('rawToggleText');
+    if (rawTog) rawTog.textContent = 'Show';
     
     // Reset detailed flow
     const detailedSection = document.getElementById('detailedFlowSection');
@@ -129,8 +132,15 @@ export class UIState {
   updateWorkflowUI(data) {
     this.currentData = data;
     
-    // Update raw JSON
-    this.elements.rawJson.textContent = JSON.stringify(data, null, 2);
+    // Update raw JSON and auto-show it
+    if (this.elements.rawJson) {
+      this.elements.rawJson.textContent = JSON.stringify(data, null, 2);
+      this.elements.rawJson.classList.add('visible');
+      const section = document.getElementById('rawJsonSection');
+      if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    const rawToggle = document.getElementById('rawToggleText');
+    if (rawToggle) rawToggle.textContent = 'Hide';
     
     // Update stages
     const stages = data.stages || {};

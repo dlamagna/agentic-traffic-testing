@@ -612,17 +612,22 @@ export function renderLlmRequestsGraph(requests) {
     
     const baseY = paddingY + idx * stepY;
     const color = getStageColor(stage);
-    const title = `#${req.seq} ${stage} – ${label}`;
+    const durationStr = req.duration_seconds != null ? ` • ${req.duration_seconds}s` : '';
+    const title = `#${req.seq} ${stage} – ${label}${durationStr}`;
+    const titleAttr = escapeHtml(title);
     
     if (isAgentACall) {
       // Agent A's direct LLM call: Agent A → LLM Backend
       const x1 = paddingX + (laneIndex[orchestratorKey] ?? 0) * laneGapX;
       const x2 = paddingX + (laneIndex[llmBackendKey] ?? 0) * laneGapX;
       const midX = (x1 + x2) / 2;
+      // Invisible wide rect for reliable hover (SVG title can be finicky)
+      const rectW = Math.abs(x2 - x1) + 20;
+      const rectX = Math.min(x1, x2) - 10;
       
       svg += `
-        <g>
-          <title>${escapeHtml(title)}</title>
+        <g class="flow-graph-hoverable" data-tooltip="${titleAttr}">
+          <rect x="${rectX}" y="${baseY - 12}" width="${rectW}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${x1} ${baseY} L ${x2} ${baseY}"
@@ -662,11 +667,15 @@ export function renderLlmRequestsGraph(requests) {
       const y1 = baseY - 15; // Message sent
       const y2 = baseY;      // LLM call
       const y3 = baseY + 15; // Results returned
+      const rectW1 = Math.abs(xB - xA) + 20;
+      const rectX1 = Math.min(xA, xB) - 10;
       
       // Edge 1: Agent A → Agent B (message sent)
+      const edge1Title = `${titleAttr} - Message sent`;
+      const edge3Title = `${titleAttr} - Results returned`;
       svg += `
-        <g>
-          <title>${escapeHtml(title)} - Message sent</title>
+        <g class="flow-graph-hoverable" data-tooltip="${edge1Title}" style="cursor: pointer;">
+          <rect x="${rectX1}" y="${y1 - 12}" width="${rectW1}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xA} ${y1} L ${xB} ${y1}"
@@ -679,9 +688,11 @@ export function renderLlmRequestsGraph(requests) {
       `;
       
       // Edge 2: Agent B → LLM Backend (LLM call)
+      const rectW2 = Math.abs(xLLM - xB) + 20;
+      const rectX2 = Math.min(xB, xLLM) - 10;
       svg += `
-        <g>
-          <title>${escapeHtml(title)}</title>
+        <g class="flow-graph-hoverable" data-tooltip="${titleAttr}" style="cursor: pointer;">
+          <rect x="${rectX2}" y="${y2 - 12}" width="${rectW2}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xB} ${y2} L ${xLLM} ${y2}"
@@ -707,9 +718,11 @@ export function renderLlmRequestsGraph(requests) {
       `;
       
       // Edge 3: Agent B → Agent A (results returned)
+      const rectW3 = rectW1;
+      const rectX3 = rectX1;
       svg += `
-        <g>
-          <title>${escapeHtml(title)} - Results returned</title>
+        <g class="flow-graph-hoverable" data-tooltip="${edge3Title}" style="cursor: pointer;">
+          <rect x="${rectX3}" y="${y3 - 12}" width="${rectW3}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xB} ${y3} L ${xA} ${y3}"
@@ -734,9 +747,15 @@ export function renderLlmRequestsGraph(requests) {
       const y2 = baseY;
       const y3 = baseY + 15;
       
+      const fallbackEdge1 = `${titleAttr} - Message sent`;
+      const fallbackEdge3 = `${titleAttr} - Results returned`;
+      const fallbackRectW = Math.abs(xB - xA) + 20;
+      const fallbackRectX = Math.min(xA, xB) - 10;
+      const fallbackRectW2 = Math.abs(xLLM - xB) + 20;
+      const fallbackRectX2 = Math.min(xB, xLLM) - 10;
       svg += `
-        <g>
-          <title>${escapeHtml(title)} - Message sent</title>
+        <g class="flow-graph-hoverable" data-tooltip="${fallbackEdge1}" style="cursor: pointer;">
+          <rect x="${fallbackRectX}" y="${y1 - 12}" width="${fallbackRectW}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xA} ${y1} L ${xB} ${y1}"
@@ -746,8 +765,8 @@ export function renderLlmRequestsGraph(requests) {
             marker-end="url(#arrowhead)"
           ></path>
         </g>
-        <g>
-          <title>${escapeHtml(title)}</title>
+        <g class="flow-graph-hoverable" data-tooltip="${titleAttr}" style="cursor: pointer;">
+          <rect x="${fallbackRectX2}" y="${y2 - 12}" width="${fallbackRectW2}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xB} ${y2} L ${xLLM} ${y2}"
@@ -770,8 +789,8 @@ export function renderLlmRequestsGraph(requests) {
             ${req.seq}
           </text>
         </g>
-        <g>
-          <title>${escapeHtml(title)} - Results returned</title>
+        <g class="flow-graph-hoverable" data-tooltip="${fallbackEdge3}" style="cursor: pointer;">
+          <rect x="${fallbackRectX}" y="${y3 - 12}" width="${fallbackRectW}" height="24" fill="transparent" stroke="none" pointer-events="all"/>
           <path
             class="flow-graph-edge"
             d="M ${xB} ${y3} L ${xA} ${y3}"
@@ -821,6 +840,9 @@ export function renderLlmRequestsTable(requests) {
     const role = req.agent_role || (req.source === 'Agent A' ? 'orchestrator' : '—');
     const promptPreview = truncate(req.prompt || '', 80);
     const responsePreview = truncate(req.response || '', 80);
+    const durationStr = req.duration_seconds != null ? `${req.duration_seconds}s` : '—';
+    const reqJson = JSON.stringify(req, null, 2);
+    const reqJsonEscaped = escapeHtml(reqJson);
     
     return `
       <tr data-seq="${req.seq}" onclick="window.agentverse.toggleFlowRow(${req.seq})">
@@ -829,11 +851,12 @@ export function renderLlmRequestsTable(requests) {
         <td class="label-col">${escapeHtml(label)}</td>
         <td class="source-col">${escapeHtml(source)}</td>
         <td class="role-col">${escapeHtml(role)}</td>
+        <td class="duration-col" title="End-to-end task duration (includes Agent B round-trip where applicable)">${durationStr}</td>
         <td class="preview-col"><span title="${escapeHtml(req.prompt || '')}">${escapeHtml(promptPreview)}</span></td>
         <td class="preview-col"><span title="${escapeHtml(req.response || '')}">${escapeHtml(responsePreview)}</span></td>
       </tr>
       <tr class="flow-detail-row" id="flow-detail-${req.seq}" style="display: none;">
-        <td colspan="7" class="flow-detail-cell">
+        <td colspan="8" class="flow-detail-cell">
           <div class="flow-detail-section">
             <div class="flow-detail-label">Request (Prompt)</div>
             <div class="flow-detail-content">${escapeHtml(req.prompt || '(empty)')}</div>
@@ -843,6 +866,10 @@ export function renderLlmRequestsTable(requests) {
             <div class="flow-detail-content">${escapeHtml(req.response || '(empty)')}</div>
           </div>
           ${req.endpoint ? `<div class="flow-detail-section"><div class="flow-detail-label">Endpoint</div><div class="flow-detail-content">${escapeHtml(req.endpoint)}</div></div>` : ''}
+          <div class="flow-detail-section">
+            <div class="flow-detail-label">Full request JSON</div>
+            <pre class="flow-detail-json">${reqJsonEscaped}</pre>
+          </div>
         </td>
       </tr>
     `;
@@ -857,6 +884,7 @@ export function renderLlmRequestsTable(requests) {
           <th class="label-col">Label</th>
           <th class="source-col">Source</th>
           <th class="role-col">Role</th>
+          <th class="duration-col" title="End-to-end task duration">Task duration</th>
           <th class="preview-col">Prompt (preview)</th>
           <th class="preview-col">Response (preview)</th>
         </tr>

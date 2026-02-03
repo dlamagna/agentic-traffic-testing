@@ -65,6 +65,28 @@ class AgentVerseApp {
     // Add event listeners
     this.elements.runBtn.addEventListener('click', this.runWorkflow);
     this.elements.clearBtn.addEventListener('click', this.clearAll);
+
+    // Flow graph tooltip via event delegation (graph is dynamically rendered)
+    document.body.addEventListener('mouseover', (e) => {
+      const el = e.target.closest('.flow-graph-hoverable');
+      const tip = document.getElementById('flowGraphTooltip');
+      if (!tip) return;
+      if (el && el.dataset.tooltip) {
+        tip.textContent = el.dataset.tooltip;
+        tip.setAttribute('aria-hidden', 'false');
+        tip.style.left = (e.pageX + 12) + 'px';
+        tip.style.top = (e.pageY + 12) + 'px';
+      } else {
+        tip.setAttribute('aria-hidden', 'true');
+      }
+    });
+    document.body.addEventListener('mousemove', (e) => {
+      const tip = document.getElementById('flowGraphTooltip');
+      if (tip && tip.getAttribute('aria-hidden') === 'false') {
+        tip.style.left = (e.pageX + 12) + 'px';
+        tip.style.top = (e.pageY + 12) + 'px';
+      }
+    });
     
     // Keyboard shortcut
     this.elements.taskEl.addEventListener('keydown', (e) => {
@@ -109,8 +131,9 @@ class AgentVerseApp {
   toggleRawJson() {
     const el = this.elements.rawJson;
     const toggle = document.getElementById('rawToggleText');
+    if (!el || !toggle) return;
     el.classList.toggle('visible');
-    toggle.textContent = el.classList.contains('visible') ? 'Hide Raw JSON Response' : 'Show Raw JSON Response';
+    toggle.textContent = el.classList.contains('visible') ? 'Hide' : 'Show';
   }
 
   /**
