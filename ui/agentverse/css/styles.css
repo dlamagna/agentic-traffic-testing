@@ -1326,6 +1326,10 @@ button {
   margin: 0;
   font-size: 11px;
   max-height: 400px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
 }
 
 .flow-stage-badge {
