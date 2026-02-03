@@ -199,6 +199,7 @@ class AsyncVLLMBackend:
         prompt: str,
         request_id: str | None = None,
         log_progress: bool = True,
+        max_tokens: int | None = None,
     ) -> tuple[str, float]:
         """Generate text asynchronously. Concurrent calls are batched by vLLM.
 
@@ -209,9 +210,16 @@ class AsyncVLLMBackend:
         if request_id is None:
             request_id = str(uuid.uuid4())[:8]
 
+        # Use per-request max_tokens when provided, otherwise fall back to default sampling.
+        sampling = (
+            SamplingParams(temperature=0.2, max_tokens=max_tokens)
+            if max_tokens is not None
+            else self._default_sampling
+        )
+
         results_generator = self._engine.generate(
             prompt,
-            self._default_sampling,
+            sampling,
             request_id,
         )
 
