@@ -8,7 +8,7 @@ from opentelemetry.trace import SpanKind
 
 from agents.agent_b.main import LLM_SERVER_URL, call_llm
 from agents.common.telemetry import TelemetryLogger
-from agents.common.tracing import get_tracer
+from agents.common.tracing import get_tracer, span_to_metadata
 
 
 HOST = "0.0.0.0"
@@ -72,6 +72,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         """Handle both /subtask and /discuss endpoints."""
         carrier = {key: value for key, value in self.headers.items()}
         agent_index = self.headers.get("x-agent-index")
+        incoming_request_id = self.headers.get("X-Request-ID")
         ctx = propagate.extract(carrier)
         with self.tracer.start_as_current_span(
             "agent_b.handle_subtask",
@@ -153,7 +154,10 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)
-                output = call_llm(prompt, headers=headers)
+                if incoming_request_id:
+                    headers["X-Request-ID"] = incoming_request_id
+                output, llm_meta = call_llm(prompt, headers=headers)
+                agent_b_span_meta = span_to_metadata(span_llm)
 
             llm_request = {
                 "source": "agent_b",
@@ -162,6 +166,11 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 "response": output,
                 "agent_index": agent_index,
                 "endpoint": LLM_SERVER_URL,
+                "otel": {
+                    "agent_b": agent_b_span_meta,
+                    "llm_backend": (llm_meta.get("otel") if isinstance(llm_meta, dict) else {}),
+                },
+                "llm_meta": llm_meta,
             }
 
             logger.log(
@@ -181,6 +190,11 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                     "llm_prompt": prompt,
                     "llm_response": output,
                     "llm_endpoint": LLM_SERVER_URL,
+                    "llm_meta": llm_meta,
+                    "otel": {
+                        "agent_b": agent_b_span_meta,
+                        "llm_backend": (llm_meta.get("otel") if isinstance(llm_meta, dict) else {}),
+                    },
                     "llm_requests": [llm_request],
                 },
             )

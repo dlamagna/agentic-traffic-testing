@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from agents.common.telemetry import TelemetryLogger
@@ -12,7 +12,7 @@ LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", DEFAULT_LLM_SERVER_URL)
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
 
 
-def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
+def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> Tuple[str, Dict[str, Any]]:
     resp = httpx.post(
         LLM_SERVER_URL,
         json={"prompt": prompt},
@@ -21,7 +21,7 @@ def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
     )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
-    return str(data.get("output", ""))
+    return str(data.get("output", "")), (data.get("meta") if isinstance(data.get("meta"), dict) else {})
 
 
 def main() -> None:
@@ -44,7 +44,7 @@ def main() -> None:
         extra={"url": LLM_SERVER_URL},
     )
 
-    output = call_llm(args.subtask)
+    output, _meta = call_llm(args.subtask)
 
     logger.log(
         task_id=task_id,

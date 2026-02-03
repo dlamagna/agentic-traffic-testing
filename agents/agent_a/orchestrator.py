@@ -13,6 +13,7 @@ Based on: https://arxiv.org/pdf/2308.10848 (AgentVerse paper)
 import json
 import os
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,7 +26,7 @@ from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
 
 from agents.common.telemetry import TelemetryLogger
-from agents.common.tracing import get_tracer
+from agents.common.tracing import get_tracer, span_to_metadata
 from agents.agent_a.prompts import (
     EXPERT_RECRUITMENT_PROMPT,
     HORIZONTAL_DISCUSSION_PROMPT,
@@ -156,20 +157,41 @@ class AgentVerseOrchestrator:
         prompt: str,
         headers: Optional[Dict[str, str]] = None,
         max_tokens: Optional[int] = None,
-    ) -> str:
-        """Call the LLM server."""
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Call the LLM server and return (output, metadata)."""
         payload: Dict[str, Any] = {"prompt": prompt}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
-        resp = self.http_client.post(
-            LLM_SERVER_URL,
-            json=payload,
-            headers=headers,
-            timeout=LLM_TIMEOUT_SECONDS,
-        )
-        resp.raise_for_status()
-        data: Dict[str, Any] = resp.json()
-        return str(data.get("output", ""))
+
+        # Create a dedicated client span for each LLM HTTP request so we can
+        # surface trace/span IDs in the raw request JSON (no UI changes needed).
+        with self.tracer.start_as_current_span("agent_a.call_llm", kind=SpanKind.CLIENT) as span_llm:
+            span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
+            if max_tokens is not None:
+                span_llm.set_attribute("llm.max_tokens", int(max_tokens))
+
+            merged_headers: Dict[str, str] = dict(headers or {})
+            propagate.inject(merged_headers)
+
+            resp = self.http_client.post(
+                LLM_SERVER_URL,
+                json=payload,
+                headers=merged_headers,
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            data: Dict[str, Any] = resp.json()
+
+            output = str(data.get("output", ""))
+            meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            meta_out: Dict[str, Any] = {
+                "llm_backend": meta,
+                "otel": {
+                    "agent_a": span_to_metadata(span_llm),
+                    "llm_backend": meta.get("otel") if isinstance(meta, dict) else {},
+                },
+            }
+            return output, meta_out
     
     def _call_agent_b(
         self,
@@ -220,6 +242,8 @@ class AgentVerseOrchestrator:
                 "llm_prompt": data.get("llm_prompt"),
                 "llm_response": data.get("llm_response"),
                 "llm_endpoint": data.get("llm_endpoint"),
+                "llm_meta": data.get("llm_meta") if isinstance(data.get("llm_meta"), dict) else None,
+                "otel": data.get("otel") if isinstance(data.get("otel"), dict) else None,
             }
         except httpx.ConnectError as e:
             error_msg = (
@@ -293,6 +317,9 @@ class AgentVerseOrchestrator:
         endpoint: Optional[str] = None,
         round_num: Optional[int] = None,
         duration_seconds: Optional[float] = None,
+        request_id: Optional[str] = None,
+        otel: Optional[Dict[str, Any]] = None,
+        llm_meta: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record an LLM request/response for the detailed flow.
 
@@ -313,6 +340,12 @@ class AgentVerseOrchestrator:
             "response": response,
             "endpoint": endpoint or LLM_SERVER_URL,
         }
+        if request_id is not None:
+            entry["request_id"] = request_id
+        if otel is not None:
+            entry["otel"] = otel
+        if llm_meta is not None:
+            entry["llm_meta"] = llm_meta
         if role:
             entry["agent_role"] = role
         if round_num is not None:
@@ -323,6 +356,14 @@ class AgentVerseOrchestrator:
         
         # Send progress update with new LLM request
         self._send_progress("llm_request", entry)
+    
+    def _new_llm_request_id(self, state: AgentVerseState) -> str:
+        """Generate a short, human-friendly ID for an LLM call.
+
+        This ID is propagated to the LLM backend (via X-Request-ID) so that
+        Docker logs can be correlated with the UI's LLM request table/graph.
+        """
+        return str(uuid.uuid4())[:8]
     
     def _parse_json_response(self, response: str, default: Any = None) -> Any:
         """Parse JSON from LLM response, handling common issues."""
@@ -397,8 +438,10 @@ class AgentVerseOrchestrator:
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
+            request_id = self._new_llm_request_id(state)
+            headers["X-Request-ID"] = request_id
             t0 = time.time()
-            response = self._call_llm(prompt, headers=headers)
+            response, llm_trace_meta = self._call_llm(prompt, headers=headers)
             duration = time.time() - t0
 
             self._record_llm_request(
@@ -410,6 +453,9 @@ class AgentVerseOrchestrator:
                 source="Agent A",
                 agent_role="orchestrator",
                 duration_seconds=duration,
+                request_id=request_id,
+                otel=llm_trace_meta.get("otel"),
+                llm_meta=llm_trace_meta.get("llm_backend"),
             )
             
             parsed = self._parse_json_response(response, {})
@@ -606,6 +652,8 @@ class AgentVerseOrchestrator:
                 try:
                     headers: Dict[str, str] = {}
                     propagate.inject(headers)
+                    request_id = self._new_llm_request_id(state)
+                    headers["X-Request-ID"] = request_id
                     t0 = time.time()
                     response = self._call_agent_b(
                         subtask=prompt,
@@ -630,6 +678,9 @@ class AgentVerseOrchestrator:
                         endpoint=response.get("llm_endpoint"),
                         round_num=round_num,
                         duration_seconds=duration,
+                        request_id=request_id,
+                        otel=response.get("otel"),
+                        llm_meta=response.get("llm_meta"),
                     )
                 except Exception as exc:
                     output = f"[Agent error: {exc}]"
@@ -745,6 +796,8 @@ class AgentVerseOrchestrator:
             try:
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)
+                request_id = self._new_llm_request_id(state)
+                headers["X-Request-ID"] = request_id
                 t0 = time.time()
                 response = self._call_agent_b(
                     subtask=solver_prompt,
@@ -769,6 +822,9 @@ class AgentVerseOrchestrator:
                     endpoint=response.get("llm_endpoint"),
                     round_num=iteration,
                     duration_seconds=duration,
+                    request_id=request_id,
+                    otel=response.get("otel"),
+                    llm_meta=response.get("llm_meta"),
                 )
             except Exception as exc:
                 proposal = f"[Solver error: {exc}]"
@@ -795,6 +851,8 @@ class AgentVerseOrchestrator:
 
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        request_id = self._new_llm_request_id(state)
+                        headers["X-Request-ID"] = request_id
                         t0 = time.time()
                         response = self._call_agent_b(
                             subtask=reviewer_prompt,
@@ -819,6 +877,9 @@ class AgentVerseOrchestrator:
                             endpoint=response.get("llm_endpoint"),
                             round_num=iteration,
                             duration_seconds=duration,
+                            request_id=request_id,
+                            otel=response.get("otel"),
+                            llm_meta=response.get("llm_meta"),
                         )
                     except Exception as exc:
                         critique = f"[Reviewer error: {exc}]"
@@ -897,9 +958,11 @@ class AgentVerseOrchestrator:
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
+        request_id = self._new_llm_request_id(state)
+        headers["X-Request-ID"] = request_id
         t0 = time.time()
         # Allow a larger completion for the final synthesized answer
-        response = self._call_llm(prompt, headers=headers, max_tokens=2048)
+        response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=2048)
         duration = time.time() - t0
         self._record_llm_request(
             state,
@@ -910,6 +973,9 @@ class AgentVerseOrchestrator:
             source="Agent A",
             agent_role="orchestrator",
             duration_seconds=duration,
+            request_id=request_id,
+            otel=llm_trace_meta.get("otel"),
+            llm_meta=llm_trace_meta.get("llm_backend"),
         )
         return response
     
@@ -997,6 +1063,8 @@ class AgentVerseOrchestrator:
                         
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        request_id = self._new_llm_request_id(state)
+                        headers["X-Request-ID"] = request_id
                         t0 = time.time()
                         response = self._call_agent_b(
                             subtask=prompt,
@@ -1019,6 +1087,9 @@ class AgentVerseOrchestrator:
                             agent_role=expert.role,
                             endpoint=response.get("llm_endpoint"),
                             duration_seconds=duration,
+                            request_id=request_id,
+                            otel=response.get("otel"),
+                            llm_meta=response.get("llm_meta"),
                         )
                         return {
                             "expert": expert.role,
@@ -1162,8 +1233,10 @@ Focus on what is relevant to your expertise.
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
+            request_id = self._new_llm_request_id(state)
+            headers["X-Request-ID"] = request_id
             t0 = time.time()
-            response = self._call_llm(prompt, headers=headers)
+            response, llm_trace_meta = self._call_llm(prompt, headers=headers)
             duration = time.time() - t0
 
             self._record_llm_request(
@@ -1175,6 +1248,9 @@ Focus on what is relevant to your expertise.
                 source="Agent A",
                 agent_role="orchestrator",
                 duration_seconds=duration,
+                request_id=request_id,
+                otel=llm_trace_meta.get("otel"),
+                llm_meta=llm_trace_meta.get("llm_backend"),
             )
             
             parsed = self._parse_json_response(response, {})
@@ -1420,8 +1496,10 @@ Feedback: {state.evaluation.feedback}
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
+        request_id = self._new_llm_request_id(state)
+        headers["X-Request-ID"] = request_id
         t0 = time.time()
-        response = self._call_llm(prompt, headers=headers, max_tokens=4096)
+        response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=4096)
         duration = time.time() - t0
         self._record_llm_request(
             state,
@@ -1432,6 +1510,9 @@ Feedback: {state.evaluation.feedback}
             source="Agent A",
             agent_role="orchestrator",
             duration_seconds=duration,
+            request_id=request_id,
+            otel=llm_trace_meta.get("otel"),
+            llm_meta=llm_trace_meta.get("llm_backend"),
         )
         return response
     

@@ -378,6 +378,31 @@ _inflight_count = 0
 _inflight_lock = asyncio.Lock()
 
 
+def _otel_span_metadata(span: Any) -> Dict[str, Any]:
+    """Best-effort OpenTelemetry span metadata for JSON responses."""
+    meta: Dict[str, Any] = {}
+    try:
+        ctx = span.get_span_context()
+        meta["trace_id"] = f"{int(ctx.trace_id):032x}"
+        meta["span_id"] = f"{int(ctx.span_id):016x}"
+        meta["trace_flags"] = int(getattr(ctx, "trace_flags", 0))
+        meta["is_remote"] = bool(getattr(ctx, "is_remote", False))
+    except Exception:
+        pass
+
+    attrs: Dict[str, Any] = {}
+    for attr_name in ("attributes", "_attributes"):
+        try:
+            raw = getattr(span, attr_name, None)
+            if raw and isinstance(raw, dict):
+                attrs.update(raw)
+        except Exception:
+            continue
+    if attrs:
+        meta["attributes"] = attrs
+    return meta
+
+
 async def handle_health(request: web.Request) -> web.Response:
     """Health check endpoint."""
     return web.json_response({"status": "ok"})
@@ -411,7 +436,6 @@ async def handle_chat(request: web.Request) -> web.Response:
         kind=SpanKind.SERVER,
     ) as span:
         start_time = time.monotonic()
-        request_id = str(uuid.uuid4())[:8]  # Short ID for logs
 
         # Track in-flight requests
         async with _inflight_lock:
@@ -422,8 +446,7 @@ async def handle_chat(request: web.Request) -> web.Response:
             INFLIGHT.inc()
 
         span.set_attribute("app.path", request.path)
-        span.set_attribute("app.request_id", request_id)
-
+        
         try:
             data: Dict[str, Any] = await request.json()
         except json.JSONDecodeError:
@@ -447,6 +470,16 @@ async def handle_chat(request: web.Request) -> web.Response:
                 max_tokens = int(max_tokens)
             except (TypeError, ValueError):
                 max_tokens = None
+
+        # Resolve or generate a stable request ID for this LLM call.
+        # Prefer an upstream-provided ID so UI and Docker logs can be correlated.
+        client_request_id = request.headers.get("X-Request-ID") or data.get("request_id")
+        if client_request_id:
+            request_id = str(client_request_id)
+        else:
+            request_id = str(uuid.uuid4())[:8]  # Short ID for logs
+
+        span.set_attribute("app.request_id", request_id)
 
         # Apply chat template for Llama 3 Instruct format
         system_prompt = data.get("system_prompt")  # Optional override
@@ -535,7 +568,19 @@ async def handle_chat(request: web.Request) -> web.Response:
             }
         )
 
-        return web.json_response({"output": text})
+        # Include rich metadata for UI/raw JSON correlation. The UI doesn't need to
+        # be updated for new keys; it will simply display the new JSON fields.
+        meta: Dict[str, Any] = {
+            "request_id": request_id,
+            "latency_ms": latency_ms,
+            "queue_wait_s": round(queue_wait_s, 4),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": (prompt_tokens + completion_tokens) if (prompt_tokens is not None and completion_tokens is not None) else None,
+            "otel": _otel_span_metadata(span),
+        }
+
+        return web.json_response({"output": text, "meta": meta})
 
 
 def create_app() -> web.Application:

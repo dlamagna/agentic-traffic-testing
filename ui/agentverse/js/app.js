@@ -213,11 +213,16 @@ class AgentVerseApp {
   /**
    * Save request to history
    */
-  saveRequestToHistory(task, endpoint, maxIterations, resultData, scoreThreshold = 70) {
+  saveRequestToHistory(task, endpoint, maxIterations, resultData, scoreThreshold = 70, cancelled = false) {
     const history = this.getRequestHistory();
+    const nowIso = new Date().toISOString();
+    const requestId = this.currentRequest?.id || Date.now().toString();
+    const startTimeUtc = this.currentRequest?.startTimeUtc || nowIso;
+    const iterationCount = resultData?.iterations ?? resultData?.iteration_history?.length ?? 0;
     const requestEntry = {
-      id: Date.now().toString(),
-      timestamp: new Date().toISOString(),
+      id: requestId,
+      timestamp: nowIso,
+      start_time_utc: startTimeUtc,
       task: task,
       endpoint: endpoint,
       maxIterations: maxIterations,
@@ -225,8 +230,9 @@ class AgentVerseApp {
       result: {
         finalScore: resultData?.evaluation?.score || resultData?.stages?.evaluation?.score || 0,
         goalAchieved: resultData?.evaluation?.goal_achieved || resultData?.stages?.evaluation?.goal_achieved || false,
-        iterationCount: resultData?.iteration_history?.length || 0,
+        iterationCount: iterationCount,
         duration: resultData?.duration_seconds || 0,
+        cancelled: cancelled === true,
       },
       // Store summary data for quick display
       summary: {
@@ -236,8 +242,13 @@ class AgentVerseApp {
       }
     };
     
-    // Add to beginning of history (most recent first)
-    history.unshift(requestEntry);
+    const existingIndex = history.findIndex(entry => entry.id === requestId);
+    if (existingIndex >= 0) {
+      history[existingIndex] = { ...history[existingIndex], ...requestEntry };
+    } else {
+      // Add to beginning of history (most recent first)
+      history.unshift(requestEntry);
+    }
     
     // Keep only last 50 requests
     if (history.length > 50) {
@@ -299,6 +310,8 @@ class AgentVerseApp {
     history.forEach((entry, idx) => {
       const date = new Date(entry.timestamp);
       const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      const startUtcIso = entry.start_time_utc ? new Date(entry.start_time_utc).toISOString() : '';
+      const startUtcLabel = startUtcIso ? startUtcIso.replace('T', ' ').replace('Z', ' UTC') : '—';
       const isCancelled = entry.result?.cancelled === true;
       const score = entry.result?.finalScore ?? 0;
       const scoreColor = isCancelled ? 'var(--text-secondary)' : (score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--error)');
@@ -320,6 +333,7 @@ class AgentVerseApp {
           <div class="request-history-details">
             <div class="request-history-info">
               <span>${this.escapeHtml(dateStr)}</span>
+              <span>•</span><span>Start (UTC): ${this.escapeHtml(startUtcLabel)}</span>
               ${!isCancelled ? `<span>•</span><span>${entry.result?.iterationCount || 0} iteration${entry.result?.iterationCount !== 1 ? 's' : ''}</span>` : ''}
               ${!isCancelled && entry.result?.duration ? `<span>•</span><span>${entry.result.duration.toFixed(1)}s</span>` : ''}
             </div>
@@ -459,7 +473,14 @@ class AgentVerseApp {
     const scoreThreshold = parseInt(this.elements.scoreThresholdEl?.value ?? 70, 10) || 70;
 
     // Store the request parameters before running (so complete/cancel handler can save to history)
-    this.currentRequest = { task, endpoint, maxIterations, scoreThreshold };
+    this.currentRequest = {
+      id: Date.now().toString(),
+      startTimeUtc: new Date().toISOString(),
+      task,
+      endpoint,
+      maxIterations,
+      scoreThreshold,
+    };
 
     this.currentAbortController = new AbortController();
     this.showCancelButton();

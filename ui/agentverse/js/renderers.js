@@ -613,7 +613,8 @@ export function renderLlmRequestsGraph(requests) {
     const baseY = paddingY + idx * stepY;
     const color = getStageColor(stage);
     const durationStr = req.duration_seconds != null ? ` • ${req.duration_seconds}s` : '';
-    const title = `#${req.seq} ${stage} – ${label}${durationStr}`;
+    const reqIdStr = req.request_id ? ` • id=${req.request_id}` : '';
+    const title = `#${req.seq} ${stage} – ${label}${durationStr}${reqIdStr}`;
     const titleAttr = escapeHtml(title);
     
     if (isAgentACall) {
@@ -847,6 +848,7 @@ export function renderLlmRequestsTable(requests) {
     return `
       <tr data-seq="${req.seq}" onclick="window.agentverse.toggleFlowRow(${req.seq})">
         <td class="seq-col">${req.seq}</td>
+        <td class="id-col">${req.request_id ? escapeHtml(req.request_id) : '—'}</td>
         <td class="stage-col"><span class="flow-stage-badge ${getStageBadgeClass(stage)}">${escapeHtml(stage)}</span></td>
         <td class="label-col">${escapeHtml(label)}</td>
         <td class="source-col">${escapeHtml(source)}</td>
@@ -856,7 +858,7 @@ export function renderLlmRequestsTable(requests) {
         <td class="preview-col"><span title="${escapeHtml(req.response || '')}">${escapeHtml(responsePreview)}</span></td>
       </tr>
       <tr class="flow-detail-row" id="flow-detail-${req.seq}" style="display: none;">
-        <td colspan="8" class="flow-detail-cell">
+        <td colspan="9" class="flow-detail-cell">
           <div class="flow-detail-section">
             <div class="flow-detail-label">Request (Prompt)</div>
             <div class="flow-detail-content">${escapeHtml(req.prompt || '(empty)')}</div>
@@ -865,6 +867,7 @@ export function renderLlmRequestsTable(requests) {
             <div class="flow-detail-label">Response</div>
             <div class="flow-detail-content">${escapeHtml(req.response || '(empty)')}</div>
           </div>
+          ${req.request_id ? `<div class="flow-detail-section"><div class="flow-detail-label">LLM request ID</div><div class="flow-detail-content">${escapeHtml(req.request_id)}</div></div>` : ''}
           ${req.endpoint ? `<div class="flow-detail-section"><div class="flow-detail-label">Endpoint</div><div class="flow-detail-content">${escapeHtml(req.endpoint)}</div></div>` : ''}
           <div class="flow-detail-section">
             <div class="flow-detail-label">Full request JSON</div>
@@ -880,6 +883,7 @@ export function renderLlmRequestsTable(requests) {
       <thead>
         <tr>
           <th class="seq-col">#</th>
+          <th class="id-col">Req ID</th>
           <th class="stage-col">Stage</th>
           <th class="label-col">Label</th>
           <th class="source-col">Source</th>
