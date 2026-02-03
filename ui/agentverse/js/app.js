@@ -53,6 +53,7 @@ class AgentVerseApp {
     this.saveRequestToHistory = this.saveRequestToHistory.bind(this);
     this.getRequestHistory = this.getRequestHistory.bind(this);
     this.loadRequestHistory = this.loadRequestHistory.bind(this);
+    this.copyRawJson = this.copyRawJson.bind(this);
 
     // Initialize
     this.init();
@@ -431,6 +432,43 @@ class AgentVerseApp {
     }
 
     alert(`Copied ${text.length} characters to clipboard.`);
+  }
+
+  /**
+   * Copy full raw JSON response to clipboard
+   */
+  copyRawJson() {
+    const text = this.elements.rawJson?.textContent || '';
+    if (!text.trim()) {
+      alert('No raw JSON response to copy yet.');
+      return;
+    }
+
+    const doFallbackCopy = () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } catch (e) {
+        console.error('Fallback copy failed:', e);
+      }
+      document.body.removeChild(textarea);
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(err => {
+        console.error('Clipboard API copy failed, falling back:', err);
+        doFallbackCopy();
+      });
+    } else {
+      doFallbackCopy();
+    }
+
+    alert(`Copied ${text.length} characters of raw JSON to clipboard.`);
   }
 
   /**

@@ -250,7 +250,18 @@
         <div id="rawJsonSection" class="card" style="margin-top: 24px;">
           <h2 style="margin: 0 0 12px 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
             Raw JSON Response
-            <span class="raw-toggle" onclick="window.agentverse.toggleRawJson()" style="margin-left: auto; font-size: 12px; font-weight: normal; cursor: pointer; color: var(--text-secondary);">(<span id="rawToggleText">Show</span>)</span>
+            <span class="raw-toggle" onclick="window.agentverse.toggleRawJson()" style="margin-left: auto; font-size: 12px; font-weight: normal; cursor: pointer; color: var(--text-secondary);">
+              (<span id="rawToggleText">Show</span>)
+            </span>
+            <button
+              type="button"
+              class="btn-secondary raw-json-copy-btn"
+              onclick="window.agentverse.copyRawJson()"
+              title="Copy full JSON response to clipboard"
+              style="font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            >
+              Copy all
+            </button>
           </h2>
           <pre class="raw-json" id="rawJson"></pre>
         </div>
