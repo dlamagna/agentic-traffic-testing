@@ -237,6 +237,43 @@ services:
     networks:
       - agent-net
 
+  # GPTSwarm integration (optional - only start when needed)
+  lmstudio-proxy:
+    build:
+      context: ..
+      dockerfile: llm/Dockerfile
+    container_name: lmstudio-proxy
+    environment:
+      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      - LMSTUDIO_PROXY_HOST=0.0.0.0
+      - LMSTUDIO_PROXY_PORT=1234
+    depends_on:
+      llm-backend:
+        condition: service_healthy
+    ports:
+      - "1234:1234"
+    command: ["python3", "-m", "integrations.gptswarm.proxy", "--host", "0.0.0.0", "--port", "1234", "--backend-url", "http://llm-backend:8000/chat"]
+    networks:
+      - agent-net
+    profiles:
+      - gptswarm  # Only start with: docker compose --profile gptswarm up
+
+  gptswarm:
+    build:
+      context: ..
+      dockerfile: integrations/gptswarm/Dockerfile
+    container_name: gptswarm
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - lmstudio-proxy
+    networks:
+      - agent-net
+    profiles:
+      - gptswarm  # Only start with: docker compose --profile gptswarm up
+    # Override CMD to run custom GPTSwarm scripts:
+    # docker compose run --rm gptswarm python -m integrations.gptswarm.scripts.docker "Your task here"
+
 networks:
   agent-net:
     driver: bridge
