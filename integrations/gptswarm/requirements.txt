@@ -1,0 +1,11 @@
+# GPTSwarm optional dependencies
+# 
+# Install this on top of requirements.txt when you want to use GPTSwarm:
+#   pip install -r requirements.txt -r integrations/gptswarm/requirements.txt
+#
+# Note: GPTSwarm requires httpx<0.26.0, so we override the httpx version
+# from requirements.txt here. This is safe because GPTSwarm is only used
+# in optional experiment scripts, not in the core AgentVerse deployment.
+
+httpx>=0.25.2,<0.26.0
+gptswarm
