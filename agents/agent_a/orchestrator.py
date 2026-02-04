@@ -1337,16 +1337,23 @@ Focus on what is relevant to your expertise.
             
             feedback = parsed.get("feedback", "") or ""
             missing_aspects = parsed.get("missing_aspects", [])
-            # Fallback: if LLM returns empty feedback but we should iterate, synthesize from rationale/missing_aspects
-            if not feedback.strip() and should_iterate and (rationale or missing_aspects):
+            # Fallback: if LLM returns empty feedback but we should iterate, always synthesize
+            if not feedback.strip() and should_iterate:
                 parts = []
                 if rationale:
                     parts.append(f"Previous rationale: {rationale}")
                 if missing_aspects:
                     parts.append(f"Missing or weak aspects: {', '.join(str(x) for x in missing_aspects)}.")
-                feedback = " ".join(parts).strip() or (
-                    f"Score {score}/100 is below threshold. Consider adjusting the expert team or approach."
-                )
+                # If we have no structured rationale/aspects at all (e.g., JSON parse failure),
+                # still provide a generic, actionable message so the next iteration can adapt.
+                if not parts:
+                    parts.append(
+                        f"Score {score}/100 is below the acceptance threshold "
+                        f"of {state.success_threshold}. The evaluator did not provide "
+                        "detailed feedback; consider refining the expert team or clarifying "
+                        "the task instructions."
+                    )
+                feedback = " ".join(parts).strip()
             
             result = EvaluationResult(
                 goal_achieved=goal_achieved,
