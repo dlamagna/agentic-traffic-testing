@@ -116,7 +116,7 @@ Evaluate the results using the following criteria:
 4. **Relevance** (0-100): Does the solution stay focused on the task requirements?
 5. **Actionability** (0-100): If applicable, is the solution practical and implementable?
 
-Calculate an overall score (0-100) as a weighted average:
+Calculate an overall score (0-100) as a weighted average using the below weights:
 - Completeness: 30%
 - Correctness: 30%
 - Clarity: 15%
