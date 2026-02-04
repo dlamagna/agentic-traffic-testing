@@ -46,6 +46,11 @@ LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
 AGENT_B_TIMEOUT_SECONDS = float(os.environ.get("AGENT_B_TIMEOUT_SECONDS", "120"))
 MAX_PARALLEL_WORKERS = int(os.environ.get("MAX_PARALLEL_WORKERS", "5"))
 DEFAULT_AGENT_B_URL = os.environ.get("AGENT_B_URL", "http://agent-b:8102/subtask")
+# Optional guardrail for very large evaluation prompts (character-based heuristic).
+# This does NOT change the model's true context length, but helps avoid hitting
+# vLLM's "decoder prompt length > max_model_len" error by trimming the oldest
+# parts of the execution results before calling the Evaluator LLM.
+EVAL_MAX_PROMPT_CHARS = int(os.environ.get("EVAL_MAX_PROMPT_CHARS", "20000"))
 AGENT_B_URLS = [
     url.strip()
     for url in os.environ.get("AGENT_B_URLS", "").split(",")
@@ -1241,12 +1246,42 @@ Focus on what is relevant to your expertise.
                 for output in execution.outputs
             ])
             
+            # Build evaluation prompt and, if it's excessively long relative to
+            # EVAL_MAX_PROMPT_CHARS, trim the oldest part of the results block
+            # (keeping the most recent execution outputs and all instructions).
             prompt = EVALUATION_PROMPT.format(
                 task=state.original_task,
                 results=results_text,
                 iteration=state.iteration + 1,
                 max_iterations=state.max_iterations,
             )
+            
+            truncated_for_length = False
+            if len(prompt) > EVAL_MAX_PROMPT_CHARS:
+                # Rebuild with an empty results block to estimate non-results overhead
+                base_prompt = EVALUATION_PROMPT.format(
+                    task=state.original_task,
+                    results="",
+                    iteration=state.iteration + 1,
+                    max_iterations=state.max_iterations,
+                )
+                max_results_chars = max(EVAL_MAX_PROMPT_CHARS - len(base_prompt), 0)
+                if max_results_chars > 0 and len(results_text) > max_results_chars:
+                    truncated_for_length = True
+                    # Keep the most recent portion of the results, which is usually
+                    # more relevant than the oldest content for evaluation.
+                    results_text = results_text[-max_results_chars:]
+                    prompt = EVALUATION_PROMPT.format(
+                        task=state.original_task,
+                        results=results_text,
+                        iteration=state.iteration + 1,
+                        max_iterations=state.max_iterations,
+                    )
+            
+            if truncated_for_length:
+                span.set_attribute("app.evaluation_prompt_truncated", True)
+                span.set_attribute("app.evaluation_prompt_length_chars", len(prompt))
+                span.set_attribute("app.evaluation_results_truncated_chars", len(results_text))
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
@@ -1322,6 +1357,20 @@ Focus on what is relevant to your expertise.
                 missing_aspects=missing_aspects,
                 should_iterate=should_iterate,
             )
+            
+            # If we had to truncate the evaluation prompt for length, ensure this
+            # is visible in telemetry and in the UI via the feedback field.
+            if truncated_for_length:
+                span.set_attribute("app.evaluation_prompt_truncation_note", True)
+                note = (
+                    f\"[System] Evaluation input was truncated to fit within the model's "
+                    f"context window. Some earlier execution details may not have been "
+                    f"included in this evaluation. (Approx. prompt length: {len(prompt)} chars)\"\n"
+                )
+                if result.feedback:
+                    result.feedback = f\"{result.feedback}\\n\\n{note}\"
+                else:
+                    result.feedback = note
             
             self.logger.log(
                 task_id=state.task_id,
