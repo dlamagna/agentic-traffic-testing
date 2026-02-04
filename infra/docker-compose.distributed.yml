@@ -15,7 +15,7 @@
 #
 # Usage:
 #   Set DEPLOYMENT_MODE=distributed in .env, then run:
-#   ./scripts/deploy.sh
+#   ./scripts/deploy/deploy.sh
 # =============================================================================
 
 services:
@@ -39,6 +39,7 @@ services:
       - LLM_DTYPE=${LLM_DTYPE:-float16}
       - LLM_MAX_NUM_SEQS=${LLM_MAX_NUM_SEQS:-12}
       - LLM_MAX_NUM_BATCHED_TOKENS=${LLM_MAX_NUM_BATCHED_TOKENS:-8192}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-512}
       - LLM_GPU_MEMORY_UTILIZATION=${LLM_GPU_MEMORY_UTILIZATION:-0.90}
       - LLM_METRICS_ENABLED=${LLM_METRICS_ENABLED:-1}
       - LLM_METRICS_INCLUDE_TOKENS=${LLM_METRICS_INCLUDE_TOKENS:-1}
@@ -108,6 +109,8 @@ services:
         ipv4_address: ${AGENT_A_IP:-172.20.0.10}
       inter_agent_network:
         ipv4_address: ${AGENT_A_INTER_IP:-172.23.0.10}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "agent-b:${AGENT_B_INTER_IP:-172.23.0.20}"
@@ -146,6 +149,8 @@ services:
         ipv4_address: ${AGENT_B_IP:-172.21.0.10}
       inter_agent_network:
         ipv4_address: ${AGENT_B_INTER_IP:-172.23.0.20}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
@@ -176,6 +181,8 @@ services:
         ipv4_address: ${AGENT_B_2_IP:-172.21.0.11}
       inter_agent_network:
         ipv4_address: ${AGENT_B_2_INTER_IP:-172.23.0.21}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
@@ -206,6 +213,8 @@ services:
         ipv4_address: ${AGENT_B_3_IP:-172.21.0.12}
       inter_agent_network:
         ipv4_address: ${AGENT_B_3_INTER_IP:-172.23.0.22}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
@@ -236,6 +245,8 @@ services:
         ipv4_address: ${AGENT_B_4_IP:-172.21.0.13}
       inter_agent_network:
         ipv4_address: ${AGENT_B_4_INTER_IP:-172.23.0.23}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
@@ -266,6 +277,8 @@ services:
         ipv4_address: ${AGENT_B_5_IP:-172.21.0.14}
       inter_agent_network:
         ipv4_address: ${AGENT_B_5_INTER_IP:-172.23.0.24}
+    cap_add:
+      - NET_ADMIN
     extra_hosts:
       - "llm-backend:${LLM_BACKEND_INTER_IP:-172.23.0.30}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"

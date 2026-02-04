@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -35,5 +35,51 @@ def get_tracer(service_name: str):
     init_tracer(service_name)
     resolved_service_name = os.environ.get("OTEL_SERVICE_NAME", service_name)
     return trace.get_tracer(resolved_service_name)
+
+
+def _format_trace_id(trace_id: int) -> str:
+    # 32-hex lowercase, matches common trace UIs (Jaeger).
+    return f"{trace_id:032x}"
+
+
+def _format_span_id(span_id: int) -> str:
+    # 16-hex lowercase.
+    return f"{span_id:016x}"
+
+
+def span_to_metadata(span: Any) -> Dict[str, Any]:
+    """Best-effort extraction of OpenTelemetry span metadata for JSON.
+
+    This is intentionally permissive and tries to expose:
+    - trace_id/span_id for correlating with Jaeger
+    - any span attributes currently present (when available)
+
+    It is designed so that new tracing attributes automatically show up in the
+    raw JSON without UI code changes.
+    """
+    meta: Dict[str, Any] = {}
+    try:
+        ctx = span.get_span_context()
+        meta["trace_id"] = _format_trace_id(int(ctx.trace_id))
+        meta["span_id"] = _format_span_id(int(ctx.span_id))
+        meta["trace_flags"] = int(getattr(ctx, "trace_flags", 0))
+        meta["is_remote"] = bool(getattr(ctx, "is_remote", False))
+    except Exception:
+        # Keep metadata best-effort.
+        pass
+
+    # Span attributes are SDK-specific; try common attribute locations.
+    attrs: Dict[str, Any] = {}
+    for attr_name in ("attributes", "_attributes"):
+        try:
+            raw = getattr(span, attr_name, None)
+            if raw and isinstance(raw, dict):
+                attrs.update(raw)
+        except Exception:
+            continue
+    if attrs:
+        meta["attributes"] = attrs
+
+    return meta
 
 

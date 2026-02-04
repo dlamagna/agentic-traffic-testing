@@ -2,10 +2,11 @@
 """
 
 Endpoints:
-  POST /chat   { "prompt": "text" } -> { "output": "text" }
+  POST /chat   { "prompt": "text", "max_tokens": N } -> { "output": "text" }
 
 Environment:
   LLM_MODEL (or MODEL_NAME) (default: meta-llama/Llama-3.1-8B-Instruct)
+  LLM_MAX_TOKENS (default: 512) - max completion tokens per request
   HOST (default: 0.0.0.0)
   PORT (default: 8000)
   HF_TOKEN / HUGGINGFACE_HUB_TOKEN for gated models (optional)
@@ -25,6 +26,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 MODEL_NAME = os.environ.get("LLM_MODEL") or os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
 
 _PIPELINE = None
 
@@ -76,8 +78,17 @@ class HFRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Missing 'prompt' field"})
             return
 
+        max_new_tokens = data.get("max_tokens") or data.get("max_new_tokens")
+        if max_new_tokens is not None:
+            try:
+                max_new_tokens = int(max_new_tokens)
+            except (TypeError, ValueError):
+                max_new_tokens = LLM_MAX_TOKENS
+        else:
+            max_new_tokens = LLM_MAX_TOKENS
+
         generator = _load_pipeline()
-        outputs = generator(prompt, max_new_tokens=200, temperature=0.7, do_sample=True)
+        outputs = generator(prompt, max_new_tokens=max_new_tokens, temperature=0.7, do_sample=True)
         text = outputs[0]["generated_text"]
 
         self._send_json(200, {"output": text})

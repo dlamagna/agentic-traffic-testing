@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
@@ -8,7 +9,7 @@ from opentelemetry.trace import SpanKind
 
 from agents.agent_b.main import LLM_SERVER_URL, call_llm
 from agents.common.telemetry import TelemetryLogger
-from agents.common.tracing import get_tracer
+from agents.common.tracing import get_tracer, span_to_metadata
 
 
 HOST = "0.0.0.0"
@@ -49,7 +50,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path != "/subtask":
+        if self.path not in ("/subtask", "/discuss"):
             self.send_response(404)
         else:
             self.send_response(204)
@@ -57,12 +58,22 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # type: ignore[override]
+        if self.path == "/discuss":
+            # Alias for subtask - used in AgentVerse collaborative discussions
+            self._handle_subtask_or_discuss()
+            return
+        
         if self.path != "/subtask":
             self._send_json(404, {"error": "Not found"})
             return
-
+        
+        self._handle_subtask_or_discuss()
+    
+    def _handle_subtask_or_discuss(self) -> None:
+        """Handle both /subtask and /discuss endpoints."""
         carrier = {key: value for key, value in self.headers.items()}
         agent_index = self.headers.get("x-agent-index")
+        incoming_request_id = self.headers.get("X-Request-ID")
         ctx = propagate.extract(carrier)
         with self.tracer.start_as_current_span(
             "agent_b.handle_subtask",
@@ -141,10 +152,15 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 "agent_b.call_llm",
                 kind=SpanKind.CLIENT,
             ) as span_llm:
+                start_time_utc = datetime.now(timezone.utc).isoformat()
+                span_llm.set_attribute("app.request_start_time_utc", start_time_utc)
                 span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                 headers: Dict[str, str] = {}
                 propagate.inject(headers)
-                output = call_llm(prompt, headers=headers)
+                if incoming_request_id:
+                    headers["X-Request-ID"] = incoming_request_id
+                output, llm_meta = call_llm(prompt, headers=headers)
+                agent_b_span_meta = span_to_metadata(span_llm)
 
             llm_request = {
                 "source": "agent_b",
@@ -153,6 +169,11 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 "response": output,
                 "agent_index": agent_index,
                 "endpoint": LLM_SERVER_URL,
+                "otel": {
+                    "agent_b": agent_b_span_meta,
+                    "llm_backend": (llm_meta.get("otel") if isinstance(llm_meta, dict) else {}),
+                },
+                "llm_meta": llm_meta,
             }
 
             logger.log(
@@ -172,6 +193,11 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                     "llm_prompt": prompt,
                     "llm_response": output,
                     "llm_endpoint": LLM_SERVER_URL,
+                    "llm_meta": llm_meta,
+                    "otel": {
+                        "agent_b": agent_b_span_meta,
+                        "llm_backend": (llm_meta.get("otel") if isinstance(llm_meta, dict) else {}),
+                    },
                     "llm_requests": [llm_request],
                 },
             )
@@ -179,7 +205,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
 
 def run() -> None:
     server = ThreadingHTTPServer((HOST, PORT), AgentBRequestHandler)
-    print(f"[*] Agent B HTTP server listening on http://{HOST}:{PORT}/subtask")
+    print(f"[*] Agent B HTTP server listening on http://{HOST}:{PORT}/subtask and /discuss")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

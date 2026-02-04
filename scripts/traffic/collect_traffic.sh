@@ -20,7 +20,7 @@ set -euo pipefail
 #   - Run with sudo (for tcpdump)
 #
 # USAGE:
-#   sudo ./scripts/collect_traffic.sh [OPTIONS]
+#   sudo ./scripts/traffic/collect_traffic.sh [OPTIONS]
 #
 # OPTIONS:
 #   -l, --label NAME      Label for this capture (default: experiment)
@@ -32,13 +32,13 @@ set -euo pipefail
 #
 # EXAMPLES:
 #   # Capture traffic for 60 seconds
-#   sudo ./scripts/collect_traffic.sh --duration 60 --label my_experiment
+#   sudo ./scripts/traffic/collect_traffic.sh --duration 60 --label my_experiment
 #
 #   # Capture with Docker stats
-#   sudo ./scripts/collect_traffic.sh --stats --label baseline_test
+#   sudo ./scripts/traffic/collect_traffic.sh --stats --label baseline_test
 #
 #   # Run until Ctrl+C
-#   sudo ./scripts/collect_traffic.sh --label interactive_test
+#   sudo ./scripts/traffic/collect_traffic.sh --label interactive_test
 #
 # OUTPUT FILES:
 #   logs/traffic/
@@ -47,7 +47,7 @@ set -euo pipefail
 #   └── summary_<label>_<timestamp>.txt     # Capture summary
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS_DIR="${ROOT_DIR}/logs/traffic"
 
 # Defaults
@@ -255,7 +255,7 @@ BRIDGE_IFACE=$(find_bridge_interface)
 if [[ -z "${BRIDGE_IFACE}" ]]; then
   echo "[!] Could not find inter_agent_network bridge interface."
   echo "[!] Make sure the testbed is running in distributed mode:"
-  echo "    DEPLOYMENT_MODE=distributed ./scripts/deploy.sh"
+  echo "    DEPLOYMENT_MODE=distributed ./scripts/deploy/deploy.sh"
   echo
   echo "[*] Falling back to 'any' interface (will capture all traffic)..."
   BRIDGE_IFACE="any"

@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, Optional
@@ -11,6 +12,7 @@ from opentelemetry.trace import SpanKind
 import httpx
 
 from agents.agent_a.main import AGENT_B_URL, AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
+from agents.agent_a.orchestrator import AgentVerseOrchestrator
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 
@@ -115,9 +117,120 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self._set_cors()
         self.end_headers()
         self.wfile.write(body)
+    
+    def _send_sse_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Send a Server-Sent Event."""
+        message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        self.wfile.write(message.encode("utf-8"))
+        self.wfile.flush()
+
+    def _handle_agentverse(self) -> None:
+        """Handle AgentVerse 4-stage workflow requests."""
+        with self.tracer.start_as_current_span("agent_a.agentverse_workflow") as span:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            try:
+                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+
+            task = data.get("task")
+            if not isinstance(task, str) or not task:
+                self._send_json(400, {"error": "Missing 'task' field"})
+                return
+
+            max_iterations = data.get("max_iterations", 3)
+            if not isinstance(max_iterations, int) or max_iterations < 1:
+                max_iterations = 3
+            max_iterations = min(max_iterations, 5)  # Cap at 5
+            
+            success_threshold = data.get("success_threshold", 70)
+            if not isinstance(success_threshold, (int, float)):
+                success_threshold = 70
+            success_threshold = min(100, max(0, int(success_threshold)))
+            
+            # Check if client wants streaming (SSE)
+            stream = data.get("stream", False)
+
+            span.set_attribute("app.task", task)
+            span.set_attribute("app.max_iterations", max_iterations)
+            span.set_attribute("app.success_threshold", success_threshold)
+            span.set_attribute("app.stream", stream)
+
+            # Create logger and task ID
+            logger = TelemetryLogger(agent_id="AgentA-Orchestrator", scenario="agentic_verse")
+            task_id = logger.new_task_id()
+            span.set_attribute("app.task_id", task_id)
+
+            logger.log(
+                task_id=task_id,
+                event_type="agentverse_request_received",
+                message=f"Received AgentVerse request: {task[:100]}...",
+                extra={"max_iterations": max_iterations, "stream": stream},
+            )
+
+            try:
+                if stream:
+                    # Send SSE headers
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self._set_cors()
+                    self.end_headers()
+                    
+                    # Create progress callback for streaming. Use a lock so that when
+                    # worker threads (vertical decision reviewers, parallel execution)
+                    # send llm_request events concurrently, SSE writes are serialized
+                    # and no events are lost or corrupted.
+                    _sse_lock = threading.Lock()
+
+                    def progress_callback(progress: Dict[str, Any]) -> None:
+                        with _sse_lock:
+                            self._send_sse_event(progress["event"], progress["data"])
+                    
+                    # Create orchestrator with progress callback
+                    orchestrator = AgentVerseOrchestrator(
+                        logger=logger,
+                        tracer=self.tracer,
+                        progress_callback=progress_callback
+                    )
+                    result = orchestrator.run_workflow(
+                        task=task,
+                        task_id=task_id,
+                        max_iterations=max_iterations,
+                        success_threshold=success_threshold,
+                    )
+                    
+                    # Send final result as SSE event
+                    self._send_sse_event("complete", result)
+                    
+                else:
+                    # Non-streaming mode (original behavior)
+                    orchestrator = AgentVerseOrchestrator(logger=logger, tracer=self.tracer)
+                    result = orchestrator.run_workflow(
+                        task=task,
+                        task_id=task_id,
+                        max_iterations=max_iterations,
+                        success_threshold=success_threshold,
+                    )
+                    self._send_json(200, result)
+                    
+            except Exception as exc:
+                logger.log(
+                    task_id=task_id,
+                    event_type="agentverse_error",
+                    message=f"AgentVerse workflow failed: {exc}",
+                )
+                if stream:
+                    self._send_sse_event("error", {"error": str(exc)})
+                else:
+                    self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path != "/task":
+        if self.path not in ("/task", "/agentverse"):
             self.send_response(404)
         else:
             self.send_response(204)
@@ -125,6 +238,10 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # type: ignore[override]
+        if self.path == "/agentverse":
+            self._handle_agentverse()
+            return
+        
         if self.path != "/task":
             self._send_json(404, {"error": "Not found"})
             return

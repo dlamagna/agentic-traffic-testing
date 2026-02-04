@@ -56,6 +56,7 @@ LLM_DTYPE = os.environ.get("LLM_DTYPE")
 LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
 LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
 LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
 LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
     "1",
@@ -189,7 +190,7 @@ class AsyncVLLMBackend:
 
         engine_args = AsyncEngineArgs(**engine_kwargs)
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
-        self._default_sampling = SamplingParams(temperature=0.2, max_tokens=512)
+        self._default_sampling = SamplingParams(temperature=0.2, max_tokens=LLM_MAX_TOKENS)
         self._tokenizer = None
         self._tokenizer_ready = False
 
@@ -198,62 +199,110 @@ class AsyncVLLMBackend:
         prompt: str,
         request_id: str | None = None,
         log_progress: bool = True,
-    ) -> str:
-        """Generate text asynchronously. Concurrent calls are batched by vLLM."""
+        max_tokens: int | None = None,
+    ) -> tuple[str, float]:
+        """Generate text asynchronously. Concurrent calls are batched by vLLM.
+
+        Returns a tuple of (generated_text, queue_wait_seconds), where
+        queue_wait_seconds represents the time spent waiting in vLLM's
+        internal scheduler before the first token is produced.
+        """
         if request_id is None:
             request_id = str(uuid.uuid4())[:8]
 
+        # Use per-request max_tokens when provided, otherwise fall back to default sampling.
+        sampling = (
+            SamplingParams(temperature=0.2, max_tokens=max_tokens)
+            if max_tokens is not None
+            else self._default_sampling
+        )
+
         results_generator = self._engine.generate(
             prompt,
-            self._default_sampling,
+            sampling,
             request_id,
         )
 
         final_output = None
-        start_time = time.monotonic()
-        last_log_time = start_time
+        queue_start = time.monotonic()
+        last_log_time = queue_start
         last_token_count = 0
+        queue_wait_s: float = 0.0
 
-        async for request_output in results_generator:
-            final_output = request_output
+        # Span for time-to-first-token (TTFT): from queuing until the first token.
+        wait_span = _tracer.start_span("llm.time_to_first_token")
+        gen_span = None
+        gen_start = None
 
-            # Log progress periodically (every ~2 seconds)
-            if log_progress and final_output.outputs:
-                now = time.monotonic()
+        try:
+            first = True
+            async for request_output in results_generator:
+                # First token: end wait span and start generation span.
+                if first:
+                    first = False
+                    first_time = time.monotonic()
+                    queue_wait_s = first_time - queue_start
+                    # Record TTFT (time to first token)
+                    wait_span.set_attribute("llm_ttft_seconds", queue_wait_s)
+                    wait_span.end()
+                    wait_span = None
+
+                    gen_span = _tracer.start_span("llm.generate")
+                    gen_span.set_attribute("app.request_id", request_id)
+                    gen_start = first_time
+
+                final_output = request_output
+
+                # Log progress periodically (every ~2 seconds)
+                if log_progress and final_output.outputs:
+                    now = time.monotonic()
+                    try:
+                        current_tokens = len(final_output.outputs[0].token_ids)
+                    except AttributeError:
+                        # Fallback: estimate from text length
+                        current_tokens = len(final_output.outputs[0].text.split())
+                    if now - last_log_time >= 2.0:
+                        elapsed = now - queue_start
+                        tokens_per_sec = current_tokens / elapsed if elapsed > 0 else 0
+                        print(
+                            f"[llm] req={request_id} PROGRESS tokens={current_tokens} "
+                            f"speed={tokens_per_sec:.1f} tok/s",
+                            flush=True,
+                        )
+                        last_log_time = now
+                        last_token_count = current_tokens
+
+            if final_output is None or not final_output.outputs:
+                return "", queue_wait_s
+
+            # Log final token count
+            if log_progress:
                 try:
-                    current_tokens = len(final_output.outputs[0].token_ids)
+                    total_tokens = len(final_output.outputs[0].token_ids)
                 except AttributeError:
-                    # Fallback: estimate from text length
-                    current_tokens = len(final_output.outputs[0].text.split())
-                if now - last_log_time >= 2.0:
-                    elapsed = now - start_time
-                    tokens_per_sec = current_tokens / elapsed if elapsed > 0 else 0
-                    print(
-                        f"[llm] req={request_id} PROGRESS tokens={current_tokens} "
-                        f"speed={tokens_per_sec:.1f} tok/s",
-                        flush=True,
-                    )
-                    last_log_time = now
-                    last_token_count = current_tokens
+                    total_tokens = len(final_output.outputs[0].text.split())
+                end_time = time.monotonic()
+                elapsed = end_time - queue_start
+                tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
+                print(
+                    f"[llm] req={request_id} GENERATED tokens={total_tokens} "
+                    f"time={elapsed:.2f}s speed={tokens_per_sec:.1f} tok/s",
+                    flush=True,
+                )
 
-        if final_output is None or not final_output.outputs:
-            return ""
+            # Attach pure generation time to the llm.generate span.
+            if gen_span is not None and gen_start is not None:
+                gen_ms = int((time.monotonic() - gen_start) * 1000)
+                gen_span.set_attribute("llm.generate_ms", gen_ms)
 
-        # Log final token count
-        if log_progress:
-            try:
-                total_tokens = len(final_output.outputs[0].token_ids)
-            except AttributeError:
-                total_tokens = len(final_output.outputs[0].text.split())
-            elapsed = time.monotonic() - start_time
-            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-            print(
-                f"[llm] req={request_id} GENERATED tokens={total_tokens} "
-                f"time={elapsed:.2f}s speed={tokens_per_sec:.1f} tok/s",
-                flush=True,
-            )
+            return final_output.outputs[0].text, queue_wait_s
 
-        return final_output.outputs[0].text
+        finally:
+            # Make sure spans are closed even if errors/edge cases occur.
+            if wait_span is not None:
+                wait_span.end()
+            if gen_span is not None:
+                gen_span.end()
 
     def _resolve_tokenizer(self) -> None:
         if self._tokenizer_ready:
@@ -329,6 +378,31 @@ _inflight_count = 0
 _inflight_lock = asyncio.Lock()
 
 
+def _otel_span_metadata(span: Any) -> Dict[str, Any]:
+    """Best-effort OpenTelemetry span metadata for JSON responses."""
+    meta: Dict[str, Any] = {}
+    try:
+        ctx = span.get_span_context()
+        meta["trace_id"] = f"{int(ctx.trace_id):032x}"
+        meta["span_id"] = f"{int(ctx.span_id):016x}"
+        meta["trace_flags"] = int(getattr(ctx, "trace_flags", 0))
+        meta["is_remote"] = bool(getattr(ctx, "is_remote", False))
+    except Exception:
+        pass
+
+    attrs: Dict[str, Any] = {}
+    for attr_name in ("attributes", "_attributes"):
+        try:
+            raw = getattr(span, attr_name, None)
+            if raw and isinstance(raw, dict):
+                attrs.update(raw)
+        except Exception:
+            continue
+    if attrs:
+        meta["attributes"] = attrs
+    return meta
+
+
 async def handle_health(request: web.Request) -> web.Response:
     """Health check endpoint."""
     return web.json_response({"status": "ok"})
@@ -339,7 +413,10 @@ async def handle_metrics(request: web.Request) -> web.Response:
     if not _METRICS_READY or generate_latest is None:
         return web.json_response({"error": "Metrics disabled"}, status=503)
     output = generate_latest()
-    return web.Response(body=output, content_type=CONTENT_TYPE_LATEST)
+    # aiohttp forbids passing a content_type value that already includes a
+    # charset parameter. Prometheus's CONTENT_TYPE_LATEST includes charset,
+    # so we set the header directly instead of using the content_type kwarg.
+    return web.Response(body=output, headers={"Content-Type": CONTENT_TYPE_LATEST})
 
 
 async def handle_chat(request: web.Request) -> web.Response:
@@ -359,7 +436,6 @@ async def handle_chat(request: web.Request) -> web.Response:
         kind=SpanKind.SERVER,
     ) as span:
         start_time = time.monotonic()
-        request_id = str(uuid.uuid4())[:8]  # Short ID for logs
 
         # Track in-flight requests
         async with _inflight_lock:
@@ -370,8 +446,7 @@ async def handle_chat(request: web.Request) -> web.Response:
             INFLIGHT.inc()
 
         span.set_attribute("app.path", request.path)
-        span.set_attribute("app.request_id", request_id)
-
+        
         try:
             data: Dict[str, Any] = await request.json()
         except json.JSONDecodeError:
@@ -389,6 +464,23 @@ async def handle_chat(request: web.Request) -> web.Response:
                 INFLIGHT.dec()
             return web.json_response({"error": "Missing 'prompt' field"}, status=400)
 
+        max_tokens = data.get("max_tokens")
+        if max_tokens is not None and not isinstance(max_tokens, int):
+            try:
+                max_tokens = int(max_tokens)
+            except (TypeError, ValueError):
+                max_tokens = None
+
+        # Resolve or generate a stable request ID for this LLM call.
+        # Prefer an upstream-provided ID so UI and Docker logs can be correlated.
+        client_request_id = request.headers.get("X-Request-ID") or data.get("request_id")
+        if client_request_id:
+            request_id = str(client_request_id)
+        else:
+            request_id = str(uuid.uuid4())[:8]  # Short ID for logs
+
+        span.set_attribute("app.request_id", request_id)
+
         # Apply chat template for Llama 3 Instruct format
         system_prompt = data.get("system_prompt")  # Optional override
         skip_template = data.get("skip_chat_template", False)
@@ -405,24 +497,27 @@ async def handle_chat(request: web.Request) -> web.Response:
 
         # Log request start
         template_info = " (templated)" if (not skip_template and LLM_APPLY_CHAT_TEMPLATE) else ""
-        print(f"[llm] req={request_id} START inflight={current_inflight} prompt_len={len(original_prompt)}{template_info}", flush=True)
+        print(
+            f"[llm] req={request_id} START inflight={current_inflight} "
+            f"prompt_len={len(original_prompt)}{template_info}",
+            flush=True,
+        )
 
         status = "success"
         prompt_tokens: Optional[int] = None
         completion_tokens: Optional[int] = None
         text = ""
+        queue_wait_s: float = 0.0
 
         try:
-            with _tracer.start_as_current_span("llm.wait_for_slot") as wait_span:
-                wait_span.set_attribute("app.request_id", request_id)
-                wait_span.set_attribute("llm.inflight_requests", current_inflight)
-
-            with _tracer.start_as_current_span("llm.generate") as gen_span:
-                gen_span.set_attribute("app.request_id", request_id)
-                gen_start = time.monotonic()
-                text = await _backend.generate(prompt, request_id=request_id)
-                gen_ms = int((time.monotonic() - gen_start) * 1000)
-                gen_span.set_attribute("llm.generate_ms", gen_ms)
+            # Delegate detailed timing to the backend: it returns the
+            # generated text and the time spent waiting for a vLLM slot.
+            text, queue_wait_s = await _backend.generate(
+                prompt,
+                request_id=request_id,
+                log_progress=True,
+                max_tokens=max_tokens,
+            )
 
             prompt_tokens = _backend.count_tokens(prompt)
             completion_tokens = _backend.count_tokens(text)
@@ -442,7 +537,7 @@ async def handle_chat(request: web.Request) -> web.Response:
                 INFLIGHT.dec()
             latency_s = time.monotonic() - start_time
             print(f"[llm] req={request_id} ERROR after {int(latency_s * 1000)}ms: {exc}", flush=True)
-            _record_metrics(status, latency_s, 0, prompt_tokens, completion_tokens)
+            _record_metrics(status, latency_s, queue_wait_s, prompt_tokens, completion_tokens)
             return web.json_response({"error": f"Generation failed: {exc}"}, status=500)
 
         async with _inflight_lock:
@@ -463,7 +558,7 @@ async def handle_chat(request: web.Request) -> web.Response:
             flush=True,
         )
 
-        _record_metrics(status, latency_s, 0, prompt_tokens, completion_tokens)
+        _record_metrics(status, latency_s, queue_wait_s, prompt_tokens, completion_tokens)
         _log_request_stats(
             {
                 "status": status,
@@ -473,7 +568,19 @@ async def handle_chat(request: web.Request) -> web.Response:
             }
         )
 
-        return web.json_response({"output": text})
+        # Include rich metadata for UI/raw JSON correlation. The UI doesn't need to
+        # be updated for new keys; it will simply display the new JSON fields.
+        meta: Dict[str, Any] = {
+            "request_id": request_id,
+            "latency_ms": latency_ms,
+            "queue_wait_s": round(queue_wait_s, 4),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": (prompt_tokens + completion_tokens) if (prompt_tokens is not None and completion_tokens is not None) else None,
+            "otel": _otel_span_metadata(span),
+        }
+
+        return web.json_response({"output": text, "meta": meta})
 
 
 def create_app() -> web.Application:

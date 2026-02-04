@@ -27,7 +27,7 @@ set -euo pipefail
 #   - Configuration in infra/.env
 #
 # USAGE:
-#   ./scripts/stop.sh [OPTIONS]
+#   ./scripts/deploy/stop.sh [OPTIONS]
 #
 # OPTIONS:
 #   -v, --volumes   Also prune unused Docker volumes
@@ -37,16 +37,16 @@ set -euo pipefail
 #
 # EXAMPLES:
 #   # Stop containers (default - keeps images/volumes)
-#   ./scripts/stop.sh
+#   ./scripts/deploy/stop.sh
 #
 #   # Stop and remove volumes (clears persisted data)
-#   ./scripts/stop.sh --volumes
+#   ./scripts/deploy/stop.sh --volumes
 #
 #   # Stop and remove networks (distributed mode cleanup)
-#   ./scripts/stop.sh --networks
+#   ./scripts/deploy/stop.sh --networks
 #
 #   # Full cleanup (volumes + networks)
-#   ./scripts/stop.sh --all
+#   ./scripts/deploy/stop.sh --all
 #
 # DEPLOYMENT MODES:
 #   The script reads DEPLOYMENT_MODE from infra/.env:
@@ -57,12 +57,12 @@ set -euo pipefail
 #
 # FOR COMPLETE UNINSTALL:
 #   To fully remove everything including cached images:
-#     ./scripts/stop.sh --all
+#     ./scripts/deploy/stop.sh --all
 #     docker image prune -a
 #     docker system prune -a
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 
 # Load .env file if it exists

@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.swp
+
+# Git and editor metadata
+.git
+.gitignore
+.idea
+.vscode
+
+# Local virtual envs
+.venv
+venv
+env
+
+# Python / notebook artifacts
+.ipynb_checkpoints
+
+# Large or generated data (none of these are required to build images)
+data/
+datasets/
+checkpoints/
+models/
+logs/
+
+# Cache directories
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+

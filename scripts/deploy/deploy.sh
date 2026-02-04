@@ -12,9 +12,9 @@ set -euo pipefail
 #   3) multi-vm: Services deployed to separate VMs via SSH (NODE1_HOST, NODE2_HOST, NODE3_HOST).
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
-source "${ROOT_DIR}/scripts/deploy_ui.sh"
+source "${ROOT_DIR}/scripts/deploy/deploy_ui.sh"
 
 # Load .env file if it exists
 ENV_FILE="${COMPOSE_DIR}/.env"
@@ -52,7 +52,7 @@ get_compose_file() {
 COMPOSE_FILE="$(get_compose_file)"
 
 run_health_check() {
-  local health_script="${ROOT_DIR}/scripts/health_check.py"
+  local health_script="${ROOT_DIR}/scripts/monitoring/health_check.py"
   if [[ ! -f "${health_script}" ]]; then
     echo "[!] Health check script not found at ${health_script}"
     return 1
@@ -221,7 +221,7 @@ elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   if [[ "${ENABLE_NETWORK_EMULATION:-0}" == "1" ]]; then
     echo
     echo "[*] Network emulation is enabled. Applying tc netem rules..."
-    bash "${ROOT_DIR}/scripts/apply_network_emulation.sh" || echo "[!] Network emulation script not found or failed."
+    bash "${ROOT_DIR}/scripts/traffic/apply_network_emulation.sh" || echo "[!] Network emulation script not found or failed."
   fi
 
 else
@@ -259,5 +259,3 @@ else
   wait_for_llm "http://localhost:8000/health" || true
   run_health_check
 fi
-
-

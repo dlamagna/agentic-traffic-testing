@@ -11,10 +11,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[*] Resetting testbed: uninstalling existing resources..."
-"${SCRIPT_DIR}/uninstall_testbed.sh"
+"${SCRIPT_DIR}/deploy/uninstall_testbed.sh"
 
 echo "[*] Redeploying testbed from a clean state..."
-"${SCRIPT_DIR}/deploy.sh"
+"${SCRIPT_DIR}/deploy/deploy.sh"
 
 echo "[*] Reset complete."
 

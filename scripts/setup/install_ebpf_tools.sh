@@ -31,6 +31,3 @@ if command -v tcpconnect >/dev/null 2>&1; then
 fi
 
 echo "[*] eBPF tools installation complete."
-
-
-

@@ -13,7 +13,7 @@ set -euo pipefail
 #   NETWORK_LOSS_PERCENT  - Packet loss percentage (default: 0)
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 
 # Load .env file if it exists
@@ -28,6 +28,10 @@ fi
 DELAY_MS="${NETWORK_DELAY_MS:-10}"
 JITTER_MS="${NETWORK_JITTER_MS:-2}"
 LOSS_PERCENT="${NETWORK_LOSS_PERCENT:-0}"
+
+# Track whether we actually applied any netem rules
+ANY_NETEM_ATTEMPTED=0
+ANY_NETEM_APPLIED=0
 
 echo "============================================================"
 echo "Network Emulation Configuration"
@@ -50,6 +54,8 @@ apply_netem() {
     echo "    [!] Container ${container} not running, skipping."
     return 0
   fi
+
+  ANY_NETEM_ATTEMPTED=1
   
   # Build netem command
   local netem_cmd="tc qdisc replace dev ${interface} root netem delay ${DELAY_MS}ms ${JITTER_MS}ms"
@@ -59,6 +65,7 @@ apply_netem() {
   
   # Apply to container
   if docker exec "${container}" sh -c "${netem_cmd}" 2>/dev/null; then
+    ANY_NETEM_APPLIED=1
     echo "    [✓] Applied: delay ${DELAY_MS}ms ±${JITTER_MS}ms, loss ${LOSS_PERCENT}%"
   else
     echo "    [!] Failed to apply netem (container may lack NET_ADMIN capability)"
@@ -101,8 +108,17 @@ case "${ACTION}" in
     apply_netem "agent-b-5"
     
     echo
-    echo "[✓] Network emulation applied."
-    echo "    Traffic between agents will now experience ${DELAY_MS}ms ±${JITTER_MS}ms delay."
+    if [[ "${ANY_NETEM_ATTEMPTED}" -eq 0 ]]; then
+      echo "[!] No running agent containers found; nothing to apply."
+      exit 1
+    elif [[ "${ANY_NETEM_APPLIED}" -eq 0 ]]; then
+      echo "[!] Network emulation could not be applied to any containers."
+      echo "    This is usually because containers lack the NET_ADMIN capability."
+      exit 1
+    else
+      echo "[✓] Network emulation applied to one or more containers."
+      echo "    Traffic between agents will now experience ${DELAY_MS}ms ±${JITTER_MS}ms delay."
+    fi
     ;;
     
   remove|clear)

@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentVerse - Multi-Agent Collaboration</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="header">
+    <h1>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+        <path d="M2 12h20"/>
+      </svg>
+      AgentVerse
+    </h1>
+    <nav class="header-links">
+      <a href="../chat/">Classic Chat</a>
+      <a href="https://arxiv.org/pdf/2308.10848" target="_blank">Paper</a>
+      <a href="https://github.com/OpenBMB/AgentVerse" target="_blank">GitHub</a>
+    </nav>
+  </header>
+  
+  <div class="container">
+    <div class="layout">
+      <!-- Left Panel: Input -->
+      <div class="input-panel">
+        <div class="card">
+          <h2>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            Task Input
+          </h2>
+          
+          <label for="task">Task Description</label>
+          <textarea id="task" placeholder="Describe your task. AgentVerse will automatically recruit expert agents and coordinate their collaboration."></textarea>
+          
+          <label for="maxIterations">Max Iterations</label>
+          <select id="maxIterations">
+            <option value="1">1 iteration (single pass)</option>
+            <option value="2">2 iterations</option>
+            <option value="3" selected>3 iterations (default)</option>
+            <option value="4">4 iterations</option>
+            <option value="5">5 iterations (max)</option>
+          </select>
+          
+          <label for="scoreThreshold">Score threshold for acceptance (0–100)</label>
+          <input id="scoreThreshold" type="number" min="0" max="100" value="70" step="1" placeholder="70" title="Workflow stops when evaluation score meets or exceeds this value. Below this score, another iteration (expert recruitment, decision, execution, evaluation) runs." style="max-width: 120px;">
+          <span style="font-size: 12px; color: var(--text-secondary); display: block; margin-top: -8px; margin-bottom: 12px;">Below this score, workflow runs another iteration.</span>
+          
+          <label for="endpoint">Agent A Endpoint</label>
+          <input id="endpoint" type="text" placeholder="http://localhost:8101/agentverse">
+          
+          <label>Example Tasks</label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="window.agentverse.loadExample('math')">Math Problem</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="window.agentverse.loadExample('research')">Research Task</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="window.agentverse.loadExample('consulting')">Consulting</button>
+            <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="window.agentverse.loadExample('coding')">Coding Task</button>
+          </div>
+          
+          <div class="button-row">
+            <button id="runBtn" class="btn-primary">Run AgentVerse Workflow</button>
+            <button id="cancelBtn" type="button" class="btn-secondary btn-cancel" style="display: none;" onclick="window.agentverse.cancelRequest()" title="Cancel the current request">Cancel request</button>
+            <button id="clearBtn" class="btn-secondary">Clear</button>
+          </div>
+        </div>
+        
+        <!-- Iteration History -->
+        <div class="card" style="margin-top: 16px;">
+          <h2>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            Iteration History
+          </h2>
+          <div id="iterationHistory">
+            <div class="empty-state">
+              <div class="empty-state-icon">📊</div>
+              <p>Run a workflow to see iteration history</p>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Request History -->
+        <div class="card" style="margin-top: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 style="margin: 0;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 3h18v18H3zM7 8h10M7 12h10M7 16h10"/>
+              </svg>
+              Request History
+            </h2>
+            <button id="clearHistoryBtn" class="btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="window.agentverse.clearRequestHistory()">Clear</button>
+          </div>
+          <div id="requestHistory">
+            <div class="empty-state">
+              <div class="empty-state-icon">📋</div>
+              <p>Previous requests will appear here</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Panel: Workflow Visualization -->
+      <div class="workflow-panel">
+        <!-- Status Bar -->
+        <div class="status-bar">
+          <div class="status-indicator" id="statusIndicator"></div>
+          <span class="status-text" id="statusText">Ready</span>
+          <span id="liveBadge" class="live-badge" style="display: none; margin-left: 12px;">
+            <span class="live-dot"></span>
+            <span>Live</span>
+          </span>
+          <span class="status-time" id="statusTime"></span>
+          <span id="llmRequestCount" style="margin-left: 12px; font-size: 13px; color: var(--text-secondary);"></span>
+        </div>
+        
+        <!-- Progress Bar -->
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+        
+        <!-- Workflow Stages -->
+        <div class="workflow-container">
+          <!-- Stage 1: Expert Recruitment -->
+          <div class="workflow-stage" id="stage1">
+            <div class="stage-header" onclick="window.agentverse.toggleStage('stage1')">
+              <div class="stage-title">
+                <div class="stage-number">1</div>
+                <span>Expert Recruitment</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage1Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage1Content">
+              <div class="stage-details">
+                <p>The orchestrator analyzes your task and dynamically recruits specialized expert agents.</p>
+                <div id="stage1Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 2: Collaborative Decision-Making -->
+          <div class="workflow-stage" id="stage2">
+            <div class="stage-header" onclick="window.agentverse.toggleStage('stage2')">
+              <div class="stage-title">
+                <div class="stage-number">2</div>
+                <span>Collaborative Decision-Making</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage2Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage2Content">
+              <div class="stage-details">
+                <p>Agents engage in discussion (horizontal or vertical) to decide on the approach.</p>
+                <div id="stage2Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 3: Action Execution -->
+          <div class="workflow-stage" id="stage3">
+            <div class="stage-header" onclick="window.agentverse.toggleStage('stage3')">
+              <div class="stage-title">
+                <div class="stage-number">3</div>
+                <span>Action Execution</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage3Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage3Content">
+              <div class="stage-details">
+                <p>Agents execute their assigned tasks based on the collaborative decision.</p>
+                <div id="stage3Results"></div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Stage 4: Evaluation -->
+          <div class="workflow-stage" id="stage4">
+            <div class="stage-header" onclick="window.agentverse.toggleStage('stage4')">
+              <div class="stage-title">
+                <div class="stage-number">4</div>
+                <span>Evaluation</span>
+              </div>
+              <div class="stage-status">
+                <span class="badge badge-pending" id="stage4Badge">Pending</span>
+              </div>
+            </div>
+            <div class="stage-content" id="stage4Content">
+              <div class="stage-details">
+                <p>The orchestrator evaluates results and decides whether to iterate.</p>
+                <div id="stage4Results"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Final Output -->
+        <div id="finalOutputContainer" style="display: none;">
+          <div class="final-output">
+            <h3 class="final-output-header">
+              <span>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 8px;">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                Final Output
+              </span>
+              <div class="final-output-actions">
+                <div class="final-output-tabs">
+                  <button type="button" class="final-output-tab active" data-view="formatted" onclick="window.agentverse.setFinalOutputView('formatted')">Formatted</button>
+                  <button type="button" class="final-output-tab" data-view="raw" onclick="window.agentverse.setFinalOutputView('raw')">Raw</button>
+                </div>
+                <button
+                  type="button"
+                  class="btn-secondary final-output-copy-btn"
+                  onclick="window.agentverse.copyFinalOutput()"
+                  title="Copy final output to clipboard"
+                >
+                  Copy
+                </button>
+              </div>
+            </h3>
+            <div class="final-output-content final-output-view-formatted" id="finalOutput"></div>
+            <div class="final-output-content final-output-view-raw" id="finalOutputRaw" style="display: none;"></div>
+          </div>
+        </div>
+        
+        <!-- Detailed AgentVerse Flow -->
+        <div id="detailedFlowSection" class="card" style="margin-top: 24px; display: none;">
+          <div class="collapsible-header expanded" onclick="window.agentverse.toggleDetailedFlow()">
+            <span class="arrow">▼</span>
+            <h2 style="margin: 0;">See detailed agentverse flow</h2>
+          </div>
+          <div id="detailedFlowContent" class="detailed-flow-content">
+            <p class="stage-details" style="margin-bottom: 12px;">Every LLM request and response in execution order. Click a row to expand prompt/response details.</p>
+            <div id="llmRequestsTable"></div>
+          </div>
+        </div>
+        
+        <!-- Raw JSON Response -->
+        <div id="rawJsonSection" class="card" style="margin-top: 24px;">
+          <h2 style="margin: 0 0 12px 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+            Raw JSON Response
+            <span class="raw-toggle" onclick="window.agentverse.toggleRawJson()" style="margin-left: auto; font-size: 12px; font-weight: normal; cursor: pointer; color: var(--text-secondary);">
+              (<span id="rawToggleText">Show</span>)
+            </span>
+            <button
+              type="button"
+              class="btn-secondary raw-json-copy-btn"
+              onclick="window.agentverse.copyRawJson()"
+              title="Copy full JSON response to clipboard"
+              style="font-size: 11px; padding: 4px 8px; border-radius: 6px;"
+            >
+              Copy all
+            </button>
+          </h2>
+          <pre class="raw-json" id="rawJson"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow graph tooltip (positioned by JS on hover) -->
+  <div id="flowGraphTooltip" class="flow-graph-tooltip" aria-hidden="true"></div>
+
+  <!-- Load JavaScript modules -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

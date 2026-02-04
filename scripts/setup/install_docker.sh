@@ -52,5 +52,3 @@ echo "[*] Docker installation complete."
 echo "    - Verify:  docker --version"
 echo "    - Verify:  docker compose version"
 echo "    - You may need to log out and log back in for group changes to apply."
-
-

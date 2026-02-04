@@ -1,0 +1,118 @@
+{
+  "template_id": "agentverse_workflow",
+  "title": "AgentVerse 4-Stage Workflow",
+  "description": "Complete AgentVerse implementation with dynamic expert recruitment, collaborative decision-making, action execution, and iterative evaluation.",
+  "reference": {
+    "paper": "https://arxiv.org/pdf/2308.10848",
+    "github": "https://github.com/OpenBMB/AgentVerse"
+  },
+  "stages": {
+    "1_expert_recruitment": {
+      "name": "Expert Recruitment",
+      "description": "Dynamically determine and adjust agent group composition based on the task",
+      "roles": [
+        {
+          "role": "planner",
+          "description": "Breaks down tasks into subtasks with dependencies",
+          "when_to_use": "Complex tasks requiring decomposition"
+        },
+        {
+          "role": "researcher",
+          "description": "Analyzes problems and suggests efficient approaches",
+          "when_to_use": "Tasks requiring domain knowledge or research"
+        },
+        {
+          "role": "executor",
+          "description": "Performs calculations and executes specific actions",
+          "when_to_use": "Tasks requiring concrete computations or actions"
+        },
+        {
+          "role": "critic",
+          "description": "Verifies results and flags errors or inconsistencies",
+          "when_to_use": "Tasks requiring quality control and validation"
+        },
+        {
+          "role": "summarizer",
+          "description": "Produces clear, readable final outputs",
+          "when_to_use": "Tasks requiring polished user-facing results"
+        }
+      ]
+    },
+    "2_collaborative_decision": {
+      "name": "Collaborative Decision-Making",
+      "description": "Agents engage in discussion to decide on the approach",
+      "structures": {
+        "horizontal": {
+          "description": "Democratic structure where all agents share and refine decisions",
+          "best_for": ["consulting", "brainstorming", "tool_using"],
+          "max_rounds": 3
+        },
+        "vertical": {
+          "description": "Solver proposes, reviewers critique, solver refines",
+          "best_for": ["math_problems", "software_development", "coding"],
+          "max_iterations": 3
+        }
+      }
+    },
+    "3_action_execution": {
+      "name": "Action Execution",
+      "description": "Agents execute collaboratively-decided actions in parallel"
+    },
+    "4_evaluation": {
+      "name": "Evaluation",
+      "description": "Assess results and provide feedback for iteration",
+      "metrics": ["goal_achieved", "score", "feedback", "missing_aspects"]
+    }
+  },
+  "workflow_config": {
+    "max_iterations": 3,
+    "success_threshold": 70,
+    "timeout_seconds": 300
+  },
+  "example_tasks": [
+    {
+      "name": "Mathematical Problem",
+      "task": "A school is designing a small amusement park with three rides. The first ride costs $500 to build and makes $20 per ride. The second ride costs $700 and makes $25 per ride. The third ride costs $900 and makes $30 per ride. The school has a budget of $2000 and wants to maximize revenue in 1 day if 100 students ride each ride at most once. Determine which rides to build and calculate the expected total revenue.",
+      "recommended_structure": "vertical",
+      "recommended_experts": ["planner", "executor", "critic", "summarizer"]
+    },
+    {
+      "name": "Research Task",
+      "task": "Research the current state of quantum computing and its potential applications in cryptography. Provide a comprehensive summary with key findings and recommendations.",
+      "recommended_structure": "horizontal",
+      "recommended_experts": ["researcher", "critic", "summarizer"]
+    },
+    {
+      "name": "Software Development",
+      "task": "Design and implement a Python calculator with a graphical user interface that supports basic arithmetic operations, keyboard input, and error handling.",
+      "recommended_structure": "vertical",
+      "recommended_experts": ["planner", "executor", "critic", "summarizer"]
+    },
+    {
+      "name": "Consulting",
+      "task": "Provide recommendations for a startup looking to implement AI-powered customer service. Consider cost, scalability, user experience, and implementation timeline.",
+      "recommended_structure": "horizontal",
+      "recommended_experts": ["researcher", "planner", "critic", "summarizer"]
+    }
+  ],
+  "emergent_behaviors": {
+    "positive": [
+      {
+        "name": "Volunteer Behaviors",
+        "description": "Agents offer assistance to peers, improving team efficiency",
+        "types": ["time_contribution", "resource_contribution", "assistance_contribution"]
+      },
+      {
+        "name": "Conformity Behaviors", 
+        "description": "Agents adjust deviated behaviors to align with common goals under peer critique"
+      }
+    ],
+    "concerning": [
+      {
+        "name": "Destructive Behaviors",
+        "description": "Agents may take shortcuts that raise safety concerns",
+        "mitigation": "Implement safety constraints and human oversight"
+      }
+    ]
+  }
+}

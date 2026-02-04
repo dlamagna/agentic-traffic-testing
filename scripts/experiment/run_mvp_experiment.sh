@@ -7,12 +7,12 @@ set -euo pipefail
 # Orchestrate a single-host, multi-node MVP experiment.
 #
 # This script is intentionally simple for the first iteration:
-# - It assumes all components (agents, tools, baseline, llm_server)
+# - It assumes all components (agents, tools, baseline, llm)
 #   are started manually or via separate scripts / systemd / containers.
 # - It focuses on running a workload and collecting logs under logs/.
 #
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs"
 SCENARIO="${1:-baseline}" # baseline | agentic_simple | agentic_multi_hop
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -26,7 +26,7 @@ echo "    SCENARIO       = ${SCENARIO}"
 echo "    SCENARIO_LOG_DIR = ${SCENARIO_LOG_DIR}"
 
 echo "[*] NOTE: This MVP script currently assumes that Node1/Node2/Node3 processes"
-echo "    (agents, tools, baseline services, llm_server) are already running."
+echo "    (agents, tools, baseline services, llm) are already running."
 echo "    Future revisions can add container/VM lifecycle management."
 
 # Placeholder workload drivers.
@@ -55,5 +55,3 @@ case "${SCENARIO}" in
 esac
 
 echo "[*] Experiment complete. Logs stored under: ${SCENARIO_LOG_DIR}"
-
-

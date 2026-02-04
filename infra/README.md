@@ -13,7 +13,7 @@ cp .env.example .env
 
 # 3. Deploy from the repo root
 cd ..
-./scripts/deploy.sh
+./scripts/deploy/deploy.sh
 ```
 
 ## Deployment Modes
@@ -104,9 +104,9 @@ Or apply manually:
 
 ```bash
 # Apply/remove/check network emulation
-./scripts/apply_network_emulation.sh apply
-./scripts/apply_network_emulation.sh remove
-./scripts/apply_network_emulation.sh status
+./scripts/traffic/apply_network_emulation.sh apply
+./scripts/traffic/apply_network_emulation.sh remove
+./scripts/traffic/apply_network_emulation.sh status
 ```
 
 ---
@@ -198,11 +198,19 @@ Services are deployed to separate VMs via SSH. This provides true network isolat
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | Model to serve |
-| `LLM_MAX_MODEL_LEN` | `4096` | Max context length |
+| `LLM_MAX_MODEL_LEN` | `4096` | Max total tokens per sequence (prompt + completion). Must be ≤ model's native context length (e.g. 8192 for Llama 3.1). |
+| `LLM_MAX_TOKENS` | `512` | Default max completion tokens per request. Clients can override via request body; the orchestrator uses 2048 for synthesis. |
+| `LLM_MAX_NUM_BATCHED_TOKENS` | `8192` | vLLM scheduler: max total tokens across all sequences in one batch. Tunes throughput vs memory. |
+| `LLM_MAX_NUM_SEQS` | `12` | Max sequences batched together (concurrent requests). |
 | `LLM_DTYPE` | `float16` | Model precision |
-| `LLM_GPU_MEMORY_UTILIZATION` | `0.90` | GPU memory fraction |
-| `LLM_MAX_NUM_SEQS` | `12` | Max concurrent sequences |
+| `LLM_GPU_MEMORY_UTILIZATION` | `0.90` | Fraction of GPU memory for vLLM (0–1) |
 | `LLM_TIMEOUT_SECONDS` | `120` | Request timeout |
+
+**Token limits overview:**
+
+- `LLM_MAX_MODEL_LEN`: per-request cap on prompt + completion combined.
+- `LLM_MAX_TOKENS`: per-request cap on completion tokens only (default when client does not specify).
+- `LLM_MAX_NUM_BATCHED_TOKENS`: batch-level cap across all requests in vLLM's scheduler.
 
 ### Agents
 
@@ -227,19 +235,19 @@ From the repository root:
 
 ```bash
 # Deploy the testbed
-./scripts/deploy.sh
+./scripts/deploy/deploy.sh
 
 # Stop the testbed  
-./scripts/stop.sh
+./scripts/deploy/stop.sh
 
 # Stop and remove volumes
-./scripts/stop.sh --volumes
+./scripts/deploy/stop.sh --volumes
 
 # Apply network emulation (distributed mode)
-./scripts/apply_network_emulation.sh apply
+./scripts/traffic/apply_network_emulation.sh apply
 
 # Check health
-python scripts/health_check.py
+python scripts/monitoring/health_check.py
 ```
 
 ---
@@ -270,7 +278,7 @@ Containers need `NET_ADMIN` capability. The current compose files don't grant th
      - NET_ADMIN
    ```
 
-2. Rebuild: `./scripts/deploy.sh`
+2. Rebuild: `./scripts/deploy/deploy.sh`
 
 ### Port conflicts
 
