@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, Optional
@@ -180,9 +181,15 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     self._set_cors()
                     self.end_headers()
                     
-                    # Create progress callback for streaming
+                    # Create progress callback for streaming. Use a lock so that when
+                    # worker threads (vertical decision reviewers, parallel execution)
+                    # send llm_request events concurrently, SSE writes are serialized
+                    # and no events are lost or corrupted.
+                    _sse_lock = threading.Lock()
+
                     def progress_callback(progress: Dict[str, Any]) -> None:
-                        self._send_sse_event(progress["event"], progress["data"])
+                        with _sse_lock:
+                            self._send_sse_event(progress["event"], progress["data"])
                     
                     # Create orchestrator with progress callback
                     orchestrator = AgentVerseOrchestrator(
