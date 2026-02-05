@@ -89,6 +89,36 @@ Agent B instances are homogeneous at deploy time: they all run the same `/subtas
 
 **Adaptation**: Evaluation is done by the orchestrator via a single LLM call, rather than a dedicated evaluator agent.
 
+#### Prompt length guardrails
+
+Because the evaluation prompt includes the full text of all execution outputs from previous
+iterations, it can grow large. To avoid exceeding the LLM's context window (which would
+cause a `500` from the LLM backend), the orchestrator now enforces a **token‑aware**
+budget before calling the Evaluator LLM:
+
+- It uses the same tokenizer family as the vLLM backend (driven by `LLM_MODEL`) to count
+  tokens on the orchestrator side.
+- It computes a **prompt token budget** from the backend settings:
+  - `LLM_MAX_MODEL_LEN` – max total tokens per sequence (prompt + completion)
+  - `LLM_EVAL_MAX_TOKENS` (or `LLM_MAX_TOKENS` by default) – desired max completion tokens
+  - `LLM_PROMPT_SAFETY_MARGIN_TOKENS` – safety margin for chat templates/overhead
+- It builds a "base" evaluation prompt with an empty `results` block and tokenizes it.
+- The remaining token budget is allocated to `results`. If the tokenized `results` text
+  exceeds this budget, the orchestrator trims the **oldest tokens** from `results`,
+  keeping the most recent execution outputs.
+- When trimming occurs, the orchestrator:
+  - sets span attributes such as `app.evaluation_prompt_truncated`,
+    `app.evaluation_prompt_tokens`, and
+    `app.evaluation_prompt_results_tokens_trimmed` on the
+    `orchestrator.evaluate_results` span (visible in Jaeger), and
+  - appends a short `[System] Evaluation input was truncated…` note (including approximate
+    token counts) to the `feedback` field shown in the iteration details panel.
+
+A legacy character‑based cap (`EVAL_MAX_PROMPT_CHARS`) is still used as a fallback if
+tokenization is unavailable. In normal operation, the token‑aware guardrail keeps the
+evaluation call within the model's configured context length while making any loss of
+earlier execution detail transparent in both telemetry and the UI.
+
 ---
 
 ## Iteration and Final Synthesis
@@ -176,6 +206,7 @@ The main chat UI at `/chat/` is unchanged; AgentVerse is a separate flow.
 | `AGENT_B_URLS` | Comma-separated list | URLs for Agent B instances |
 | `AGENT_B_TIMEOUT_SECONDS` | 120 | Timeout for Agent B calls |
 | `MAX_PARALLEL_WORKERS` | 5 | Max experts in one iteration |
+| `EVAL_MAX_PROMPT_CHARS` | 20000 | Max character budget for evaluation prompt (older result text is truncated if exceeded) |
 
 ### Docker Compose
 

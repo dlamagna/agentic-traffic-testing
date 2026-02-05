@@ -12,6 +12,7 @@ Based on: https://arxiv.org/pdf/2308.10848 (AgentVerse paper)
 
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +40,15 @@ from agents.agent_a.prompts import (
     SYNTHESIZE_DISCUSSION_PROMPT,
 )
 
+try:
+    # Prefer the same tokenizer implementation used by the vLLM backend so that
+    # token counts for guardrails match what the model actually sees.
+    from vllm.transformers_utils.tokenizer import (  # type: ignore
+        get_tokenizer as vllm_get_tokenizer,
+    )
+except ImportError:  # pragma: no cover - optional dependency
+    vllm_get_tokenizer = None  # type: ignore
+
 
 # Configuration
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", "http://localhost:8000/chat")
@@ -49,8 +59,54 @@ DEFAULT_AGENT_B_URL = os.environ.get("AGENT_B_URL", "http://agent-b:8102/subtask
 # Optional guardrail for very large evaluation prompts (character-based heuristic).
 # This does NOT change the model's true context length, but helps avoid hitting
 # vLLM's "decoder prompt length > max_model_len" error by trimming the oldest
-# parts of the execution results before calling the Evaluator LLM.
+# parts of the execution results before calling the Evaluator LLM. Kept as a
+# fallback when token-aware budgeting is unavailable.
 EVAL_MAX_PROMPT_CHARS = int(os.environ.get("EVAL_MAX_PROMPT_CHARS", "20000"))
+
+# Token-level guardrail configuration. These mirror the LLM backend settings in
+# infra/README.md so that Agent A can budget tokens consistently with vLLM.
+LLM_MODEL_NAME = os.environ.get("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+LLM_MAX_MODEL_LEN = int(os.environ.get("LLM_MAX_MODEL_LEN", "4096"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
+# Allow a separate override for evaluation completions while defaulting to the
+# global LLM_MAX_TOKENS budget.
+LLM_EVAL_MAX_TOKENS = int(os.environ.get("LLM_EVAL_MAX_TOKENS", str(LLM_MAX_TOKENS)))
+# Safety margin subtracted from the theoretical max to leave headroom for
+# chat templates, system prompts, and any backend-side metadata.
+LLM_PROMPT_SAFETY_MARGIN_TOKENS = int(
+    os.environ.get("LLM_PROMPT_SAFETY_MARGIN_TOKENS", "128")
+)
+
+_TOKENIZER = None
+_TOKENIZER_READY = False
+
+
+def _resolve_tokenizer() -> None:
+    """Best-effort initialization of a shared tokenizer for token budgeting."""
+    global _TOKENIZER_READY, _TOKENIZER
+    if _TOKENIZER_READY:
+        return
+    _TOKENIZER_READY = True
+    if vllm_get_tokenizer is None:
+        _TOKENIZER = None
+        return
+    try:
+        _TOKENIZER = vllm_get_tokenizer(LLM_MODEL_NAME)
+    except Exception:
+        _TOKENIZER = None
+
+
+def _count_tokens(text: str) -> Optional[int]:
+    """Count tokens using the shared tokenizer, matching the LLM backend."""
+    if not text:
+        return 0
+    _resolve_tokenizer()
+    if _TOKENIZER is None:
+        return None
+    try:
+        return len(_TOKENIZER.encode(text, add_special_tokens=False))
+    except Exception:
+        return None
 AGENT_B_URLS = [
     url.strip()
     for url in os.environ.get("AGENT_B_URLS", "").split(",")
@@ -404,6 +460,284 @@ class AgentVerseOrchestrator:
                 except json.JSONDecodeError:
                     pass
             return default
+
+    def _parse_markdown_evaluation(self, response: str) -> Optional[Dict[str, Any]]:
+        """
+        Best-effort parser for evaluation responses written in Markdown instead of JSON.
+        
+        This is intentionally forgiving and only extracts fields we can confidently
+        recognize (score, goal_achieved, should_iterate, rationale, feedback,
+        missing_aspects).
+        """
+        text = response.strip()
+
+        # Strip code fences if present (``` or ```markdown / ```md / ```text)
+        if text.startswith("```"):
+            # Remove leading fence line
+            parts = text.split("\n", 1)
+            text = parts[1] if len(parts) > 1 else ""
+            # Remove trailing fence if present
+            if "```" in text:
+                text = text.rsplit("```", 1)[0]
+
+        # Normalize line endings
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        def _search(pattern: str) -> Optional[str]:
+            m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+            return m.group(1).strip() if m else None
+
+        score_str = _search(r"score\s*[:\-]\s*([0-9]{1,3})")
+        goal_str = _search(r"goal(?:\s+achieved)?\s*[:\-]\s*(yes|no|true|false)")
+        should_iterate_str = _search(r"should\s*iterate\s*[:\-]\s*(yes|no|true|false)")
+        rationale = _search(r"rationale\s*[:\-]\s*(.+)")
+        feedback = _search(r"feedback\s*[:\-]\s*(.+)")
+
+        # If we couldn't find any of the core fields, bail out
+        if not any([score_str, goal_str, should_iterate_str, rationale, feedback]):
+            return None
+
+        def _to_bool(val: Optional[str]) -> Optional[bool]:
+            if val is None:
+                return None
+            v = val.strip().lower()
+            if v in ("yes", "true"):
+                return True
+            if v in ("no", "false"):
+                return False
+            return None
+
+        parsed: Dict[str, Any] = {}
+
+        if score_str is not None:
+            try:
+                score_val = int(score_str)
+                parsed["score"] = max(0, min(100, score_val))
+            except ValueError:
+                pass
+
+        goal_val = _to_bool(goal_str)
+        if goal_val is not None:
+            parsed["goal_achieved"] = goal_val
+
+        should_iterate_val = _to_bool(should_iterate_str)
+        if should_iterate_val is not None:
+            parsed["should_iterate"] = should_iterate_val
+
+        if rationale:
+            parsed["rationale"] = rationale
+        if feedback:
+            parsed["feedback"] = feedback
+
+        # Try to capture a "Missing" or "Missing aspects" section with bullets
+        missing_aspects: List[str] = []
+        missing_match = re.search(
+            r"(?:missing\s+aspects?|gaps?|areas\s+for\s+improvement)\s*[:\-]?\s*\n(?P<body>(?:\s*[-*]\s+.+\n?)+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if missing_match:
+            body = missing_match.group("body")
+            for line in body.splitlines():
+                line = line.strip()
+                if line.startswith(("-", "*")):
+                    item = line.lstrip("-*").strip()
+                    if item:
+                        missing_aspects.append(item)
+        if missing_aspects:
+            parsed["missing_aspects"] = missing_aspects
+
+        return parsed or None
+    
+    def _build_evaluation_prompt(
+        self,
+        span,
+        state: AgentVerseState,
+        results_text: str,
+    ) -> Tuple[str, bool, Optional[int], Optional[int]]:
+        """
+        Build the evaluation prompt with a token-aware guardrail.
+
+        The guardrail:
+        - Reserves space for up to LLM_EVAL_MAX_TOKENS completion tokens
+        - Applies a safety margin (LLM_PROMPT_SAFETY_MARGIN_TOKENS)
+        - Trims the OLDEST part of the results so the prompt stays within
+          LLM_MAX_MODEL_LEN whenever possible.
+
+        Returns (prompt, truncated, trimmed_tokens, final_prompt_tokens).
+        """
+        truncated = False
+        trimmed_tokens: Optional[int] = None
+        final_prompt_tokens: Optional[int] = None
+
+        base_kwargs: Dict[str, Any] = {
+            "task": state.original_task,
+            "iteration": state.iteration + 1,
+            "max_iterations": state.max_iterations,
+        }
+
+        # Prefer token-aware budgeting when we have both a configured limit and
+        # a working tokenizer. Fallback to the older character-based heuristic
+        # when tokens cannot be computed.
+        if LLM_MAX_MODEL_LEN > 0 and LLM_EVAL_MAX_TOKENS > 0:
+            _resolve_tokenizer()
+            if _TOKENIZER is not None:
+                base_prompt = EVALUATION_PROMPT.format(
+                    task=base_kwargs["task"],
+                    results="",
+                    iteration=base_kwargs["iteration"],
+                    max_iterations=base_kwargs["max_iterations"],
+                )
+                base_tokens = _count_tokens(base_prompt)
+
+                if base_tokens is not None:
+                    max_prompt_tokens = max(
+                        0,
+                        LLM_MAX_MODEL_LEN
+                        - LLM_EVAL_MAX_TOKENS
+                        - LLM_PROMPT_SAFETY_MARGIN_TOKENS,
+                    )
+
+                    if max_prompt_tokens <= 0:
+                        prompt = base_prompt
+                        truncated = True
+                        final_prompt_tokens = base_tokens
+
+                        span.set_attribute("app.evaluation_prompt_truncated", True)
+                        span.set_attribute(
+                            "app.evaluation_prompt_token_limit", max_prompt_tokens
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_base_tokens", int(base_tokens)
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_results_tokens_trimmed",
+                            _count_tokens(results_text) or 0,
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_tokens", int(base_tokens)
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_length_chars", len(prompt)
+                        )
+                        return prompt, truncated, trimmed_tokens, final_prompt_tokens
+
+                    results_budget = max(0, max_prompt_tokens - base_tokens)
+                    try:
+                        results_tokens = _TOKENIZER.encode(
+                            results_text, add_special_tokens=False
+                        )
+                    except Exception:
+                        results_tokens = None
+
+                    if results_tokens is not None:
+                        total_results_tokens = len(results_tokens)
+
+                        if total_results_tokens > results_budget:
+                            # Keep the most recent part of the results, which is
+                            # usually the most relevant for evaluation.
+                            kept_tokens = (
+                                results_tokens[-results_budget:]
+                                if results_budget > 0
+                                else []
+                            )
+                            results_text_trimmed = (
+                                _TOKENIZER.decode(kept_tokens) if kept_tokens else ""
+                            )
+                            trimmed_tokens = total_results_tokens - len(kept_tokens)
+                            truncated = True
+                        else:
+                            results_text_trimmed = results_text
+                            trimmed_tokens = 0
+
+                        prompt = EVALUATION_PROMPT.format(
+                            task=base_kwargs["task"],
+                            results=results_text_trimmed,
+                            iteration=base_kwargs["iteration"],
+                            max_iterations=base_kwargs["max_iterations"],
+                        )
+
+                        final_prompt_tokens = _count_tokens(prompt)
+                        if final_prompt_tokens is None:
+                            kept = min(total_results_tokens, results_budget)
+                            final_prompt_tokens = base_tokens + kept
+
+                        # Span attributes for telemetry / debugging.
+                        span.set_attribute(
+                            "app.evaluation_prompt_truncated", bool(truncated)
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_max_model_tokens",
+                            int(LLM_MAX_MODEL_LEN),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_completion_tokens_budget",
+                            int(LLM_EVAL_MAX_TOKENS),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_safety_margin_tokens",
+                            int(LLM_PROMPT_SAFETY_MARGIN_TOKENS),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_base_tokens", int(base_tokens)
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_results_tokens_total",
+                            int(total_results_tokens),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_results_tokens_budget",
+                            int(results_budget),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_results_tokens_trimmed",
+                            int(trimmed_tokens or 0),
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_tokens", int(final_prompt_tokens)
+                        )
+                        span.set_attribute(
+                            "app.evaluation_prompt_length_chars", len(prompt)
+                        )
+
+                        return prompt, truncated, trimmed_tokens, final_prompt_tokens
+
+        # Fallback: character-based guardrail (previous behavior) – used only
+        # when token-based budgeting is unavailable.
+        prompt = EVALUATION_PROMPT.format(
+            task=base_kwargs["task"],
+            results=results_text,
+            iteration=base_kwargs["iteration"],
+            max_iterations=base_kwargs["max_iterations"],
+        )
+
+        if len(prompt) > EVAL_MAX_PROMPT_CHARS:
+            base_prompt = EVALUATION_PROMPT.format(
+                task=base_kwargs["task"],
+                results="",
+                iteration=base_kwargs["iteration"],
+                max_iterations=base_kwargs["max_iterations"],
+            )
+            max_results_chars = max(EVAL_MAX_PROMPT_CHARS - len(base_prompt), 0)
+            if max_results_chars > 0 and len(results_text) > max_results_chars:
+                truncated = True
+                results_text_trimmed = results_text[-max_results_chars:]
+                prompt = EVALUATION_PROMPT.format(
+                    task=base_kwargs["task"],
+                    results=results_text_trimmed,
+                    iteration=base_kwargs["iteration"],
+                    max_iterations=base_kwargs["max_iterations"],
+                )
+                span.set_attribute("app.evaluation_prompt_truncated", True)
+                span.set_attribute(
+                    "app.evaluation_prompt_length_chars", len(prompt)
+                )
+                span.set_attribute(
+                    "app.evaluation_results_truncated_chars",
+                    len(results_text) - len(results_text_trimmed),
+                )
+
+        return prompt, truncated, trimmed_tokens, final_prompt_tokens
     
     # ========================================================================
     # Stage 1: Expert Recruitment
@@ -473,6 +807,17 @@ class AgentVerseOrchestrator:
             )
             
             parsed = self._parse_json_response(response, {})
+
+            # If JSON parsing failed or returned an empty object, try to recover
+            # structured data from a Markdown-formatted response.
+            parsed_from_markdown = False
+            if not isinstance(parsed, dict) or not parsed:
+                md_parsed = self._parse_markdown_evaluation(response)
+                if md_parsed is not None:
+                    parsed = md_parsed
+                    parsed_from_markdown = True
+                else:
+                    parsed = {}
             
             # Parse experts
             experts = []
@@ -1239,56 +1584,30 @@ Focus on what is relevant to your expertise.
                 event_type="agentverse_evaluation_start",
                 message="Starting evaluation",
             )
-            
+
             # Format results for evaluation
-            results_text = "\n\n".join([
-                f"[{output['expert']}]:\n{output['output']}"
-                for output in execution.outputs
-            ])
-            
-            # Build evaluation prompt and, if it's excessively long relative to
-            # EVAL_MAX_PROMPT_CHARS, trim the oldest part of the results block
-            # (keeping the most recent execution outputs and all instructions).
-            prompt = EVALUATION_PROMPT.format(
-                task=state.original_task,
-                results=results_text,
-                iteration=state.iteration + 1,
-                max_iterations=state.max_iterations,
+            results_text = "\n\n".join(
+                [
+                    f"[{output['expert']}]:\n{output['output']}"
+                    for output in execution.outputs
+                ]
             )
-            
-            truncated_for_length = False
-            if len(prompt) > EVAL_MAX_PROMPT_CHARS:
-                # Rebuild with an empty results block to estimate non-results overhead
-                base_prompt = EVALUATION_PROMPT.format(
-                    task=state.original_task,
-                    results="",
-                    iteration=state.iteration + 1,
-                    max_iterations=state.max_iterations,
-                )
-                max_results_chars = max(EVAL_MAX_PROMPT_CHARS - len(base_prompt), 0)
-                if max_results_chars > 0 and len(results_text) > max_results_chars:
-                    truncated_for_length = True
-                    # Keep the most recent portion of the results, which is usually
-                    # more relevant than the oldest content for evaluation.
-                    results_text = results_text[-max_results_chars:]
-                    prompt = EVALUATION_PROMPT.format(
-                        task=state.original_task,
-                        results=results_text,
-                        iteration=state.iteration + 1,
-                        max_iterations=state.max_iterations,
-                    )
-            
-            if truncated_for_length:
-                span.set_attribute("app.evaluation_prompt_truncated", True)
-                span.set_attribute("app.evaluation_prompt_length_chars", len(prompt))
-                span.set_attribute("app.evaluation_results_truncated_chars", len(results_text))
+
+            # Build evaluation prompt with a token-aware guardrail that budgets
+            # for completion tokens and a safety margin, trimming the oldest
+            # part of the results when needed.
+            prompt, truncated_for_length, trimmed_tokens, final_prompt_tokens = (
+                self._build_evaluation_prompt(span, state, results_text)
+            )
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
             request_id = self._new_llm_request_id(state)
             headers["X-Request-ID"] = request_id
             t0 = time.time()
-            response, llm_trace_meta = self._call_llm(prompt, headers=headers)
+            response, llm_trace_meta = self._call_llm(
+                prompt, headers=headers, max_tokens=LLM_EVAL_MAX_TOKENS
+            )
             duration = time.time() - t0
             start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
 
@@ -1310,9 +1629,18 @@ Focus on what is relevant to your expertise.
             parsed = self._parse_json_response(response, {})
             
             # Determine if we should iterate
-            goal_achieved = parsed.get("goal_achieved", False)
-            score = parsed.get("score", 50)
-            should_iterate = parsed.get("should_iterate", False)
+            goal_achieved = bool(parsed.get("goal_achieved", False))
+
+            raw_score = parsed.get("score")
+            try:
+                score = int(raw_score)
+            except (TypeError, ValueError):
+                # If the evaluator didn't provide a numeric score, treat this as
+                # a parse failure and fall back to 0 instead of a magic 50.
+                score = 0
+            score = max(0, min(100, score))
+
+            should_iterate = bool(parsed.get("should_iterate", False))
             
             # Extract structured criteria breakdown and rationale (before overriding)
             criteria = parsed.get("criteria")
@@ -1337,21 +1665,35 @@ Focus on what is relevant to your expertise.
             
             feedback = parsed.get("feedback", "") or ""
             missing_aspects = parsed.get("missing_aspects", [])
-            # Fallback: if LLM returns empty feedback but we should iterate, always synthesize
-            if not feedback.strip() and should_iterate:
+
+            # Decide when we *must* synthesize feedback:
+            # - whenever the evaluator suggests iterating again, OR
+            # - whenever the goal is not achieved, OR
+            # - whenever score is below the success threshold (if threshold > 0).
+            needs_feedback = (
+                not feedback.strip()
+                and (
+                    should_iterate
+                    or not goal_achieved
+                    or (state.success_threshold > 0 and score < state.success_threshold)
+                )
+            )
+
+            # Fallback: if LLM returns empty feedback but we need feedback, always synthesize
+            if needs_feedback:
                 parts = []
                 if rationale:
                     parts.append(f"Previous rationale: {rationale}")
                 if missing_aspects:
                     parts.append(f"Missing or weak aspects: {', '.join(str(x) for x in missing_aspects)}.")
-                # If we have no structured rationale/aspects at all (e.g., JSON parse failure),
-                # still provide a generic, actionable message so the next iteration can adapt.
+                # If we have no structured rationale/aspects at all (e.g., JSON/Markdown parse failure),
+                # still provide a generic, actionable message so the user/next iteration can adapt.
                 if not parts:
                     parts.append(
-                        f"Score {score}/100 is below the acceptance threshold "
-                        f"of {state.success_threshold}. The evaluator did not provide "
-                        "detailed feedback; consider refining the expert team or clarifying "
-                        "the task instructions."
+                        f"Score {score}/100 is below the acceptance threshold of {state.success_threshold}. "
+                        "The evaluator did not provide detailed feedback; consider refining the expert "
+                        "team composition, clarifying the task instructions, or tightening the evaluation "
+                        "criteria so the next iteration can focus on the gaps."
                     )
                 feedback = " ".join(parts).strip()
             
@@ -1369,13 +1711,21 @@ Focus on what is relevant to your expertise.
             # is visible in telemetry and in the UI via the feedback field.
             if truncated_for_length:
                 span.set_attribute("app.evaluation_prompt_truncation_note", True)
-                note = (
-                    f\"[System] Evaluation input was truncated to fit within the model's "
-                    f"context window. Some earlier execution details may not have been "
-                    f"included in this evaluation. (Approx. prompt length: {len(prompt)} chars)\"\n"
-                )
+                if trimmed_tokens is not None and final_prompt_tokens is not None:
+                    note = (
+                        "[System] Evaluation input was truncated to respect the model's "
+                        "context window. "
+                        f"Approximately {trimmed_tokens} earlier result tokens were "
+                        f"dropped; final prompt is ~{final_prompt_tokens} tokens."
+                    )
+                else:
+                    note = (
+                        "[System] Evaluation input was truncated to fit within the "
+                        "model's context window. "
+                        f"(Approx. prompt length: {len(prompt)} chars)"
+                    )
                 if result.feedback:
-                    result.feedback = f\"{result.feedback}\\n\\n{note}\"
+                    result.feedback = f"{result.feedback}\n\n{note}"
                 else:
                     result.feedback = note
             
