@@ -23,13 +23,8 @@ _LOCATIONS = {
 }
 
 
-@server.tool()
-def geocode_location(address: str) -> dict:
-    """
-    Map a simple place name to synthetic coordinates.
-
-    This is intentionally fuzzy and matches by substring.
-    """
+def _resolve_location(address: str) -> dict:
+    """Internal helper to resolve an address into the synthetic database."""
     query = address.lower()
     for key, info in _LOCATIONS.items():
         if key in query:
@@ -52,12 +47,22 @@ def geocode_location(address: str) -> dict:
 
 
 @server.tool()
+def geocode_location(address: str) -> dict:
+    """
+    Map a simple place name to synthetic coordinates.
+
+    This is intentionally fuzzy and matches by substring.
+    """
+    return _resolve_location(address)
+
+
+@server.tool()
 def calculate_distance(location1: str, location2: str) -> dict:
     """
     Calculate great-circle distance between two known locations.
     """
-    loc1 = geocode_location(location1)
-    loc2 = geocode_location(location2)
+    loc1 = _resolve_location(location1)
+    loc2 = _resolve_location(location2)
 
     if not (loc1.get("found") and loc2.get("found")):
         return {"error": "One or both locations could not be resolved."}

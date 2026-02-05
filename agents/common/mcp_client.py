@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from typing import Any, Dict, Optional
 
 from mcp import ClientSession, StdioServerParameters
@@ -39,9 +40,14 @@ class MCPClientManager:
         self._server_configs = server_configs
         self._sessions: Dict[str, ClientSession] = {}
         self._tools: Dict[str, Any] = {}
+        # AsyncExitStack keeps the stdio transports and sessions alive
+        # for the lifetime of this manager.
+        self._exit_stack = AsyncExitStack()
 
     async def connect_all(self) -> None:
         """Connect to all configured MCP servers and cache their tool lists."""
+        await self._exit_stack.__aenter__()
+
         for name, cfg in self._server_configs.items():
             if name in self._sessions:
                 continue
@@ -53,11 +59,17 @@ class MCPClientManager:
             )
 
             try:
-                logger.info("Connecting to MCP server '%s' using %s %s", name, params.command, params.args)
+                logger.info(
+                    "Connecting to MCP server '%s' using %s %s",
+                    name,
+                    params.command,
+                    params.args,
+                )
 
-                # Establish stdio connection and initialize the MCP session.
-                read, write = await stdio_client(params)
-                session = ClientSession(read, write)
+                # stdio_client is an async context manager; we use the exit stack
+                # so the transport stays open while the manager is alive.
+                read, write = await self._exit_stack.enter_async_context(stdio_client(params))
+                session = await self._exit_stack.enter_async_context(ClientSession(read, write))
                 await session.initialize()
 
                 tools_result = await session.list_tools()
@@ -97,15 +109,13 @@ class MCPClientManager:
         return dict(self._tools)
 
     async def close(self) -> None:
-        """Close all MCP sessions."""
-        for name, session in list(self._sessions.items()):
-            try:
-                await session.close()
-                logger.info("Closed MCP session for '%s'", name)
-            except Exception:  # pragma: no cover - defensive logging
-                logger.exception("Error closing MCP session for '%s'", name)
+        """Close all MCP sessions and transports."""
         self._sessions.clear()
         self._tools.clear()
+        try:
+            await self._exit_stack.aclose()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Error while closing MCP exit stack")
 
 
 def run_sync(coro: Any) -> Any:
