@@ -164,6 +164,10 @@ case "${DEPLOYMENT_MODE}" in
       echo "[*] Stopping services on NODE3_HOST (${NODE3_HOST})..."
       ssh "${NODE3_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE3_HOST"
     fi
+    if [[ -n "${NODE4_HOST:-}" ]]; then
+      echo "[*] Stopping services on NODE4_HOST (${NODE4_HOST})..."
+      ssh "${NODE4_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE4_HOST"
+    fi
     ;;
     
   *)
