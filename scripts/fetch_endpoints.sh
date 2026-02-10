@@ -16,6 +16,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_DIR="${ROOT_DIR}/infra"
 
+# Load deployment mode and NODE* hosts from infra/.env if present
+DEPLOYMENT_MODE="single"
+if [[ -f "${COMPOSE_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source <(grep -v '^\s*#' "${COMPOSE_DIR}/.env" | grep -v '^\s*$')
+  set +a
+fi
+DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-single}"
+
 NODE1_HOST="${NODE1_HOST:-}"
 NODE2_HOST="${NODE2_HOST:-}"
 NODE3_HOST="${NODE3_HOST:-}"
@@ -277,12 +287,12 @@ collect_ports_csv() {
 }
 
 ###############################################################################
-# Single-host vs multi-node logic (mirrors deploy.sh)
+# Single-host vs multi-VM logic (mirrors deploy.sh)
 ###############################################################################
 
-if [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
+if [[ "${DEPLOYMENT_MODE}" == "multi-vm" && -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
   ###########################################################################
-  # Multi-node mode: query ports on each remote host via SSH.
+  # Multi-VM mode: query ports on each remote host via SSH.
   ###########################################################################
   REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}"
   REMOTE_COMPOSE_DIR="${REMOTE_REPO_DIR}/infra"
@@ -301,10 +311,10 @@ if [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
     endpoints_all+="${endpoints_node3}"$'\n'
   fi
   endpoints_all="$(printf "%s" "${endpoints_all}" | sed '/^$/d')"
-  print_endpoint_summary "multi-node" "${endpoints_all}"
+  print_endpoint_summary "multi-vm" "${endpoints_all}"
 else
   ###########################################################################
-  # Single-host mode: query ports from local docker compose.
+  # Single-host / distributed mode: query ports from local docker compose.
   ###########################################################################
   # For browser access from your laptop, you'd typically want the server's
   # actual DNS name instead of "localhost". You can override this by setting

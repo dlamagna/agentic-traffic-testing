@@ -1,0 +1,96 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Vagrantfile for multi-VM agentic traffic testbed
+#
+# Nodes (matching architecture docs):
+#   - agent_a   -> Node 1: Agent A + Jaeger + Chat UI
+#   - agent_b   -> Node 2: Agent B instances
+#   - llm_node  -> Node 3: LLM backend (GPU-capable host)
+#   - tools     -> Node 4: MCP tool servers
+#
+# After 'vagrant up', set these in infra/.env:
+#   NODE1_HOST=192.168.56.10
+#   NODE2_HOST=192.168.56.11
+#   NODE3_HOST=192.168.56.12
+#   NODE4_HOST=192.168.56.13
+#   REMOTE_REPO_DIR=/home/vagrant/projects/agentic-traffic-testing
+#
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+
+  # Common provisioning for all nodes (Docker + Python + eBPF tools)
+  def base_provision(node)
+    node.vm.provision "shell", inline: <<-SHELL
+      set -e
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        docker.io docker-compose-plugin python3 python3-pip git \
+        linux-headers-$(uname -r) bpfcc-tools python3-bpfcc bpftrace
+
+      usermod -aG docker vagrant || true
+
+      mkdir -p /home/vagrant/projects
+      chown -R vagrant:vagrant /home/vagrant/projects
+    SHELL
+  end
+
+  # VM 1: Agent A + Jaeger + Chat UI (Node 1)
+  config.vm.define "agent_a" do |node|
+    node.vm.hostname = "agent-a"
+    node.vm.network "private_network", ip: "192.168.56.10"
+    node.vm.provider "virtualbox" do |vb|
+      vb.memory = 4096
+      vb.cpus   = 2
+    end
+
+    base_provision(node)
+  end
+
+  # VM 2: Agent B instances (Node 2)
+  config.vm.define "agent_b" do |node|
+    node.vm.hostname = "agent-b"
+    node.vm.network "private_network", ip: "192.168.56.11"
+    node.vm.provider "virtualbox" do |vb|
+      vb.memory = 4096
+      vb.cpus   = 2
+    end
+
+    base_provision(node)
+  end
+
+  # VM 3: LLM backend (Node 3) - GPU passthrough/manual config required
+  config.vm.define "llm_node" do |node|
+    node.vm.hostname = "llm-node"
+    node.vm.network "private_network", ip: "192.168.56.12"
+    node.vm.provider "virtualbox" do |vb|
+      vb.memory = 16384
+      vb.cpus   = 8
+      # Note: GPU passthrough / NVIDIA support must be configured manually
+    end
+
+    node.vm.provision "shell", inline: <<-SHELL
+      set -e
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        docker.io docker-compose-plugin python3 python3-pip git
+      # Install NVIDIA Docker tooling manually if GPU is available on host
+      mkdir -p /home/vagrant/projects
+      chown -R vagrant:vagrant /home/vagrant/projects
+    SHELL
+  end
+
+  # VM 4: MCP tool servers (Node 4)
+  config.vm.define "tools" do |node|
+    node.vm.hostname = "tools"
+    node.vm.network "private_network", ip: "192.168.56.13"
+    node.vm.provider "virtualbox" do |vb|
+      vb.memory = 4096
+      vb.cpus   = 2
+    end
+
+    base_provision(node)
+  end
+end
+
