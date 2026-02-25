@@ -54,6 +54,7 @@ class AgentVerseApp {
     this.getRequestHistory = this.getRequestHistory.bind(this);
     this.loadRequestHistory = this.loadRequestHistory.bind(this);
     this.copyRawJson = this.copyRawJson.bind(this);
+    this.loadFromTaskId = this.loadFromTaskId.bind(this);
 
     // Initialize
     this.init();
@@ -98,6 +99,18 @@ class AgentVerseApp {
     
     // Load and display request history
     this.loadRequestHistory();
+
+    // If the URL contains a task_id query parameter, load that historical run
+    // directly from the Agent A /agentverse/<task_id> GET endpoint.
+    try {
+      const url = new URL(window.location.href);
+      const taskIdParam = url.searchParams.get('task_id') || url.searchParams.get('taskId');
+      if (taskIdParam) {
+        this.loadFromTaskId(taskIdParam);
+      }
+    } catch (e) {
+      console.error('[AgentVerse] Failed to parse URL for task_id:', e);
+    }
   }
 
   /**
@@ -220,6 +233,7 @@ class AgentVerseApp {
     const requestId = this.currentRequest?.id || Date.now().toString();
     const startTimeUtc = this.currentRequest?.startTimeUtc || nowIso;
     const iterationCount = resultData?.iterations ?? resultData?.iteration_history?.length ?? 0;
+    const taskId = resultData?.task_id || null;
     const requestEntry = {
       id: requestId,
       timestamp: nowIso,
@@ -228,6 +242,7 @@ class AgentVerseApp {
       endpoint: endpoint,
       maxIterations: maxIterations,
       scoreThreshold: scoreThreshold,
+      task_id: taskId,
       result: {
         finalScore: resultData?.evaluation?.score || resultData?.stages?.evaluation?.score || 0,
         goalAchieved: resultData?.evaluation?.goal_achieved || resultData?.stages?.evaluation?.goal_achieved || false,
@@ -235,6 +250,8 @@ class AgentVerseApp {
         duration: resultData?.duration_seconds || 0,
         cancelled: cancelled === true,
       },
+      // Store full raw result so we can reload and inspect past flows without rerunning.
+      result_raw: resultData || null,
       // Store summary data for quick display
       summary: {
         experts: resultData?.stages?.recruitment?.experts?.map(e => e.role).join(', ') || 
@@ -272,6 +289,98 @@ class AgentVerseApp {
       }
     } else {
       console.warn('[AgentVerse] Request history container not found');
+    }
+  }
+
+  /**
+   * Load a completed AgentVerse run by task ID from the backend.
+   *
+   * This calls GET /agentverse/<task_id> (or equivalent) on the Agent A server,
+   * then feeds the stored result into the workflow viewer so past flows and
+   * outputs can be inspected via deep links.
+   */
+  async loadFromTaskId(taskId) {
+    const trimmedId = (taskId || '').trim();
+    if (!trimmedId) return;
+
+    const baseEndpoint = (this.elements.endpointEl.value || getDefaultEndpoint()).trim();
+    const base = baseEndpoint.replace(/\/+$/, '');
+    const url = `${base}/${encodeURIComponent(trimmedId)}`;
+
+    // Show loading state
+    this.uiState.resetUI();
+    if (this.elements.statusText) {
+      this.elements.statusText.textContent = 'Loading task from server...';
+    }
+    if (this.elements.statusIndicator) {
+      this.elements.statusIndicator.className = 'status-indicator running';
+    }
+    this.elements.runBtn.disabled = true;
+
+    try {
+      const resp = await fetch(url, { method: 'GET' });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        console.error('[AgentVerse] Failed to load task by ID:', resp.status, text);
+        if (this.elements.statusText) {
+          this.elements.statusText.textContent = `Task load failed (HTTP ${resp.status})`;
+        }
+        return;
+      }
+
+      const record = await resp.json();
+      const resultData = record.result || record || {};
+
+      // Populate form fields from stored metadata when available.
+      const originalTask = resultData.original_task || record.task || '';
+      if (originalTask && this.elements.taskEl) {
+        this.elements.taskEl.value = originalTask;
+      }
+      if (typeof record.max_iterations === 'number' && this.elements.maxIterationsEl) {
+        this.elements.maxIterationsEl.value = String(record.max_iterations);
+      }
+      if (this.elements.scoreThresholdEl && typeof record.success_threshold === 'number') {
+        this.elements.scoreThresholdEl.value = String(record.success_threshold);
+      }
+
+      // Render the workflow UI from the stored result.
+      this.uiState.resetUI();
+      this.uiState.updateWorkflowUI(resultData);
+      this.setFinalOutputView('formatted');
+
+      if (this.elements.statusIndicator) {
+        this.elements.statusIndicator.className = 'status-indicator complete';
+      }
+      if (this.elements.statusText) {
+        this.elements.statusText.textContent = 'Loaded from task ID';
+      }
+      if (this.elements.liveBadge) {
+        this.elements.liveBadge.style.display = 'none';
+      }
+
+      // Best-effort: add this loaded run into local request history so it
+      // behaves like a normal completed workflow in the UI.
+      try {
+        const maxIters = record.max_iterations || resultData.iterations || 1;
+        const threshold = record.success_threshold != null ? record.success_threshold : 70;
+        this.saveRequestToHistory(
+          originalTask || '',
+          baseEndpoint,
+          maxIters,
+          resultData,
+          threshold,
+          false
+        );
+      } catch (historyErr) {
+        console.warn('[AgentVerse] Failed to save loaded task to history:', historyErr);
+      }
+    } catch (e) {
+      console.error('[AgentVerse] Error loading task by ID:', e);
+      if (this.elements.statusText) {
+        this.elements.statusText.textContent = 'Error loading task';
+      }
+    } finally {
+      this.elements.runBtn.disabled = false;
     }
   }
 
@@ -319,6 +428,7 @@ class AgentVerseApp {
       const goalIcon = isCancelled ? '—' : (entry.result?.goalAchieved ? '✓' : '✗');
       const statusLabel = isCancelled ? 'Cancelled' : `${score}/100`;
       const itemClass = isCancelled ? 'request-history-item request-history-item--cancelled' : 'request-history-item';
+      const taskIdShort = entry.task_id ? String(entry.task_id).slice(0, 8) : null;
 
       const taskPreview = (entry.task || '').substring(0, 60);
       const taskFull = entry.task || '';
@@ -337,6 +447,7 @@ class AgentVerseApp {
               <span>•</span><span>Start (UTC): ${this.escapeHtml(startUtcLabel)}</span>
               ${!isCancelled ? `<span>•</span><span>${entry.result?.iterationCount || 0} iteration${entry.result?.iterationCount !== 1 ? 's' : ''}</span>` : ''}
               ${!isCancelled && entry.result?.duration ? `<span>•</span><span>${entry.result.duration.toFixed(1)}s</span>` : ''}
+              ${taskIdShort ? `<span>•</span><span>Task ID: ${this.escapeHtml(taskIdShort)}…</span>` : ''}
             </div>
             ${entry.summary?.experts ? `<div class="request-history-experts">Experts: ${this.escapeHtml(entry.summary.experts)}</div>` : ''}
           </div>
@@ -367,8 +478,28 @@ class AgentVerseApp {
     if (this.elements.scoreThresholdEl && entry.scoreThreshold != null) {
       this.elements.scoreThresholdEl.value = entry.scoreThreshold;
     }
-    
-    // Scroll to top
+    // If we have a stored raw result, load it into the workflow viewer so the
+    // user can inspect past flows without rerunning the workflow. If not, but
+    // we have a task_id, fall back to loading from the backend by task ID.
+    if (entry.result_raw) {
+      try {
+        this.uiState.resetUI();
+        this.uiState.updateWorkflowUI(entry.result_raw);
+        this.setFinalOutputView('formatted');
+        if (this.uiState.elements.statusIndicator) {
+          this.uiState.elements.statusIndicator.className = 'status-indicator complete';
+        }
+        if (this.uiState.elements.statusText) {
+          this.uiState.elements.statusText.textContent = 'Loaded from history';
+        }
+      } catch (e) {
+        console.error('[AgentVerse] Failed to load stored result from history:', e);
+      }
+    } else if (entry.task_id) {
+      // Best-effort server-backed reload for older or truncated history entries.
+      this.loadFromTaskId(entry.task_id);
+    }
+    // Scroll to top so the task and workflow are visible.
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 

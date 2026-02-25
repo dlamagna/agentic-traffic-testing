@@ -141,6 +141,13 @@ export class UIState {
     }
     const rawToggle = document.getElementById('rawToggleText');
     if (rawToggle) rawToggle.textContent = 'Hide';
+
+    // Update task ID label in the status bar (if available)
+    const taskIdLabelEl = document.getElementById('taskIdLabel');
+    if (taskIdLabelEl) {
+      const taskId = data.task_id || '';
+      taskIdLabelEl.textContent = taskId ? `Task ID: ${taskId}` : '';
+    }
     
     // Update stages
     const stages = data.stages || {};

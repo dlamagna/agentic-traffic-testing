@@ -23,7 +23,7 @@ def execute_python_code(code: str) -> dict:
     """
     Safely execute short Python snippets and return stdout/stderr.
 
-    Intended for toy experiments only – not for untrusted multi-tenant use.
+    Intended for toy experiments only - not for untrusted multi-tenant use.
     """
     try:
         # Run code in a fresh Python subprocess with a hard timeout.
