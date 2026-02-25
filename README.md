@@ -20,6 +20,7 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 - [6. Agent config and roles](#6-agent-config-and-roles)
 - [7. Shared GPU usage checks (read-only)](#7-shared-gpu-usage-checks-read-only)
 - [8. Health check script](#8-health-check-script)
+- [9. MCP-Universe benchmark integration](#9-mcp-universe-benchmark-integration)
 
 ---
 
@@ -306,4 +307,16 @@ Avoid killing processes you don't own. If GPU memory is tight, lower model size 
 ```bash
 python scripts/monitoring/health_check.py
 ```
+
+---
+
+## 9. MCP-Universe benchmark integration
+
+This testbed integrates the [MCP-Universe](https://github.com/SalesforceAIResearch/MCP-Universe) benchmark framework for **recognized, measurable** MCP tool evaluation. MCP-Universe provides execution-based benchmarks across 6 domains (Location Navigation, Repository Management, Financial Analysis, 3D Design, Browser Automation, Web Search) and can run against your **local LLM** via an OpenAI-compatible proxy.
+
+See **[docs/mcp_universe_integration.md](docs/mcp_universe_integration.md)** for full setup, including:
+
+- Cloning and configuring MCP-Universe
+- Running the OpenAI proxy to bridge MCP-Universe to your local LLM backend
+- Running benchmarks via `scripts/experiment/run_mcp_universe.py`
 
