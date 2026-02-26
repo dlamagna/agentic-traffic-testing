@@ -145,6 +145,29 @@ def check_http_endpoint(url: str, method: str = "GET", json_data: Optional[Dict[
         return False, f"Error: {str(e)}"
 
 
+def check_metrics_endpoint(url: str, required_substrings: Optional[List[str]] = None, timeout: float = 10.0) -> Tuple[bool, Optional[str]]:
+    """
+    Check a Prometheus-style /metrics endpoint and optionally assert
+    that certain metric names are present in the text payload.
+    """
+    try:
+        resp = httpx.get(url, timeout=timeout)
+        if not resp.is_success:
+            return False, f"HTTP {resp.status_code}"
+        text = resp.text
+        if required_substrings:
+            missing = [s for s in required_substrings if s not in text]
+            if missing:
+                return False, f"Missing expected metrics: {', '.join(missing)}"
+        return True, None
+    except httpx.ConnectError as e:
+        return False, f"Connection error: {str(e)}"
+    except httpx.TimeoutException:
+        return False, "Request timed out"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+
 def check_llm_server(llm_url: str) -> Tuple[bool, Optional[str]]:
     """Check LLM server connectivity and functionality."""
     # Parse URL to check DNS resolution
@@ -329,6 +352,11 @@ def main() -> None:
         action="store_true",
         help="Skip Docker Compose service checks",
     )
+    parser.add_argument(
+        "--skip-monitoring",
+        action="store_true",
+        help="Skip monitoring (cAdvisor / TCP metrics) checks",
+    )
     
     args = parser.parse_args()
     
@@ -420,6 +448,29 @@ def main() -> None:
         # UI is optional, so don't fail overall check
         if ui_error:
             print(f"  {Colors.YELLOW}Warning: {ui_error}{Colors.RESET}")
+
+    # Monitoring checks (cAdvisor + TCP metrics collector)
+    if not args.skip_monitoring:
+        print_section("Monitoring (cAdvisor + TCP metrics)")
+        # cAdvisor on host (host-mode cadvisor-host or compose cadvisor)
+        cadvisor_ok, cadvisor_err = check_metrics_endpoint(
+            "http://localhost:8080/metrics",
+            required_substrings=["container_cpu_usage_seconds_total", "container_memory_usage_bytes"],
+            timeout=5.0,
+        )
+        print_check("cAdvisor /metrics", cadvisor_ok, cadvisor_err or "(http://localhost:8080/metrics)")
+        if not cadvisor_ok and cadvisor_err:
+            print(f"  {Colors.YELLOW}Warning: {cadvisor_err}{Colors.RESET}")
+
+        # TCP metrics collector on host
+        tcp_ok, tcp_err = check_metrics_endpoint(
+            "http://localhost:9100/metrics",
+            required_substrings=["tcp_bytes_total", "tcp_packets_total"],
+            timeout=5.0,
+        )
+        print_check("TCP metrics collector /metrics", tcp_ok, tcp_err or "(http://localhost:9100/metrics)")
+        if not tcp_ok and tcp_err:
+            print(f"  {Colors.YELLOW}Warning: {tcp_err}{Colors.RESET}")
     
     # Summary
     print_section("Summary")

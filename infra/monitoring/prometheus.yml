@@ -10,14 +10,16 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # cAdvisor - Container metrics (CPU, memory, network)
+  # In host-mode cAdvisor, metrics are exposed on the host at :8080.
+  # We use host.docker.internal for Docker Desktop, with a Linux fallback.
   - job_name: 'cadvisor'
     static_configs:
-      - targets: ['cadvisor:8080']
-    metric_relabel_configs:
-      # Keep only agent and LLM container metrics
-      - source_labels: [container_label_com_docker_compose_service]
-        regex: '(agent-a|agent-b.*|llm-backend|mcp-tool-db)'
-        action: keep
+      - targets: ['host.docker.internal:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: 'host.docker.internal:(.*)'
+        target_label: __address__
+        replacement: '172.17.0.1:$1'
 
   # TCP Metrics Collector (runs on host, captures packet-level metrics)
   # Start with: sudo python scripts/monitoring/tcp_metrics_collector.py

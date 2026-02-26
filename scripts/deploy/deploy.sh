@@ -205,8 +205,45 @@ elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   # Optional: Deploy monitoring stack
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
-    echo "[*] Deploying monitoring stack (Prometheus + Grafana + cAdvisor)..."
-    docker compose -f docker-compose.monitoring.distributed.yml up -d
+    echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
+    docker compose -f docker-compose.monitoring.distributed.yml up -d prometheus grafana
+    echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
+    if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
+      echo "    cadvisor-host already running; skipping."
+    else
+      echo "    Starting cadvisor-host (no sudo required)..."
+      docker run -d \
+        --name cadvisor-host \
+        --net=host \
+        --privileged \
+        -v /:/rootfs:ro \
+        -v /var/run:/var/run:ro \
+        -v /sys:/sys:ro \
+        -v /var/lib/docker/:/var/lib/docker:ro \
+        -v /dev/disk/:/dev/disk:ro \
+        gcr.io/cadvisor/cadvisor:v0.47.2 \
+          --docker_only=true \
+          --store_container_labels=true || \
+        echo "    [!] Failed to start cadvisor-host automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector (tcpdump + tcp_metrics_collector.py) is running..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcpdump + tcp_metrics_collector via scripts/monitoring/run_tcpdump.sh..."
+      (cd "${ROOT_DIR}" && bash scripts/monitoring/run_tcpdump.sh >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector is running on host (for service-level network metrics)..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcp_metrics_collector.py (you may be prompted for sudo for tcpdump)..."
+      (cd "${ROOT_DIR}" && python3 scripts/monitoring/tcp_metrics_collector.py --sudo-tcpdump >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
   fi
 
   echo "[*] Current container status:"
@@ -252,8 +289,45 @@ else
   # Optional: Deploy monitoring stack
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
-    echo "[*] Deploying monitoring stack (Prometheus + Grafana + cAdvisor)..."
-    docker compose -f docker-compose.monitoring.yml up -d
+    echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
+    docker compose -f docker-compose.monitoring.yml up -d prometheus grafana
+    echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
+    if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
+      echo "    cadvisor-host already running; skipping."
+    else
+      echo "    Starting cadvisor-host (no sudo required)..."
+      docker run -d \
+        --name cadvisor-host \
+        --net=host \
+        --privileged \
+        -v /:/rootfs:ro \
+        -v /var/run:/var/run:ro \
+        -v /sys:/sys:ro \
+        -v /var/lib/docker/:/var/lib/docker:ro \
+        -v /dev/disk/:/dev/disk:ro \
+        gcr.io/cadvisor/cadvisor:v0.47.2 \
+          --docker_only=true \
+          --store_container_labels=true || \
+        echo "    [!] Failed to start cadvisor-host automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector (tcpdump + tcp_metrics_collector.py) is running..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcpdump + tcp_metrics_collector via scripts/monitoring/run_tcpdump.sh..."
+      (cd "${ROOT_DIR}" && bash scripts/monitoring/run_tcpdump.sh >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector is running on host (for service-level network metrics)..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcp_metrics_collector.py (you may be prompted for sudo for tcpdump)..."
+      (cd "${ROOT_DIR}" && python3 scripts/monitoring/tcp_metrics_collector.py --sudo-tcpdump >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
   fi
 
   echo "[*] Current container status:"
@@ -268,6 +342,11 @@ else
     echo "    Grafana:    http://localhost:3001 (admin/admin)"
     echo "    Prometheus: http://localhost:9090"
     echo "    cAdvisor:   http://localhost:8080"
+    echo
+    echo "[*] To start the TCP metrics collector for service-level network metrics, run (in a separate terminal):"
+    echo "    cd ${ROOT_DIR}"
+    echo "    sudo tcpdump -i br-df4088ff2909 -l -n -tt tcp and net 172.23.0.0/24 \\"
+    echo "      | python3 scripts/monitoring/tcp_metrics_collector.py --read-stdin"
   fi
 
   wait_for_llm "http://localhost:8000/health" || true
