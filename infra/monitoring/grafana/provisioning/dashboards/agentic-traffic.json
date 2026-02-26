@@ -22,72 +22,222 @@
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
           "unit": "short"
         }
       },
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 1},
       "id": 1,
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
       "pluginVersion": "10.0.0",
-      "targets": [{"expr": "count(container_last_seen{name=~\"agent.*|llm-backend\"})", "refId": "A"}],
-      "title": "Active Containers",
-      "type": "stat"
+      "targets": [
+        {
+          "expr": "count(container_cpu_usage_seconds_total{cpu=\"total\",id=~\"/system.slice/docker-.*\\\\.scope\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "Active Containers (Docker)",
+      "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
           "unit": "Bps"
         }
       },
-      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 1},
       "id": 2,
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
       "pluginVersion": "10.0.0",
-      "targets": [{"expr": "sum(rate(container_network_transmit_bytes_total{name=~\"agent.*\"}[1m]))", "refId": "A"}],
-      "title": "Agent TX Rate",
-      "type": "stat"
+      "targets": [
+        {
+          "expr": "sum(rate(container_network_transmit_bytes_total{id=\"/\",interface=~\"br-.*\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Docker Network TX Rate",
+      "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
           "unit": "Bps"
         }
       },
-      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 1},
       "id": 3,
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
       "pluginVersion": "10.0.0",
-      "targets": [{"expr": "sum(rate(container_network_receive_bytes_total{name=~\"agent.*\"}[1m]))", "refId": "A"}],
-      "title": "Agent RX Rate",
-      "type": "stat"
+      "targets": [
+        {
+          "expr": "sum(rate(container_network_receive_bytes_total{id=\"/\",interface=~\"br-.*\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Docker Network RX Rate",
+      "type": "timeseries"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "barAlignment": 0,
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "Bps"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 0,
+        "y": 3
+      },
+      "id": 4,
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
-      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
-      "id": 4,
-      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
       "pluginVersion": "10.0.0",
-      "targets": [{"expr": "sum(rate(container_network_transmit_bytes_total{name=\"llm-backend\"}[1m]))", "refId": "A"}],
-      "title": "LLM TX Rate",
-      "type": "stat"
+      "targets": [
+        {
+          "expr": "rate(llm_requests_total[1m])",
+          "refId": "A"
+        }
+      ],
+      "title": "LLM Request Rate",
+      "type": "timeseries"
     },
     {
       "collapsed": false,
@@ -113,12 +263,9 @@
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "rate(container_network_transmit_bytes_total{name=~\"agent-a\"}[30s])", "legendFormat": "Agent A TX", "refId": "A"},
-        {"expr": "rate(container_network_transmit_bytes_total{name=~\"agent-b\"}[30s])", "legendFormat": "Agent B-1 TX", "refId": "B"},
-        {"expr": "rate(container_network_transmit_bytes_total{name=~\"agent-b-2\"}[30s])", "legendFormat": "Agent B-2 TX", "refId": "C"},
-        {"expr": "rate(container_network_transmit_bytes_total{name=\"llm-backend\"}[30s])", "legendFormat": "LLM TX", "refId": "D"}
+        {"expr": "rate(container_network_transmit_bytes_total{id=\"/\",interface=~\"br-.*\"}[30s])", "legendFormat": "{{interface}} TX", "refId": "A"}
       ],
-      "title": "Network Transmit Rate by Container",
+      "title": "Network Transmit Rate by Interface",
       "type": "timeseries"
     },
     {
@@ -137,12 +284,9 @@
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "rate(container_network_receive_bytes_total{name=~\"agent-a\"}[30s])", "legendFormat": "Agent A RX", "refId": "A"},
-        {"expr": "rate(container_network_receive_bytes_total{name=~\"agent-b\"}[30s])", "legendFormat": "Agent B-1 RX", "refId": "B"},
-        {"expr": "rate(container_network_receive_bytes_total{name=~\"agent-b-2\"}[30s])", "legendFormat": "Agent B-2 RX", "refId": "C"},
-        {"expr": "rate(container_network_receive_bytes_total{name=\"llm-backend\"}[30s])", "legendFormat": "LLM RX", "refId": "D"}
+        {"expr": "rate(container_network_receive_bytes_total{id=\"/\",interface=~\"br-.*\"}[30s])", "legendFormat": "{{interface}} RX", "refId": "A"}
       ],
-      "title": "Network Receive Rate by Container",
+      "title": "Network Receive Rate by Interface",
       "type": "timeseries"
     },
     {
@@ -161,9 +305,9 @@
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "rate(container_network_transmit_packets_total{name=~\"agent.*\"}[30s])", "legendFormat": "{{name}}", "refId": "A"}
+        {"expr": "rate(container_network_transmit_packets_total{id=\"/\",interface=~\"br-.*\"}[30s])", "legendFormat": "{{interface}}", "refId": "A"}
       ],
-      "title": "Packets Transmitted (Agents)",
+      "title": "Packets Transmitted (by Interface)",
       "type": "timeseries"
     },
     {
@@ -182,9 +326,9 @@
       "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "increase(container_network_transmit_packets_total{name=~\"agent.*|llm-backend\"}[1m])", "legendFormat": "{{name}}", "refId": "A"}
+        {"expr": "increase(container_network_transmit_packets_total{id=\"/\",interface=~\"br-.*\"}[1m])", "legendFormat": "{{interface}}", "refId": "A"}
       ],
-      "title": "Packets per Minute",
+      "title": "Packets per Minute (by Interface)",
       "type": "timeseries"
     },
     {
@@ -202,10 +346,8 @@
           "color": {"mode": "palette-classic"},
           "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
           "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}]},
-          "unit": "percent"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
         }
       },
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
@@ -213,9 +355,13 @@
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "rate(container_cpu_usage_seconds_total{name=~\"agent.*|llm-backend\"}[1m]) * 100", "legendFormat": "{{name}}", "refId": "A"}
+        {
+          "expr": "sum by (id) (rate(container_cpu_usage_seconds_total{cpu=\"total\",id=~\"/system.slice/docker-.*\\\\.scope\"}[1m]))",
+          "legendFormat": "{{id}}",
+          "refId": "A"
+        }
       ],
-      "title": "CPU Usage %",
+      "title": "CPU (core equivalents per container)",
       "type": "timeseries"
     },
     {
@@ -234,9 +380,447 @@
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "pluginVersion": "10.0.0",
       "targets": [
-        {"expr": "container_memory_usage_bytes{name=~\"agent.*|llm-backend\"}", "legendFormat": "{{name}}", "refId": "A"}
+        {
+          "expr": "container_memory_usage_bytes{id=~\"/system.slice/docker-.*\\\\.scope\"}",
+          "legendFormat": "{{id}}",
+          "refId": "A"
+        }
       ],
-      "title": "Memory Usage",
+      "title": "Memory Usage per container",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+      "id": 103,
+      "panels": [],
+      "title": "Service-level Network (TCP)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "Bps"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "id": 30,
+      "options": {
+        "legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "rate(tcp_bytes_total{src_service!=\"external\",dst_service!=\"external\",src_service!=\"jaeger\",dst_service!=\"jaeger\"}[1m])",
+          "legendFormat": "{{src_service}} \u2192 {{dst_service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "TCP Bytes/s by Service Pair",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "Bps"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "id": 33,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "sum(rate(tcp_bytes_total{src_service=\"llm_backend\",dst_service!=\"external\"}[1m]))",
+          "legendFormat": "from llm_backend",
+          "refId": "A"
+        }
+      ],
+      "title": "TCP Bytes/s from LLM Backend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "id": 32,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(tcp_rtt_handshake_seconds_bucket{src_service=\"agent_a\",dst_service=\"llm_backend\"}[5m])))",
+          "legendFormat": "p50 RTT AgentA \u2192 LLM",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(tcp_rtt_handshake_seconds_bucket{src_service=\"agent_a\",dst_service=\"llm_backend\"}[5m])))",
+          "legendFormat": "p95 RTT AgentA \u2192 LLM",
+          "refId": "B"
+        }
+      ],
+      "title": "TCP RTT (SYN/SYN-ACK Agent A \u2192 LLM)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "id": 31,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(tcp_flow_duration_seconds_bucket{src_service=\"agent_a\",dst_service=\"llm_backend\"}[5m])))",
+          "legendFormat": "p50 AgentA \u2192 LLM",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(tcp_flow_duration_seconds_bucket{src_service=\"agent_a\",dst_service=\"llm_backend\"}[5m])))",
+          "legendFormat": "p95 AgentA \u2192 LLM",
+          "refId": "B"
+        }
+      ],
+      "title": "TCP Flow Duration (Agent A \u2192 LLM)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
+      "id": 104,
+      "panels": [],
+      "title": "AI Performance (LLM)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 49},
+      "id": 40,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(llm_request_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 latency",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_request_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95 latency",
+          "refId": "B"
+        }
+      ],
+      "title": "LLM End-to-end Latency (p50/p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 49},
+      "id": 41,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(llm_queue_wait_seconds_bucket[5m])))",
+          "legendFormat": "p50 TTFT",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_queue_wait_seconds_bucket[5m])))",
+          "legendFormat": "p95 TTFT",
+          "refId": "B"
+        }
+      ],
+      "title": "LLM Time-to-First-Token (TTFT p50/p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 57},
+      "id": 42,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "rate(llm_prompt_tokens_total[1m])",
+          "legendFormat": "prompt tokens/s",
+          "refId": "A"
+        }
+      ],
+      "title": "Prompt Tokens / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 57},
+      "id": 43,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "rate(llm_completion_tokens_total[1m])",
+          "legendFormat": "completion tokens/s",
+          "refId": "A"
+        }
+      ],
+      "title": "Completion Tokens / s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 57},
+      "id": 44,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "llm_inflight_requests",
+          "legendFormat": "in-flight requests",
+          "refId": "A"
+        }
+      ],
+      "title": "In-flight LLM Requests",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 63},
+      "id": 45,
+      "options": {
+        "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "rate(llm_prompt_tokens_total[1m])",
+          "legendFormat": "prompt tokens/s",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(llm_completion_tokens_total[1m])",
+          "legendFormat": "completion tokens/s",
+          "refId": "B"
+        },
+        {
+          "expr": "llm_inflight_requests",
+          "legendFormat": "in-flight requests",
+          "refId": "C"
+        }
+      ],
+      "title": "LLM Tokens & In-flight Requests (overlay)",
       "type": "timeseries"
     }
   ],
