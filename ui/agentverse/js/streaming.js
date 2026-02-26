@@ -140,9 +140,8 @@ export class StreamingHandler {
     }
     this.uiState.currentData.llm_requests.push(data);
     
-    // Update request counter
-    const count = this.uiState.currentData.llm_requests.length;
-    this.uiState.elements.llmRequestCount.textContent = `${count} LLM request${count !== 1 ? 's' : ''}`;
+    // Update request counter from the single source of truth
+    this.uiState.updateLlmRequestCounter();
     
     // Show detailed flow section if we have requests
     const detailedSection = document.getElementById('detailedFlowSection');
