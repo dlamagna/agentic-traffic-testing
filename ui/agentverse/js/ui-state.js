@@ -15,6 +15,29 @@ export class UIState {
   }
 
   /**
+   * Update the LLM request counter in the status bar
+   * using the current state's llm_requests array as the
+   * single source of truth.
+   */
+  updateLlmRequestCounter() {
+    if (!this.elements.llmRequestCount) return;
+
+    const requests =
+      (this.currentData && Array.isArray(this.currentData.llm_requests))
+        ? this.currentData.llm_requests
+        : [];
+
+    if (!requests.length) {
+      this.elements.llmRequestCount.textContent = '';
+      return;
+    }
+
+    const count = requests.length;
+    this.elements.llmRequestCount.textContent =
+      `${count} LLM request${count !== 1 ? 's' : ''}`;
+  }
+
+  /**
    * Update timer display
    */
   updateTimer() {
@@ -141,6 +164,13 @@ export class UIState {
     }
     const rawToggle = document.getElementById('rawToggleText');
     if (rawToggle) rawToggle.textContent = 'Hide';
+
+    // Update task ID label in the status bar (if available)
+    const taskIdLabelEl = document.getElementById('taskIdLabel');
+    if (taskIdLabelEl) {
+      const taskId = data.task_id || '';
+      taskIdLabelEl.textContent = taskId ? `Task ID: ${taskId}` : '';
+    }
     
     // Update stages
     const stages = data.stages || {};
@@ -226,10 +256,14 @@ export class UIState {
     // Update detailed flow section
     const detailedSection = document.getElementById('detailedFlowSection');
     const llmTableEl = document.getElementById('llmRequestsTable');
-    if (data.llm_requests && data.llm_requests.length > 0) {
+    const llmRequests = Array.isArray(data.llm_requests) ? data.llm_requests : [];
+    if (llmRequests.length > 0) {
       detailedSection.style.display = 'block';
-      llmTableEl.innerHTML = renderLlmRequestsTable(data.llm_requests);
+      llmTableEl.innerHTML = renderLlmRequestsTable(llmRequests);
     }
+
+    // Sync the top-of-page LLM request counter with the underlying state
+    this.updateLlmRequestCounter();
     
     // Expand stages with content
     if (stages.recruitment) this.toggleStage('stage1');

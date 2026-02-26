@@ -47,8 +47,13 @@ flowchart LR
             BCC4["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        %% Optional metrics store on host
-        MetricsDB["(Optional Metrics Store (e.g. Prometheus / logs folder))"]
+        %% Monitoring stack on host
+        subgraph Monitoring["Monitoring Stack"]
+            PrometheusTS[(Prometheus TSDB)]
+            Grafana["Grafana Dashboards"]
+            cAdvisor["cAdvisor (container / host metrics)"]
+            TCPCollector["TCP Metrics Collector (/metrics)"]
+        end
     end
 
     %% Traffic paths (logical)
@@ -64,7 +69,7 @@ flowchart LR
     AgentA -->|LLM queries| LLM
     AgentB -->|LLM queries| LLM
 
-    %% eBPF data flow
+    %% eBPF data flow feeding TCP-level metrics
     AgentA --- BCC1
     AgentB --- BCC2
     BaselineSvc --- BCC2
@@ -73,10 +78,16 @@ flowchart LR
     Tool2 --- BCC4
     Tool3 --- BCC4
 
-    BCC1 -->|export logs / metrics| MetricsDB
-    BCC2 -->|export logs / metrics| MetricsDB
-    BCC3 -->|export logs / metrics| MetricsDB
-    BCC4 -->|export logs / metrics| MetricsDB
+    BCC1 -->|export logs / metrics| TCPCollector
+    BCC2 -->|export logs / metrics| TCPCollector
+    BCC3 -->|export logs / metrics| TCPCollector
+    BCC4 -->|export logs / metrics| TCPCollector
+
+    %% Prometheus scrapes TCP collector, LLM backend and cAdvisor; Grafana reads from Prometheus
+    TCPCollector -->|/metrics (tcp_*)| PrometheusTS
+    LLM -->|/metrics (llm_*)| PrometheusTS
+    cAdvisor -->|/metrics (container_*)| PrometheusTS
+    Grafana -->|PromQL| PrometheusTS
 ```
 
 
@@ -121,8 +132,12 @@ flowchart LR
             BCC3["BCC / bpftrace tools tcplife, tcpconnect, tcprtt, tcpretrans"]
         end
 
-        %% Optional metrics store on host
-        MetricsDB["Optional Metrics Store Prometheus or logs folder"]
+        %% Monitoring stack on host
+        subgraph Monitoring2["Monitoring Stack"]
+            PrometheusTS2[(Prometheus TSDB)]
+            Grafana2["Grafana Dashboards"]
+            TCPCollector2["TCP Metrics Collector (/metrics)"]
+        end
     end
 
     %% Traffic paths (logical)
@@ -138,7 +153,7 @@ flowchart LR
     AgentA -->|LLM queries| LLM1
     AgentB -->|LLM queries| LLM2
 
-    %% eBPF data flow
+    %% eBPF data flow feeding TCP-level metrics
     AgentA --- BCC1
     LLM1 --- BCC1
 
@@ -150,7 +165,11 @@ flowchart LR
     Tool2 --- BCC3
     Tool3 --- BCC3
 
-    BCC1 -->|export logs / metrics| MetricsDB
-    BCC2 -->|export logs / metrics| MetricsDB
-    BCC3 -->|export logs / metrics| MetricsDB 
+    BCC1 -->|export logs / metrics| TCPCollector2
+    BCC2 -->|export logs / metrics| TCPCollector2
+    BCC3 -->|export logs / metrics| TCPCollector2
+
+    %% Prometheus scrapes TCP collector; Grafana reads from Prometheus
+    TCPCollector2 -->|/metrics (tcp_*)| PrometheusTS2
+    Grafana2 -->|PromQL| PrometheusTS2
 ```

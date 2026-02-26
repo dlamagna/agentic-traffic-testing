@@ -52,12 +52,15 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-a
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node1_agentA
       - AGENT_A_PORT=8101
       - OTEL_SERVICE_NAME=agent-a
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
-      - AGENT_B_URLS=http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      # Agent B endpoints (override in multi-vm via AGENT_B_URLS)
+      - AGENT_B_URLS=${AGENT_B_URLS:-http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/subtask,http://agent-b-4:8105/subtask,http://agent-b-5:8106/subtask}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - AGENT_B_TIMEOUT_SECONDS=${AGENT_B_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
@@ -79,10 +82,13 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-b
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node2_agentB
       - AGENT_B_PORT=8102
       - OTEL_SERVICE_NAME=agent-b-1
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
@@ -103,11 +109,13 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-b-2
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node2_agentB_2
       - AGENT_B_PORT=8103
       - OTEL_SERVICE_NAME=agent-b-2
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
@@ -128,11 +136,13 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-b-3
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node2_agentB_3
       - AGENT_B_PORT=8104
       - OTEL_SERVICE_NAME=agent-b-3
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
@@ -153,11 +163,13 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-b-4
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node2_agentB_4
       - AGENT_B_PORT=8105
       - OTEL_SERVICE_NAME=agent-b-4
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
@@ -178,11 +190,13 @@ services:
       dockerfile: agents/Dockerfile
     container_name: agent-b-5
     environment:
-      - LLM_SERVER_URL=http://llm-backend:8000/chat
+      # LLM endpoint (override in multi-vm via LLM_SERVER_URL)
+      - LLM_SERVER_URL=${LLM_SERVER_URL:-http://llm-backend:8000/chat}
       - NODE_NAME=node2_agentB_5
       - AGENT_B_PORT=8106
       - OTEL_SERVICE_NAME=agent-b-5
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      # Jaeger endpoint for traces (override in multi-vm via OTEL_EXPORTER_OTLP_ENDPOINT)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}

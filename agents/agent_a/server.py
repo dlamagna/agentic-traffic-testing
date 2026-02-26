@@ -2,8 +2,10 @@ import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlparse, parse_qs
 
 from opentelemetry import context as otel_context
 from opentelemetry import propagate
@@ -106,7 +108,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
     def _set_cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
@@ -123,6 +125,82 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
         self.wfile.write(message.encode("utf-8"))
         self.wfile.flush()
+
+    def _handle_get_agentverse_run(self, task_id: str) -> None:
+        """
+        Look up a previously completed AgentVerse run by task_id and return
+        the persisted JSON record written by _persist_agentverse_run.
+
+        Response shape mirrors the on-disk record:
+        {
+          "task_id": "...",
+          "task": "...",
+          "max_iterations": ...,
+          "success_threshold": ...,
+          "created_at_utc": "...",
+          "result": { ... full AgentVerse result ... }
+        }
+        """
+        task_id = (task_id or "").strip()
+        if not task_id:
+            self._send_json(400, {"error": "Missing task_id"})
+            return
+
+        # Basic validation to avoid directory traversal; task IDs are UUIDs.
+        if not all(ch.isalnum() or ch in ("-", "_") for ch in task_id):
+            self._send_json(400, {"error": "Invalid task_id"})
+            return
+
+        base_dir = os.path.join("logs", "agentverse")
+        path = os.path.join(base_dir, f"{task_id}.json")
+        if not os.path.exists(path):
+            self._send_json(404, {"error": "Task not found", "task_id": task_id})
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                record: Dict[str, Any] = json.load(f)
+        except Exception as exc:
+            self._send_json(500, {"error": f"Failed to load task: {exc}"})
+            return
+
+        self._send_json(200, record)
+
+    def _persist_agentverse_run(
+        self,
+        task_id: str,
+        task: str,
+        max_iterations: int,
+        success_threshold: int,
+        result: Dict[str, Any],
+    ) -> None:
+        """
+        Best-effort persistence of AgentVerse runs to disk for offline analysis.
+
+        Each run is stored as a standalone JSON file under logs/agentverse, keyed
+        by task_id so that it can be correlated with network telemetry and other
+        logs.
+        """
+        try:
+            base_dir = os.path.join("logs", "agentverse")
+            os.makedirs(base_dir, exist_ok=True)
+
+            created_at_utc = datetime.now(timezone.utc).isoformat()
+            record: Dict[str, Any] = {
+                "task_id": task_id,
+                "task": task,
+                "max_iterations": max_iterations,
+                "success_threshold": success_threshold,
+                "created_at_utc": created_at_utc,
+                "result": result,
+            }
+
+            path = os.path.join(base_dir, f"{task_id}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            # Persistence is best-effort only; never break the main workflow.
+            print(f"[agent-a][agentverse] Failed to persist run {task_id}: {exc}", flush=True)
 
     def _handle_agentverse(self) -> None:
         """Handle AgentVerse 4-stage workflow requests."""
@@ -203,6 +281,15 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
                     )
+
+                    # Persist the completed run for offline analysis.
+                    self._persist_agentverse_run(
+                        task_id=task_id,
+                        task=task,
+                        max_iterations=max_iterations,
+                        success_threshold=success_threshold,
+                        result=result,
+                    )
                     
                     # Send final result as SSE event
                     self._send_sse_event("complete", result)
@@ -215,6 +302,14 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         task_id=task_id,
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
+                    )
+                    # Persist the completed run for offline analysis.
+                    self._persist_agentverse_run(
+                        task_id=task_id,
+                        task=task,
+                        max_iterations=max_iterations,
+                        success_threshold=success_threshold,
+                        result=result,
                     )
                     self._send_json(200, result)
                     
@@ -230,12 +325,40 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
 
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path not in ("/task", "/agentverse"):
-            self.send_response(404)
-        else:
+        if self.path == "/task" or self.path.startswith("/agentverse"):
             self.send_response(204)
+        else:
+            self.send_response(404)
         self._set_cors()
         self.end_headers()
+
+    def do_GET(self) -> None:  # type: ignore[override]
+        parsed = urlparse(self.path)
+
+        # Support both /agentverse/<task_id> and /agentverse?task_id=...
+        if parsed.path.startswith("/agentverse"):
+            task_id: Optional[str] = None
+            # Path-style: /agentverse/<task_id>
+            if parsed.path != "/agentverse":
+                # Strip leading "/agentverse/" and any trailing slashes
+                suffix = parsed.path[len("/agentverse/") :] if parsed.path.startswith("/agentverse/") else ""
+                task_id = suffix.strip("/") or None
+
+            # Query-style: /agentverse?task_id=...
+            if not task_id:
+                qs = parse_qs(parsed.query or "")
+                values = qs.get("task_id") or qs.get("taskId")
+                if values:
+                    task_id = values[0]
+
+            if not task_id:
+                self._send_json(400, {"error": "Missing task_id"})
+                return
+
+            self._handle_get_agentverse_run(task_id)
+            return
+
+        self._send_json(404, {"error": "Not found"})
 
     def do_POST(self) -> None:  # type: ignore[override]
         if self.path == "/agentverse":

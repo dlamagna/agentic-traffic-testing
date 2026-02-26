@@ -110,6 +110,7 @@ fi
 NODE1_HOST="${NODE1_HOST:-}"
 NODE2_HOST="${NODE2_HOST:-}"
 NODE3_HOST="${NODE3_HOST:-}"
+NODE4_HOST="${NODE4_HOST:-}"
 
 echo "============================================================"
 echo "Agentic Traffic Testbed - Deployment"
@@ -119,7 +120,7 @@ echo "Compose file: ${COMPOSE_FILE}"
 echo "============================================================"
 echo
 
-if [[ "${DEPLOYMENT_MODE}" == "multi-vm" ]] || { [[ -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; }; then
+if [[ "${DEPLOYMENT_MODE}" == "multi-vm" ]]; then
   #########################################################################
   # Multi-VM mode: deploy to three different VMs via SSH.
   #
@@ -127,8 +128,8 @@ if [[ "${DEPLOYMENT_MODE}" == "multi-vm" ]] || { [[ -n "${NODE1_HOST}" && -n "${
   #   - The repo is cloned on each VM at REMOTE_REPO_DIR (same layout).
   #   - Passwordless SSH (or suitable auth) to NODE{1,2,3}_HOST.
   #########################################################################
-  if [[ -z "${NODE1_HOST}" || -z "${NODE2_HOST}" || -z "${NODE3_HOST}" ]]; then
-    echo "[!] DEPLOYMENT_MODE=multi-vm requires NODE1_HOST, NODE2_HOST, NODE3_HOST to be set."
+  if [[ -z "${NODE1_HOST}" || -z "${NODE2_HOST}" || -z "${NODE3_HOST}" || -z "${NODE4_HOST}" ]]; then
+    echo "[!] DEPLOYMENT_MODE=multi-vm requires NODE1_HOST, NODE2_HOST, NODE3_HOST, NODE4_HOST to be set."
     echo "[!] Set these in infra/.env or as environment variables."
     exit 1
   fi
@@ -138,24 +139,37 @@ if [[ "${DEPLOYMENT_MODE}" == "multi-vm" ]] || { [[ -n "${NODE1_HOST}" && -n "${
 
   echo "[*] Multi-VM deployment detected."
   echo "    NODE1_HOST=${NODE1_HOST} (Agent A + Jaeger + Chat UI)"
-  echo "    NODE2_HOST=${NODE2_HOST} (Agent B instances + MCP tools)"
+  echo "    NODE2_HOST=${NODE2_HOST} (Agent B instances)"
   echo "    NODE3_HOST=${NODE3_HOST} (LLM backend - GPU node)"
+  echo "    NODE4_HOST=${NODE4_HOST} (MCP tool servers)"
   echo "    REMOTE_REPO_DIR=${REMOTE_REPO_DIR}"
+
+  # Compute cross-VM service URLs for containers
+  # These are passed as environment variables into docker compose on each node.
+  # Containers pick them up via docker-compose.yml defaults/overrides.
+  AGENT_LLM_URL_MULTI_VM="http://${NODE3_HOST}:8000/chat"
+  AGENT_B_URLS_MULTI_VM="http://${NODE2_HOST}:8102/subtask,http://${NODE2_HOST}:8103/subtask,http://${NODE2_HOST}:8104/subtask,http://${NODE2_HOST}:8105/subtask,http://${NODE2_HOST}:8106/subtask"
+  OTEL_ENDPOINT_NODE1="http://jaeger:4318/v1/traces"
+  OTEL_ENDPOINT_NODE2="http://${NODE1_HOST}:4318/v1/traces"
 
   echo "[*] Deploying LLM backend on NODE3_HOST..."
   ssh "${NODE3_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d llm-backend"
 
-  echo "[*] Deploying Agent B instances and MCP DB tool on NODE2_HOST..."
-  ssh "${NODE2_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5 mcp-tool-db"
+  echo "[*] Deploying Agent B instances on NODE2_HOST..."
+  ssh "${NODE2_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && LLM_SERVER_URL='${AGENT_LLM_URL_MULTI_VM}' OTEL_EXPORTER_OTLP_ENDPOINT='${OTEL_ENDPOINT_NODE2}' docker compose up --build -d agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5"
+
+  echo "[*] Deploying MCP tool DB on NODE4_HOST..."
+  ssh "${NODE4_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d mcp-tool-db"
 
   echo "[*] Deploying Agent A and Jaeger on NODE1_HOST..."
-  ssh "${NODE1_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d agent-a jaeger"
+  ssh "${NODE1_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && LLM_SERVER_URL='${AGENT_LLM_URL_MULTI_VM}' AGENT_B_URLS='${AGENT_B_URLS_MULTI_VM}' OTEL_EXPORTER_OTLP_ENDPOINT='${OTEL_ENDPOINT_NODE1}' docker compose up --build -d agent-a jaeger"
   deploy_ui_multi_host "${NODE1_HOST}" "${REMOTE_COMPOSE_DIR}"
 
   echo "[*] Multi-VM deployment complete."
   echo "    - NODE1_HOST (Agent A + Jaeger): ${NODE1_HOST}"
-  echo "    - NODE2_HOST (Agent B + tools) : ${NODE2_HOST}"
+  echo "    - NODE2_HOST (Agent B)         : ${NODE2_HOST}"
   echo "    - NODE3_HOST (LLM backend)     : ${NODE3_HOST}"
+  echo "    - NODE4_HOST (MCP tools)       : ${NODE4_HOST}"
   echo "    Jaeger UI: http://${NODE1_HOST}:16686"
   echo "    Chat UI:   http://${NODE1_HOST}:3000"
   echo
@@ -191,8 +205,45 @@ elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   # Optional: Deploy monitoring stack
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
-    echo "[*] Deploying monitoring stack (Prometheus + Grafana + cAdvisor)..."
-    docker compose -f docker-compose.monitoring.distributed.yml up -d
+    echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
+    docker compose -f docker-compose.monitoring.distributed.yml up -d prometheus grafana
+    echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
+    if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
+      echo "    cadvisor-host already running; skipping."
+    else
+      echo "    Starting cadvisor-host (no sudo required)..."
+      docker run -d \
+        --name cadvisor-host \
+        --net=host \
+        --privileged \
+        -v /:/rootfs:ro \
+        -v /var/run:/var/run:ro \
+        -v /sys:/sys:ro \
+        -v /var/lib/docker/:/var/lib/docker:ro \
+        -v /dev/disk/:/dev/disk:ro \
+        gcr.io/cadvisor/cadvisor:v0.47.2 \
+          --docker_only=true \
+          --store_container_labels=true || \
+        echo "    [!] Failed to start cadvisor-host automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector (tcpdump + tcp_metrics_collector.py) is running..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcpdump + tcp_metrics_collector via scripts/monitoring/run_tcpdump.sh..."
+      (cd "${ROOT_DIR}" && bash scripts/monitoring/run_tcpdump.sh >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector is running on host (for service-level network metrics)..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcp_metrics_collector.py (you may be prompted for sudo for tcpdump)..."
+      (cd "${ROOT_DIR}" && python3 scripts/monitoring/tcp_metrics_collector.py --sudo-tcpdump >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
   fi
 
   echo "[*] Current container status:"
@@ -238,8 +289,45 @@ else
   # Optional: Deploy monitoring stack
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
-    echo "[*] Deploying monitoring stack (Prometheus + Grafana + cAdvisor)..."
-    docker compose -f docker-compose.monitoring.yml up -d
+    echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
+    docker compose -f docker-compose.monitoring.yml up -d prometheus grafana
+    echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
+    if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
+      echo "    cadvisor-host already running; skipping."
+    else
+      echo "    Starting cadvisor-host (no sudo required)..."
+      docker run -d \
+        --name cadvisor-host \
+        --net=host \
+        --privileged \
+        -v /:/rootfs:ro \
+        -v /var/run:/var/run:ro \
+        -v /sys:/sys:ro \
+        -v /var/lib/docker/:/var/lib/docker:ro \
+        -v /dev/disk/:/dev/disk:ro \
+        gcr.io/cadvisor/cadvisor:v0.47.2 \
+          --docker_only=true \
+          --store_container_labels=true || \
+        echo "    [!] Failed to start cadvisor-host automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector (tcpdump + tcp_metrics_collector.py) is running..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcpdump + tcp_metrics_collector via scripts/monitoring/run_tcpdump.sh..."
+      (cd "${ROOT_DIR}" && bash scripts/monitoring/run_tcpdump.sh >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
+    echo "[*] Ensuring TCP metrics collector is running on host (for service-level network metrics)..."
+    if pgrep -f "tcp_metrics_collector.py" >/dev/null 2>&1; then
+      echo "    tcp_metrics_collector.py already running; skipping."
+    else
+      mkdir -p "${ROOT_DIR}/logs"
+      echo "    Starting tcp_metrics_collector.py (you may be prompted for sudo for tcpdump)..."
+      (cd "${ROOT_DIR}" && python3 scripts/monitoring/tcp_metrics_collector.py --sudo-tcpdump >> logs/tcp_metrics_collector.log 2>&1 &) || \
+        echo "    [!] Failed to start tcp_metrics_collector.py automatically. See docs/monitoring.md to start it manually."
+    fi
   fi
 
   echo "[*] Current container status:"
@@ -254,6 +342,11 @@ else
     echo "    Grafana:    http://localhost:3001 (admin/admin)"
     echo "    Prometheus: http://localhost:9090"
     echo "    cAdvisor:   http://localhost:8080"
+    echo
+    echo "[*] To start the TCP metrics collector for service-level network metrics, run (in a separate terminal):"
+    echo "    cd ${ROOT_DIR}"
+    echo "    sudo tcpdump -i br-df4088ff2909 -l -n -tt tcp and net 172.23.0.0/24 \\"
+    echo "      | python3 scripts/monitoring/tcp_metrics_collector.py --read-stdin"
   fi
 
   wait_for_llm "http://localhost:8000/health" || true

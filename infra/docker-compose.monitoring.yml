@@ -81,6 +81,9 @@ services:
     container_name: cadvisor
     hostname: cadvisor
     privileged: true
+    command:
+      - "--docker_only=true"
+      - "--store_container_labels=true"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
