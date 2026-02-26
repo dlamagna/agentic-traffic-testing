@@ -16,8 +16,9 @@ Metrics exposed:
     - tcp_packets_total: Total packets by direction and service
     - tcp_bytes_total: Total bytes by direction and service
     - tcp_flows_active: Currently active TCP flows
-    - tcp_flow_duration_seconds: Flow duration histogram
+    - tcp_flow_duration_seconds: Flow duration histogram (by service pair)
     - tcp_packet_size_bytes: Packet size histogram
+    - tcp_rtt_handshake_seconds: SYN/SYN-ACK RTT histogram (by service pair)
     - tcp_syn_total: SYN packets (new connections)
     - tcp_fin_total: FIN packets (closed connections)
     - tcp_rst_total: RST packets (reset connections)
@@ -63,6 +64,8 @@ class FlowState:
     """Track state of a TCP flow."""
     src_ip: str
     dst_ip: str
+    src_service: str
+    dst_service: str
     src_port: int
     dst_port: int
     start_time: float
@@ -90,7 +93,12 @@ class TCPMetrics:
     
     # Histograms (buckets)
     packet_size_buckets: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    flow_duration_buckets: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # key: (src_service, dst_service, bucket_le) for flow durations
+    flow_duration_buckets: Dict[Tuple[str, str, str], int] = field(default_factory=lambda: defaultdict(int))
+    # key: (src_service, dst_service, bucket_le) for SYN/SYN-ACK RTT
+    rtt_buckets: Dict[Tuple[str, str, str], int] = field(default_factory=lambda: defaultdict(int))
+    # Pending SYN timestamps keyed by 4-tuple (client_ip, client_port, server_ip, server_port)
+    syn_timestamps: Dict[Tuple[str, int, str, int], float] = field(default_factory=dict)
     
     # Metadata
     start_time: float = field(default_factory=time.time)
@@ -101,6 +109,12 @@ class TCPMetrics:
 
 # Global metrics instance
 metrics = TCPMetrics()
+
+
+def log(msg: str) -> None:
+    """Log a message with a simple timestamp prefix."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}")
 
 
 def bucket_for_size(size: int) -> str:
@@ -121,25 +135,33 @@ def bucket_for_duration(duration: float) -> str:
     return "inf"
 
 
+def bucket_for_rtt(rtt: float) -> str:
+    """Get histogram bucket for RTT (seconds) based on SYN/SYN-ACK handshake."""
+    buckets = [0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+    for b in buckets:
+        if rtt <= b:
+            return str(b)
+    return "inf"
+
+
 def parse_tcpdump_line(line: str) -> Optional[dict]:
     """
     Parse a tcpdump output line.
     
-    Example formats:
-    18:30:45.123456 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [S], seq 123, length 0
-    18:30:45.123456 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [.], ack 1, length 1024
+    Example formats with -tt timestamps:
+    1772100649.468003 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [S], seq 123, length 0
+    1772100649.468060 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [.], ack 1, length 1024
     """
-    # Pattern for tcpdump verbose output
-    pattern = r'(\d+:\d+:\d+\.\d+)\s+IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+):\s+Flags\s+\[([^\]]+)\].*?length\s+(\d+)'
+    # Pattern for tcpdump verbose output (we ignore the exact timestamp format)
+    pattern = r'\S+\s+IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+):\s+Flags\s+\[([^\]]+)\].*?length\s+(\d+)'
     
     match = re.search(pattern, line)
     if not match:
         return None
     
-    timestamp_str, src_ip, src_port, dst_ip, dst_port, flags, length = match.groups()
+    src_ip, src_port, dst_ip, dst_port, flags, length = match.groups()
     
     return {
-        "timestamp": timestamp_str,
         "src_ip": src_ip,
         "src_port": int(src_port),
         "dst_ip": dst_ip,
@@ -178,8 +200,24 @@ def process_packet(pkt: dict) -> None:
         
         # Check flags
         flags = pkt["flags"]
-        if "S" in flags and "." not in flags:  # SYN (not SYN-ACK)
+        # SYN (not SYN-ACK)
+        if "S" in flags and "." not in flags:
             metrics.syn_count[service_pair] += 1
+            # Record SYN timestamp keyed by 4-tuple (client -> server)
+            syn_key = (pkt["src_ip"], pkt["src_port"], pkt["dst_ip"], pkt["dst_port"])
+            metrics.syn_timestamps[syn_key] = now
+        # SYN-ACK (both S and . set in flags)
+        elif "S" in flags and "." in flags:
+            # Reverse 4-tuple to find matching SYN
+            syn_key = (pkt["dst_ip"], pkt["dst_port"], pkt["src_ip"], pkt["src_port"])
+            t0 = metrics.syn_timestamps.pop(syn_key, None)
+            if t0 is not None:
+                rtt = now - t0
+                bucket = bucket_for_rtt(rtt)
+                client_ip, _cport, server_ip, _sport = syn_key
+                client_service = ip_to_service(client_ip)
+                server_service = ip_to_service(server_ip)
+                metrics.rtt_buckets[(client_service, server_service, bucket)] += 1
         if "F" in flags:
             metrics.fin_count[service_pair] += 1
         if "R" in flags:
@@ -190,6 +228,8 @@ def process_packet(pkt: dict) -> None:
             metrics.flows[flow_key] = FlowState(
                 src_ip=pkt["src_ip"],
                 dst_ip=pkt["dst_ip"],
+                src_service=src_service,
+                dst_service=dst_service,
                 src_port=pkt["src_port"],
                 dst_port=pkt["dst_port"],
                 start_time=now,
@@ -208,7 +248,7 @@ def process_packet(pkt: dict) -> None:
             # Flow is closing, record duration
             duration = now - flow.start_time
             bucket = bucket_for_duration(duration)
-            metrics.flow_duration_buckets[bucket] += 1
+            metrics.flow_duration_buckets[(flow.src_service, flow.dst_service, bucket)] += 1
 
 
 def cleanup_old_flows(max_idle: float = 60.0) -> None:
@@ -224,7 +264,7 @@ def cleanup_old_flows(max_idle: float = 60.0) -> None:
                 # Record duration for closed flows
                 duration = flow.last_seen - flow.start_time
                 bucket = bucket_for_duration(duration)
-                metrics.flow_duration_buckets[bucket] += 1
+                metrics.flow_duration_buckets[(flow.src_service, flow.dst_service, bucket)] += 1
         
         for key in to_remove:
             del metrics.flows[key]
@@ -288,13 +328,36 @@ def generate_prometheus_metrics() -> str:
             cumulative += metrics.packet_size_buckets.get(bucket, 0)
             lines.append(f'tcp_packet_size_bytes_bucket{{le="{bucket}"}} {cumulative}')
         
-        # Flow duration histogram
-        lines.append(f"# HELP tcp_flow_duration_seconds_bucket TCP flow duration distribution")
+        # Flow duration histogram (per service pair)
+        lines.append(f"# HELP tcp_flow_duration_seconds_bucket TCP flow duration distribution by service pair")
         lines.append(f"# TYPE tcp_flow_duration_seconds_bucket counter")
-        cumulative = 0
-        for bucket in ["0.001", "0.01", "0.1", "0.5", "1.0", "5.0", "30.0", "60.0", "300.0", "inf"]:
-            cumulative += metrics.flow_duration_buckets.get(bucket, 0)
-            lines.append(f'tcp_flow_duration_seconds_bucket{{le="{bucket}"}} {cumulative}')
+        duration_buckets = ["0.001", "0.01", "0.1", "0.5", "1.0", "5.0", "30.0", "60.0", "300.0", "inf"]
+        # Collect all service pairs we have seen in the histogram
+        service_pairs: Set[Tuple[str, str]] = set(
+            (src, dst) for (src, dst, _bucket) in metrics.flow_duration_buckets.keys()
+        )
+        for src, dst in sorted(service_pairs):
+            cumulative = 0
+            for bucket in duration_buckets:
+                cumulative += metrics.flow_duration_buckets.get((src, dst, bucket), 0)
+                lines.append(
+                    f'tcp_flow_duration_seconds_bucket{{src_service="{src}",dst_service="{dst}",le="{bucket}"}} {cumulative}'
+                )
+
+        # SYN/SYN-ACK RTT histogram (per service pair)
+        lines.append(f"# HELP tcp_rtt_handshake_seconds_bucket TCP SYN/SYN-ACK RTT distribution by service pair")
+        lines.append(f"# TYPE tcp_rtt_handshake_seconds_bucket counter")
+        rtt_buckets = ["0.0005", "0.001", "0.005", "0.01", "0.05", "0.1", "0.5", "1.0", "5.0", "inf"]
+        rtt_service_pairs: Set[Tuple[str, str]] = set(
+            (src, dst) for (src, dst, _bucket) in metrics.rtt_buckets.keys()
+        )
+        for src, dst in sorted(rtt_service_pairs):
+            cumulative = 0
+            for bucket in rtt_buckets:
+                cumulative += metrics.rtt_buckets.get((src, dst, bucket), 0)
+                lines.append(
+                    f'tcp_rtt_handshake_seconds_bucket{{src_service="{src}",dst_service="{dst}",le="{bucket}"}} {cumulative}'
+                )
     
     return "\n".join(lines) + "\n"
 
@@ -323,25 +386,26 @@ class MetricsHandler(BaseHTTPRequestHandler):
         pass  # Suppress logging
 
 
-def run_tcpdump(interface: str, filter_expr: str) -> None:
+def run_tcpdump(interface: str, filter_expr: str, use_sudo: bool = False) -> None:
     """Run tcpdump and process output."""
-    cmd = [
+    base_cmd = [
         "tcpdump",
         "-i", interface,
         "-l",  # Line-buffered
         "-n",  # Don't resolve hostnames
         "-tt",  # Unix timestamp
-        filter_expr
+        filter_expr,
     ]
+    cmd = ["sudo"] + base_cmd if use_sudo else base_cmd
     
-    print(f"[*] Starting tcpdump: {' '.join(cmd)}")
+    log(f"[*] Starting tcpdump: {' '.join(cmd)}")
     
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        bufsize=1
+        bufsize=1,
     )
     
     try:
@@ -350,7 +414,7 @@ def run_tcpdump(interface: str, filter_expr: str) -> None:
             if pkt:
                 process_packet(pkt)
     except Exception as e:
-        print(f"[!] Error processing tcpdump output: {e}")
+        log(f"[!] Error processing tcpdump output: {e}")
     finally:
         proc.terminate()
 
@@ -361,7 +425,7 @@ def find_docker_bridge() -> Optional[str]:
         result = subprocess.run(
             ["docker", "network", "ls", "--filter", "name=inter_agent", "--format", "{{.ID}}"],
             capture_output=True,
-            text=True
+            text=True,
         )
         network_id = result.stdout.strip()
         if network_id:
@@ -402,6 +466,16 @@ def main():
         default=30,
         help="Interval for cleaning up old flows (seconds, default: 30)"
     )
+    parser.add_argument(
+        "--sudo-tcpdump",
+        action="store_true",
+        help="Run tcpdump via sudo (use when you have sudo rights for tcpdump but not for Python)",
+    )
+    parser.add_argument(
+        "--read-stdin",
+        action="store_true",
+        help="Read tcpdump output from stdin instead of starting tcpdump (for use with 'sudo tcpdump | python ...')",
+    )
     
     args = parser.parse_args()
     
@@ -410,20 +484,20 @@ def main():
     if not interface:
         interface = find_docker_bridge()
         if interface:
-            print(f"[*] Auto-detected Docker bridge: {interface}")
+            log(f"[*] Auto-detected Docker bridge: {interface}")
         else:
-            print("[!] Could not auto-detect Docker bridge. Falling back to 'any'.")
+            log("[!] Could not auto-detect Docker bridge. Falling back to 'any'.")
             interface = "any"
     
-    print(f"[*] Interface: {interface}")
-    print(f"[*] Filter: {args.filter}")
-    print(f"[*] Metrics port: {args.port}")
+    log(f"[*] Interface: {interface}")
+    log(f"[*] Filter: {args.filter}")
+    log(f"[*] Metrics port: {args.port}")
     
     # Start HTTP server for metrics
     server = HTTPServer(("0.0.0.0", args.port), MetricsHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    print(f"[*] Metrics endpoint: http://localhost:{args.port}/metrics")
+    log(f"[*] Metrics endpoint: http://localhost:{args.port}/metrics")
     
     # Start cleanup thread
     def cleanup_loop():
@@ -436,16 +510,23 @@ def main():
     
     # Handle shutdown
     def shutdown(signum, frame):
-        print("\n[*] Shutting down...")
+        log("[*] Shutting down...")
         server.shutdown()
         sys.exit(0)
     
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
     
-    # Run tcpdump (blocks)
-    print("[*] Starting packet capture...")
-    run_tcpdump(interface, args.filter)
+    # Run tcpdump (blocks) or read from stdin
+    log("[*] Starting packet capture...")
+    if args.read_stdin:
+        # Expect line-oriented tcpdump output on stdin
+        for line in sys.stdin:
+            pkt = parse_tcpdump_line(line)
+            if pkt:
+                process_packet(pkt)
+    else:
+        run_tcpdump(interface, args.filter, use_sudo=args.sudo_tcpdump)
 
 
 if __name__ == "__main__":
