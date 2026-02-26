@@ -136,7 +136,11 @@ flowchart LR
     * Connection events (`tcpconnect`, `tcpaccept`)
     * RTT distributions (`tcprtt`)
     * Retransmissions (`tcpretrans`)
-  * Optional metrics/log store on the host (Prometheus or even just log files).
+  * **Metrics and dashboards**: an optional Prometheus + Grafana + cAdvisor stack (enabled via `ENABLE_MONITORING=1` in `infra/.env`) scrapes:
+    * `cAdvisor` for container-level `container_*` CPU, memory, and network metrics.
+    * `llm-backend`'s `/metrics` endpoint for `llm_*` latency/throughput metrics.
+    * `scripts/monitoring/tcp_metrics_collector.py` for `tcp_*` metrics on the `inter_agent_network`, exposed via a Prometheus `/metrics` endpoint on port `9100`.
+  * See `docs/monitoring.md` for full details on enabling and using monitoring.
 
 ---
 
