@@ -12,9 +12,19 @@ It checks:
 - DNS resolution for container names
 
 Usage:
+    # Docker / Compose mode (original)
     python scripts/monitoring/health_check.py
     python scripts/monitoring/health_check.py --llm-url http://localhost:8000/chat
     python scripts/monitoring/health_check.py --docker-compose-dir infra
+
+    # k3s mode (agents on k3s, LLM on Saturn)
+    python scripts/monitoring/health_check.py \\
+        --mode k8s \\
+        --llm-url http://saturn.cba.upc.edu:8000/chat \\
+        --agent-a-url http://<k3s-node-ip>:30101/task \\
+        --agent-b-url http://<k3s-node-ip>:30102/subtask \\
+        --ui-url http://<k3s-node-ip>:3001 \\
+        --skip-monitoring
 """
 
 import argparse
@@ -318,6 +328,12 @@ def discover_agent_endpoints(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Health check for agentic traffic testbed")
     parser.add_argument(
+        "--mode",
+        choices=["docker", "k8s"],
+        default="docker",
+        help="Deployment mode: 'docker' (default) or 'k8s' for k3s/Cilium cluster",
+    )
+    parser.add_argument(
         "--llm-url",
         default=os.environ.get("LLM_SERVER_URL", "http://localhost:8000/chat"),
         help="LLM server URL (default: LLM_SERVER_URL env var or http://localhost:8000/chat)",
@@ -359,6 +375,23 @@ def main() -> None:
     )
     
     args = parser.parse_args()
+    
+    # In k8s mode, default to NodePort-style URLs and skip Docker checks
+    if args.mode == "k8s":
+        # K8S_NODE_IP can be set in the environment; defaults to localhost
+        node_ip = os.environ.get("K8S_NODE_IP", "localhost")
+
+        # If the user didn't override the defaults, rewrite them to NodePorts
+        if args.agent_a_url == "http://localhost:8101/task":
+            args.agent_a_url = f"http://{node_ip}:30101/task"
+        if args.agent_b_url == "http://localhost:8102/subtask":
+            args.agent_b_url = f"http://{node_ip}:30102/subtask"
+        if args.ui_url == "http://localhost:3000":
+            # In the k3s setup we typically expose Grafana on 3001
+            args.ui_url = f"http://{node_ip}:3001"
+
+        # Docker checks are not relevant in k8s mode
+        args.skip_docker = True
     
     all_checks_passed = True
     
