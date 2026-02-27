@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-b
+  namespace: agentic-testbed
+  labels:
+    app: agent-b
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: agent-b
+  template:
+    metadata:
+      labels:
+        app: agent-b
+    spec:
+      containers:
+        - name: agent-b
+          image: agent-b:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LLM_SERVER_URL
+              value: http://saturn.cba.upc.edu:8000/chat
+            - name: NODE_NAME
+              value: node2_agentB
+            - name: AGENT_B_PORT
+              value: "8102"
+            - name: OTEL_SERVICE_NAME
+              value: agent-b
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger:4318/v1/traces
+            - name: LLM_TIMEOUT_SECONDS
+              value: "120"
+            - name: LOG_LLM_REQUESTS
+              value: "0"
+            - name: LLM_LOG_MAX_CHARS
+              value: "500"
+          command:
+            - python
+            - -m
+            - agents.agent_b.server
+          ports:
+            - name: http
+              containerPort: 8102
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-b
+  namespace: agentic-testbed
+  labels:
+    app: agent-b
+spec:
+  type: NodePort
+  selector:
+    app: agent-b
+  ports:
+    - name: http
+      port: 8102
+      targetPort: 8102
+      nodePort: 30102
+

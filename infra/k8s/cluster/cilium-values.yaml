@@ -1,0 +1,27 @@
+## Cilium Helm values for k3s single-node cluster
+## These mirror the settings described in docs/k3s_cilium_migration.md.
+
+## Use kube-proxy replacement so Cilium handles service routing.
+kubeProxyReplacement: true
+
+## k3s API server location on the same host.
+k8sServiceHost: 127.0.0.1
+k8sServicePort: 6443
+
+## Enable Hubble observability.
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - httpV2
+

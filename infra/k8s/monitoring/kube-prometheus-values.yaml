@@ -1,0 +1,35 @@
+## kube-prometheus-stack values for Agentic Traffic Testbed
+## This is intended for a single-node k3s cluster.
+
+grafana:
+  adminUser: admin
+  adminPassword: admin
+  service:
+    type: NodePort
+    nodePort: 3001
+
+  ## Optional: pre-provision Jaeger as a datasource (Jaeger runs in agentic-testbed).
+  additionalDataSources:
+    - name: Jaeger
+      type: jaeger
+      url: http://jaeger.agentic-testbed.svc.cluster.local:16686
+      access: proxy
+
+prometheus:
+  prometheusSpec:
+    ## Keep resource usage modest for a single-node observability host.
+    retention: 24h
+    scrapeInterval: 10s
+    additionalScrapeConfigs: |
+      - job_name: "llm-backend-saturn"
+        metrics_path: "/metrics"
+        static_configs:
+          - targets: ["saturn.cba.upc.edu:8000"]
+            labels:
+              app: "llm-backend"
+              location: "saturn"
+
+## Reduce default scraping for some noisy components if desired.
+alertmanager:
+  enabled: false
+
