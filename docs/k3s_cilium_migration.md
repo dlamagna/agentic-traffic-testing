@@ -82,8 +82,8 @@ the repo roadmap.
   ----------------- --------------------------- ---------------------------
   **Layer**         **Current**                 **Target**
 
-  Orchestration     Docker Compose (single      k3s on 147.83.130.68
-                    host)                       
+  Orchestration     Docker Compose (single      k3s on K3S_NODE_HOST
+                    host)                       (value in infra/.env)
 
   LLM backend       Same host as agents         saturn.cba.upc.edu
                                                 (unchanged, remote)
@@ -119,7 +119,7 @@ splits responsibilities across two servers:
   ------------------------ ----------------------------------------------
   **Server**               **Role**
 
-  **147.83.130.68**        k3s cluster --- agents, MCP tools, baseline
+  **K3S_NODE_HOST**        k3s cluster --- agents, MCP tools, baseline
                            service, Prometheus, Grafana, Hubble, Jaeger
 
   **saturn.cba.upc.edu**   LLM backend --- vLLM serving the local model,
@@ -167,7 +167,7 @@ the LLM backend can be moved into the k3s cluster if the GPU is
 accessible from that node. For now the remote setup is the right
 pragmatic choice.
 
-**2.3 What k3s Gives Us (147.83.130.68)**
+**2.3 What the k3s Observability Node Gives Us**
 
 k3s is a fully-conformant, CNCF-certified Kubernetes distribution
 packaged as a single binary. It is designed for resource-constrained
@@ -271,14 +271,16 @@ until Phase 3.
 **Step 1.0 --- Verify network reachability to Saturn**
 
 Before installing anything, confirm that the k3s server can reach the
-LLM backend on Saturn. Run this from 147.83.130.68:
+LLM backend on Saturn. Run this from the k3s node (`K3S_NODE_HOST` in
+`infra/.env`):
 
 > curl -v http://saturn.cba.upc.edu:8000/health
 
 If this fails, the LLM backend port may be firewalled. Options to
 resolve:
 
--   Ask the Saturn admin to open port 8000 to 147.83.130.68.
+-   Ask the Saturn admin to open port 8000 to the k3s node
+    (`K3S_NODE_HOST`).
 
 -   Use an SSH tunnel as a temporary workaround: ssh -L
     8000:localhost:8000 user@saturn.cba.upc.edu

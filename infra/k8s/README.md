@@ -11,6 +11,48 @@ The goal is to replace the Docker Compose–based deployment with:
 - Hubble (network observability)
 - kube-prometheus-stack (Prometheus + Grafana + kube-state-metrics)
 
+## Architecture: k3s observability node + external LLM backend
+
+At a high level, these manifests assume:
+
+- A **single-node k3s cluster** running the agents, MCP tools, Prometheus, Grafana, Hubble, and Jaeger.
+- An **external LLM backend** (vLLM) running on a separate host (or the same host) referenced by
+  `SATURN_LLM_HOST` / `SATURN_LLM_PORT` in `infra/.env`.
+
+```mermaid
+flowchart LR
+    subgraph K3S["k3s node (K3S_NODE_HOST)"]
+        subgraph NS["agentic-testbed namespace"]
+            AgentA["Agent A (Deployment + Service)"]
+            AgentB["Agent B (Deployment + Service)"]
+            MCPDB["MCP Tool DB (Deployment + Service)"]
+            Jaeger["Jaeger all-in-one (Deployment + Service)"]
+        end
+
+        subgraph Monitoring["monitoring namespace"]
+            Prom["Prometheus (kube-prometheus-stack)"]
+            Graf["Grafana"]
+            Hubble["Hubble relay / metrics"]
+        end
+    end
+
+    LLM[("LLM backend (vLLM)\nSATURN_LLM_HOST:SATURN_LLM_PORT")]
+
+    AgentA -->|"HTTP (LLM_SERVER_URL)"| LLM
+    AgentB -->|"HTTP (LLM_SERVER_URL)"| LLM
+
+    Hubble -->|"flow metrics"| Prom
+    Prom -->|"scrape /metrics"| LLM
+    Prom -->|"metrics"| Graf
+    Jaeger -->|"traces"| Graf
+```
+
+Key points:
+
+- Agent pods talk to the LLM via `LLM_SERVER_URL=http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/chat`.
+- Prometheus (inside the cluster) scrapes LLM performance metrics from `http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/metrics`.
+- Cilium + Hubble provide L3/L4 flow visibility for **in-cluster** traffic; agent → LLM calls appear as egress flows to the external LLM host.
+
 ## 1. Prerequisites
 
 - A Linux host with:
@@ -74,14 +116,14 @@ kubectl apply -f infra/k8s/workloads/mcp-tool-db.yaml
 
 ## 4. Accessing Services
 
-The following services are exposed as NodePorts on the k3s node IP:
+The following services are exposed as NodePorts on the k3s node (`K3S_NODE_HOST` in `infra/.env`):
 
-- Agent A: `http://<node-ip>:30101` (`/task`, `/agentverse`)
-- Agent B: `http://<node-ip>:30102` (`/subtask`)
-- MCP db tool: `http://<node-ip>:30201`
-- Jaeger UI: `http://<node-ip>:31686`
+- Agent A: `http://$K3S_NODE_HOST:30101` (`/task`, `/agentverse`)
+- Agent B: `http://$K3S_NODE_HOST:30102` (`/subtask`)
+- MCP db tool: `http://$K3S_NODE_HOST:30201`
+- Jaeger UI: `http://$K3S_NODE_HOST:31686`
 
-The LLM backend runs externally on `saturn.cba.upc.edu:8000` and is called via `LLM_SERVER_URL` from the agents.
+The LLM backend runs externally on `$SATURN_LLM_HOST:$SATURN_LLM_PORT` and is called via `LLM_SERVER_URL` from the agents.
 
 You can reuse the existing smoke tests from `README.md` by pointing them at
 these NodePort URLs instead of the Docker ports.
@@ -91,7 +133,7 @@ these NodePort URLs instead of the Docker ports.
 - Grafana (from kube-prometheus-stack) is exposed as a NodePort on `3001`:
 
   ```bash
-  http://<node-ip>:3001
+  http://$K3S_NODE_HOST:3001
   ```
 
 - Jaeger is available via the `jaeger` service:

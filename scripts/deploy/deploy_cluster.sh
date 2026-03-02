@@ -3,9 +3,9 @@
 # deploy_cluster.sh
 # ------------------
 # End-to-end deployment for the k3s + Cilium + Hubble observability node.
-# This script is intended to run on the k3s server (147.83.130.68 or similar)
-# and assumes the LLM backend is running remotely on Saturn
-# (saturn.cba.upc.edu:8000).
+# This script is intended to run on the k3s server (configured via
+# K3S_NODE_HOST in infra/.env) and assumes the LLM backend is running
+# remotely on Saturn (SATURN_LLM_HOST / SATURN_LLM_PORT).
 #
 # It performs:
 #   1) Optional connectivity check to the external LLM backend
@@ -22,7 +22,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
-LLM_URL="${LLM_URL:-http://saturn.cba.upc.edu:8000}"
+COMPOSE_ENV="${ROOT_DIR}/infra/.env"
+if [[ -f "${COMPOSE_ENV}" ]]; then
+  # Export variables from infra/.env (skip comments and empty lines)
+  set -a
+  # shellcheck disable=SC1090
+  source <(grep -v '^\s*#' "${COMPOSE_ENV}" | grep -v '^\s*$')
+  set +a
+fi
+
+LLM_URL="${LLM_URL:-http://${SATURN_LLM_HOST:-saturn.cba.upc.edu}:${SATURN_LLM_PORT:-8000}}"
 
 echo "============================================================"
 echo "Agentic Traffic Testbed - k3s Observability Cluster Deploy"
@@ -66,20 +75,20 @@ echo "============================================================"
 echo "Deployment complete."
 echo "============================================================"
 echo "NodePorts on the k3s server:"
-echo "  Agent A : http://<node-ip>:30101"
-echo "  Agent B : http://<node-ip>:30102"
-echo "  MCP DB  : http://<node-ip>:30201"
-echo "  Jaeger  : http://<node-ip>:31686"
-echo "  Grafana : http://<node-ip>:3001 (admin/admin)"
+echo "  Agent A : http://${K3S_NODE_HOST:-<k3s-node-host>}:30101"
+echo "  Agent B : http://${K3S_NODE_HOST:-<k3s-node-host>}:30102"
+echo "  MCP DB  : http://${K3S_NODE_HOST:-<k3s-node-host>}:30201"
+echo "  Jaeger  : http://${K3S_NODE_HOST:-<k3s-node-host>}:31686"
+echo "  Grafana : http://${K3S_NODE_HOST:-<k3s-node-host>}:3001 (admin/admin)"
 echo
 echo "You can now run the health check from any host that can reach the k3s node:"
 echo
 echo "  python3 scripts/monitoring/health_check.py \\"
 echo "    --mode k8s \\"
 echo "    --llm-url ${LLM_URL}/chat \\"
-echo "    --agent-a-url http://<node-ip>:30101/task \\"
-echo "    --agent-b-url http://<node-ip>:30102/subtask \\"
-echo "    --ui-url http://<node-ip>:3001 \\"
+echo "    --agent-a-url http://${K3S_NODE_HOST:-<k3s-node-host>}:30101/task \\"
+echo "    --agent-b-url http://${K3S_NODE_HOST:-<k3s-node-host>}:30102/subtask \\"
+echo "    --ui-url http://${K3S_NODE_HOST:-<k3s-node-host>}:3001 \\"
 echo "    --skip-monitoring"
 echo "============================================================"
 

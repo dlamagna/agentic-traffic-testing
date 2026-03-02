@@ -64,5 +64,5 @@ vagrant up
 echo
 echo "[✓] VM deployment complete."
 echo "    You can now set NODE1_HOST / NODE2_HOST / NODE3_HOST / NODE4_HOST in infra/.env"
-echo "    to match the VM IPs (e.g. 192.168.56.10, 192.168.56.11, ...)."
+echo "    to match the VM IPs you chose for NODE{1,2,3,4}_HOST."
 

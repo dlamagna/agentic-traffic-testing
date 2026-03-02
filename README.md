@@ -11,6 +11,7 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 ## Table of contents
 
 - [1. High-level architecture (MVP)](#1-high-level-architecture-mvp)
+- [Split-host deployment (k3s + Saturn)](#split-host-deployment-k3s--saturn)
 - [2. What is eBPF and why we use it here](#2-what-is-ebpf-and-why-we-use-it-here)
   - [Installing eBPF tools (Debian/Ubuntu)](#installing-ebpf-tools-debianubuntu)
   - [Example commands to collect L3/L4 metrics](#example-commands-to-collect-l3l4-metrics)
@@ -141,6 +142,44 @@ flowchart LR
     * `llm-backend`'s `/metrics` endpoint for `llm_*` latency/throughput metrics.
     * `scripts/monitoring/tcp_metrics_collector.py` for `tcp_*` metrics on the `inter_agent_network`, exposed via a Prometheus `/metrics` endpoint on port `9100`.
   * See `docs/monitoring.md` for full details on enabling and using monitoring.
+
+### Split-host deployment (k3s + Saturn)
+
+In addition to the single-host MVP above, the repo supports a **split-host deployment**:
+
+- **Saturn (`SATURN_LLM_HOST` in `infra/.env`)** runs the **LLM backend** (vLLM) with GPU.
+- A separate **k3s server** (configured via `K3S_NODE_HOST` in `infra/.env`) runs:
+  - Agent A and Agent B as Kubernetes Deployments.
+  - MCP tools (e.g. `mcp-tool-db`).
+  - Prometheus + Grafana via `kube-prometheus-stack`.
+  - Cilium + Hubble for L3/L4 flow observability.
+  - Jaeger for traces.
+
+The agents call the remote LLM over the university network:
+
+- `LLM_SERVER_URL=http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/chat`
+
+Prometheus in the k3s cluster scrapes LLM metrics directly from Saturn:
+
+- `http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/metrics`
+
+**What Hubble sees in this architecture:**
+
+- Full service‑pair visibility for **intra‑cluster** traffic (Agent A ↔ Agent B, agents ↔ MCP tools, etc.).
+- Agent‑to‑LLM calls show up as **egress flows** to an external IP (Saturn), not as a named in‑cluster service.
+- LLM performance metrics (latency, TTFT, tokens/s) are still fully available via the Prometheus scrape of Saturn’s `/metrics`.
+
+**How to deploy this split-host setup:**
+
+- On **Saturn**: use Docker Compose via `scripts/deploy/deploy_llm.sh` to start only the `llm-backend` service.
+- On the **k3s node**:
+  - Run `scripts/monitoring/test_llm_connectivity.sh` to verify reachability to Saturn.
+  - Run `scripts/deploy/deploy_cluster.sh` to install k3s + Cilium + Hubble, build/load images, and deploy agents/tools/Jaeger.
+
+For detailed, step‑by‑step instructions see:
+
+- `docs/deploy_k3s_cluster_and_saturn.md`
+- `docs/k3s_cilium_migration.md`
 
 ---
 

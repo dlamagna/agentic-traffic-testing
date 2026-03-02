@@ -2,19 +2,19 @@
 
 This document describes how to deploy the testbed in a **two‑server setup**:
 
-- **Saturn (`saturn.cba.upc.edu`)**: runs the **LLM backend** with GPU.
-- **k3s server (e.g. `147.83.130.68`)**: runs **agents, tools, Prometheus, Grafana, Hubble, and Jaeger** on a single‑node k3s cluster with Cilium.
+- **Saturn (`SATURN_LLM_HOST` in `infra/.env`)**: runs the **LLM backend** with GPU.
+- **k3s server (`K3S_NODE_HOST` in `infra/.env`)**: runs **agents, tools, Prometheus, Grafana, Hubble, and Jaeger** on a single‑node k3s cluster with Cilium.
 
 The agents call the LLM over the university network via:
 
 ```text
-LLM_SERVER_URL=http://saturn.cba.upc.edu:8000/chat
+LLM_SERVER_URL=http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/chat
 ```
 
 Prometheus in the k3s cluster scrapes LLM metrics from Saturn at:
 
 ```text
-http://saturn.cba.upc.edu:8000/metrics
+http://${SATURN_LLM_HOST}:${SATURN_LLM_PORT}/metrics
 ```
 
 This gives you real inter‑host L3/L4 traffic for LLM calls, while keeping the GPU‑heavy backend on Saturn.
@@ -74,7 +74,7 @@ curl http://localhost:8000/metrics | head
 From another machine (e.g. the k3s node):
 
 ```bash
-curl http://saturn.cba.upc.edu:8000/health
+curl http://$SATURN_LLM_HOST:$SATURN_LLM_PORT/health
 ```
 
 You should see `200 OK`. If this fails, fix routing / firewall rules between the k3s node and Saturn **before** continuing.
@@ -108,7 +108,7 @@ From the repo root on the k3s node:
 ```bash
 chmod +x scripts/monitoring/test_llm_connectivity.sh
 ./scripts/monitoring/test_llm_connectivity.sh \
-  --llm-url http://saturn.cba.upc.edu:8000
+  --llm-url http://$SATURN_LLM_HOST:$SATURN_LLM_PORT
 ```
 
 This checks:
@@ -213,10 +213,10 @@ On a machine that can reach the k3s NodePorts and Saturn:
 ```bash
 python scripts/monitoring/health_check.py \
   --mode k8s \
-  --llm-url http://saturn.cba.upc.edu:8000/chat \
-  --agent-a-url http://<k3s-node-ip>:30101/task \
-  --agent-b-url http://<k3s-node-ip>:30102/subtask \
-  --ui-url http://<k3s-node-ip>:3001 \
+  --llm-url http://$SATURN_LLM_HOST:$SATURN_LLM_PORT/chat \
+  --agent-a-url http://$K3S_NODE_HOST:30101/task \
+  --agent-b-url http://$K3S_NODE_HOST:30102/subtask \
+  --ui-url http://$K3S_NODE_HOST:3001 \
   --skip-monitoring
 ```
 
@@ -229,7 +229,7 @@ Key points:
 - `--agent-a-url` / `--agent-b-url` should point at the k3s NodePort services.
 - `--ui-url` is set to Grafana on port 3001 (if you don’t run the chat UI in this setup).
 
-You can also set `K8S_NODE_IP=<k3s-node-ip>` in your environment and rely on defaults where appropriate.
+You can also set `K8S_NODE_IP=$K3S_NODE_HOST` in your environment and rely on defaults where appropriate.
 
 ---
 
@@ -250,17 +250,17 @@ From any host that can reach the k3s node:
 
 ```bash
 # Agent A - simple task
-curl -X POST http://<k3s-node-ip>:30101/task \
+curl -X POST http://$K3S_NODE_HOST:30101/task \
   -H "Content-Type: application/json" \
   -d '{"task":"Summarise what this testbed is for."}'
 
 # Agent A - multi-hop scenario
-curl -X POST http://<k3s-node-ip>:30101/task \
+curl -X POST http://$K3S_NODE_HOST:30101/task \
   -H "Content-Type: application/json" \
   -d '{"task":"Produce a 3-step plan for RTT metrics.","scenario":"agentic_multi_hop"}'
 
 # Agent B directly
-curl -X POST http://<k3s-node-ip>:30102/subtask \
+curl -X POST http://$K3S_NODE_HOST:30102/subtask \
   -H "Content-Type: application/json" \
   -d '{"subtask":"List two example MCP tool calls."}'
 ```
