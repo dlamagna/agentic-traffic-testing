@@ -53,13 +53,16 @@ else
 fi
 
 echo "[*] Checking /metrics (optional)..."
-if METRICS_OUTPUT="$(curl -fsS "${BASE}/metrics" 2>/dev/null | head -n 50)"; then
+
+if METRICS="$(curl -fsS "${BASE}/metrics" 2>/dev/null)"; then
   echo "  ✓ /metrics reachable"
-  if echo "${METRICS_OUTPUT}" | grep -q "llm_request_latency_seconds"; then
+
+  if [[ "${METRICS}" == *llm_request_latency_seconds* ]]; then
     echo "  ✓ Found llm_request_latency_seconds in metrics output"
   else
-    echo "  ⚠ /metrics reachable, but llm_request_latency_seconds not found in first 50 lines"
+    echo "  ⚠ llm_request_latency_seconds not found in metrics output"
   fi
+
 else
   echo "  ⚠ /metrics not reachable or returned an error (this is non-fatal)"
 fi
