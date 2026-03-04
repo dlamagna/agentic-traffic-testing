@@ -1,27 +1,25 @@
-# k3s + Cilium + Hubble Deployment (Experimental)
+# Kind-based Kubernetes Deployment (Experimental)
 
 This directory contains **experimental Kubernetes manifests** for running the
-Agentic Traffic Testbed on a **single-node k3s cluster** with **Cilium + Hubble**
-and **kube-prometheus-stack**.
+Agentic Traffic Testbed on a **local Kind cluster** with
+**kube-prometheus-stack** for observability.
 
 The goal is to replace the Docker Compose–based deployment with:
 
-- k3s (orchestration)
-- Cilium (CNI)
-- Hubble (network observability)
+- Kind (local Kubernetes cluster, using Docker)
 - kube-prometheus-stack (Prometheus + Grafana + kube-state-metrics)
 
-## Architecture: k3s observability node + external LLM backend
+## Architecture: Kind observability cluster + external LLM backend
 
 At a high level, these manifests assume:
 
-- A **single-node k3s cluster** running the agents, MCP tools, Prometheus, Grafana, Hubble, and Jaeger.
+- A **local Kind cluster** running the agents, MCP tools, Prometheus, Grafana, and Jaeger.
 - An **external LLM backend** (vLLM) running on a separate host (or the same host) referenced by
   `SATURN_LLM_HOST` / `SATURN_LLM_PORT` in `infra/.env`.
 
 ```mermaid
 flowchart LR
-    subgraph K3S["k3s node (K3S_NODE_HOST)"]
+    subgraph KCL["Kind node (Docker host)"]
         subgraph NS["agentic-testbed namespace"]
             AgentA["Agent A (Deployment + Service)"]
             AgentB["Agent B (Deployment + Service)"]
@@ -56,12 +54,13 @@ Key points:
 ## 1. Prerequisites
 
 - A Linux host with:
-  - k3s installed (server role)
-  - Cilium installed via Helm, using `infra/k8s/cluster/cilium-values.yaml`
-- `kubectl` and `helm` configured to talk to the k3s cluster.
+  - Docker installed
+  - Kind installed (`kind` CLI)
+- `kubectl` and `helm` configured to talk to the Kind cluster.
 
-> These manifests are **not** wired into the existing `scripts/deploy` flow yet;
-> apply them manually while iterating.
+The `scripts/deploy/deploy_cluster.sh` script automates the Kind cluster
+creation and observability stack installation, but you can also apply these
+manifests manually while iterating.
 
 ## 2. Namespaces and Cluster Components
 
@@ -71,18 +70,7 @@ Key points:
 kubectl apply -f infra/k8s/base/namespace.yaml
 ```
 
-2. Install Cilium (from repo root, adjust version as needed):
-
-```bash
-helm repo add cilium https://helm.cilium.io/
-helm repo update
-
-helm install cilium cilium/cilium \
-  --namespace kube-system \
-  -f infra/k8s/cluster/cilium-values.yaml
-```
-
-3. Install kube-prometheus-stack:
+2. Install kube-prometheus-stack:
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -97,8 +85,8 @@ kubectl apply -f infra/k8s/monitoring/hubble-servicemonitor.yaml
 
 ## 3. Workloads
 
-Build and load container images for the in-cluster components so they are visible to k3s (for example, by
-pushing to a registry or loading into containerd). The manifests assume local
+Build and load container images for the in-cluster components so they are visible to the Kind
+cluster (for example, by using `kind load docker-image` or pushing to a registry). The manifests assume local
 image names:
 
 - `agent-a:local`
@@ -116,27 +104,38 @@ kubectl apply -f infra/k8s/workloads/mcp-tool-db.yaml
 
 ## 4. Accessing Services
 
-The following services are exposed as NodePorts on the k3s node (`K3S_NODE_HOST` in `infra/.env`):
+The Kubernetes Services are exposed as NodePorts inside the Kind cluster. Since
+we are not binding those ports directly on the Docker host, the simplest way to
+access them from your machine is via `kubectl port-forward`. For example:
 
-- Agent A: `http://$K3S_NODE_HOST:30101` (`/task`, `/agentverse`)
-- Agent B: `http://$K3S_NODE_HOST:30102` (`/subtask`)
-- MCP db tool: `http://$K3S_NODE_HOST:30201`
-- Jaeger UI: `http://$K3S_NODE_HOST:31686`
+```bash
+# Grafana (kube-prometheus-stack)
+kubectl -n monitoring port-forward svc/kube-prometheus-grafana 3000:80
+# then open http://localhost:3000
 
-The LLM backend runs externally on `$SATURN_LLM_HOST:$SATURN_LLM_PORT` and is called via `LLM_SERVER_URL` from the agents.
+# Jaeger UI
+kubectl -n agentic-testbed port-forward svc/jaeger 16686:16686
+# then open http://localhost:16686
 
-You can reuse the existing smoke tests from `README.md` by pointing them at
-these NodePort URLs instead of the Docker ports.
+# Agent A
+kubectl -n agentic-testbed port-forward svc/agent-a 30101:30101
+
+# Agent B
+kubectl -n agentic-testbed port-forward svc/agent-b 30102:30102
+
+# MCP DB
+kubectl -n agentic-testbed port-forward svc/mcp-tool-db 30201:30201
+```
+
+The LLM backend runs externally on `$SATURN_LLM_HOST:$SATURN_LLM_PORT` and is
+called via `LLM_SERVER_URL` from the agents.
 
 ## 5. Observability
 
-- Grafana (from kube-prometheus-stack) is exposed as a NodePort on `3001`:
+- Grafana (from kube-prometheus-stack) is available via the `kube-prometheus-grafana`
+  Service in the `monitoring` namespace. Use `kubectl port-forward` as shown above.
 
-  ```bash
-  http://$K3S_NODE_HOST:3001
-  ```
-
-- Jaeger is available via the `jaeger` service:
+- Jaeger is available via the `jaeger` Service in the `agentic-testbed` namespace:
 
   - UI: `http://jaeger:16686` (inside the cluster)
   - OTLP HTTP: `http://jaeger:4318/v1/traces`

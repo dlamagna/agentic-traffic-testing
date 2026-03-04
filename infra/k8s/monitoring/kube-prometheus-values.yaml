@@ -6,7 +6,7 @@ grafana:
   adminPassword: admin
   service:
     type: NodePort
-    nodePort: 3001
+    nodePort: 30001
 
   ## Optional: pre-provision Jaeger as a datasource (Jaeger runs in agentic-testbed).
   additionalDataSources:

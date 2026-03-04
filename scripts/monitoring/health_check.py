@@ -23,7 +23,7 @@ Usage:
         --llm-url http://saturn.cba.upc.edu:8000/chat \\
         --agent-a-url http://<k3s-node-ip>:30101/task \\
         --agent-b-url http://<k3s-node-ip>:30102/subtask \\
-        --ui-url http://<k3s-node-ip>:3001 \\
+        --ui-url http://<k3s-node-ip>:30001 \\
         --skip-monitoring
 """
 
@@ -387,8 +387,8 @@ def main() -> None:
         if args.agent_b_url == "http://localhost:8102/subtask":
             args.agent_b_url = f"http://{node_ip}:30102/subtask"
         if args.ui_url == "http://localhost:3000":
-            # In the k3s setup we typically expose Grafana on 3001
-            args.ui_url = f"http://{node_ip}:3001"
+            # In the k3s setup we expose Grafana as a NodePort on 30001
+            args.ui_url = f"http://{node_ip}:30001"
 
         # Docker checks are not relevant in k8s mode
         args.skip_docker = True

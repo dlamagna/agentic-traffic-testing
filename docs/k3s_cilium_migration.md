@@ -393,9 +393,9 @@ with proper labels --- replacing cAdvisor for that purpose.
 >
 > \--set grafana.service.type=NodePort \\
 >
-> \--set grafana.service.nodePort=3001
+> \--set grafana.service.nodePort=30001
 
-Grafana will be accessible on port 3001 (matching the current setup).
+Grafana will be accessible on NodePort 30001.
 
 **Step 2.2 --- Add a Hubble scrape target to Prometheus**
 

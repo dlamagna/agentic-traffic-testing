@@ -1,0 +1,22 @@
+## Cilium Helm values for a local Kind single-node cluster.
+## This configuration keeps kube-proxy enabled (kubeProxyReplacement: false)
+## to minimize disruption, but enables Hubble relay, UI, and metrics.
+
+kubeProxyReplacement: false
+
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - httpV2
+

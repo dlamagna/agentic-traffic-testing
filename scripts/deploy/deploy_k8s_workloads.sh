@@ -7,18 +7,21 @@
 # LLM backend runs externally on Saturn (saturn.cba.upc.edu:8000).
 #
 # Prerequisites:
-#   1. kubectl configured for your k3s cluster (KUBECONFIG or default).
-#   2. Images for agent-a, agent-b, and mcp-tool-db loaded into k3s (or in a registry).
+#   1. kubectl configured for your Kubernetes cluster (e.g., Kind) (KUBECONFIG or default).
+#   2. Images for agent-a, agent-b, and mcp-tool-db available to the cluster
+#      (either loaded into Kind via kind load docker-image, or pulled from a registry).
 #
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 K8S_DIR="${ROOT_DIR}/infra/k8s"
 
-# Prefer kubectl; fall back to k3s kubectl
+# Require kubectl configured for the target cluster (Kind or other Kubernetes).
 KUBECTL="kubectl"
-if ! command -v kubectl >/dev/null 2>&1 && command -v k3s >/dev/null 2>&1; then
-  KUBECTL="sudo k3s kubectl"
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "[!] 'kubectl' is not available on PATH."
+  echo "    Install kubectl and configure KUBECONFIG for your cluster, then re-run this script."
+  exit 1
 fi
 
 echo "[*] Ensuring namespace agentic-testbed exists..."

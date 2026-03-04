@@ -156,7 +156,7 @@ When it finishes, you will have:
 - **Agent B** (NodePort): `http://<k3s-node-ip>:30102`
 - **MCP DB tool** (NodePort): `http://<k3s-node-ip>:30201`
 - **Jaeger UI** (NodePort): `http://<k3s-node-ip>:31686`
-- **Grafana** (NodePort): `http://<k3s-node-ip>:3001` (admin/admin)
+- **Grafana** (NodePort): `http://<k3s-node-ip>:30001` (admin/admin)
 
 Prometheus is configured (via `infra/k8s/monitoring/kube-prometheus-values.yaml`) to:
 
@@ -216,7 +216,7 @@ python scripts/monitoring/health_check.py \
   --llm-url http://$SATURN_LLM_HOST:$SATURN_LLM_PORT/chat \
   --agent-a-url http://$K3S_NODE_HOST:30101/task \
   --agent-b-url http://$K3S_NODE_HOST:30102/subtask \
-  --ui-url http://$K3S_NODE_HOST:3001 \
+  --ui-url http://$K3S_NODE_HOST:30001 \
   --skip-monitoring
 ```
 
@@ -227,7 +227,7 @@ Key points:
   - Can adapt defaults for NodePort‑style URLs (see script help).
 - `--llm-url` should point at Saturn’s `/chat` endpoint.
 - `--agent-a-url` / `--agent-b-url` should point at the k3s NodePort services.
-- `--ui-url` is set to Grafana on port 3001 (if you don’t run the chat UI in this setup).
+- `--ui-url` is set to Grafana on NodePort 30001 (if you don’t run the chat UI in this setup).
 
 You can also set `K8S_NODE_IP=$K3S_NODE_HOST` in your environment and rely on defaults where appropriate.
 

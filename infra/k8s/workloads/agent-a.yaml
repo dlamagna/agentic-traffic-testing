@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: agent-a
-          image: agent-a:local
+          image: docker.io/dlamagna/agent-a:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: LLM_SERVER_URL

@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: mcp-tool-db
-          image: mcp-tool-db:local
+          image: docker.io/dlamagna/mcp-tool-db:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: NODE_NAME
