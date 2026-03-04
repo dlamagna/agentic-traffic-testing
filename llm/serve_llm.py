@@ -116,6 +116,22 @@ if _METRICS_READY:
         "Number of requests batched together",
         buckets=[1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 32],
     )
+    CONFIG_MAX_NUM_SEQS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_num_seqs",
+        "Configured max_num_seqs (vLLM scheduler concurrency); -1 means default",
+    )
+    CONFIG_MAX_NUM_BATCHED_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_num_batched_tokens",
+        "Configured max_num_batched_tokens (vLLM scheduler); -1 means default",
+    )
+    CONFIG_GPU_MEMORY_UTILIZATION = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_gpu_memory_utilization",
+        "Configured GPU memory utilization target (0-1); -1 means default",
+    )
+    CONFIG_MAX_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_tokens",
+        "Configured max tokens per generation (LLM_MAX_TOKENS)",
+    )
 
 
 def _log_prompt(source: str, prompt: str) -> None:
@@ -621,6 +637,19 @@ async def run_async_server(
         max_num_batched_tokens=max_num_batched_tokens,
         gpu_memory_utilization=gpu_memory_utilization,
     )
+
+    # Export static configuration values as Prometheus gauges so Grafana can
+    # put concurrency and latency into context.
+    if _METRICS_READY:
+        # Use -1 to indicate "default" / not explicitly set for optional values.
+        CONFIG_MAX_NUM_SEQS.set(float(max_num_seqs) if max_num_seqs is not None else -1.0)
+        CONFIG_MAX_NUM_BATCHED_TOKENS.set(
+            float(max_num_batched_tokens) if max_num_batched_tokens is not None else -1.0
+        )
+        CONFIG_GPU_MEMORY_UTILIZATION.set(
+            float(gpu_memory_utilization) if gpu_memory_utilization is not None else -1.0
+        )
+        CONFIG_MAX_TOKENS.set(float(LLM_MAX_TOKENS))
 
     app = create_app()
     runner = web.AppRunner(app)
