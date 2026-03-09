@@ -19,15 +19,38 @@ export class StreamingHandler {
     if (event === 'iteration_start') {
       this.uiState.elements.statusText.textContent = `Iteration ${data.iteration + 1}/${data.max_iterations}`;
       this.uiState.elements.progressFill.style.width = `${(data.iteration / data.max_iterations) * 100}%`;
+      // Track current iteration so stage_start can show it in statusDetail
+      if (this.uiState.currentData) {
+        this.uiState.currentData._currentIteration = data.iteration + 1;
+      }
+      if (this.uiState.elements.statusDetail) {
+        this.uiState.elements.statusDetail.textContent = '';
+      }
     }
-    
+
     else if (event === 'stage_start') {
       const stageNum = data.stage_number;
       this.uiState.updateStage(stageNum, 'running', 'Running...', undefined);
       this.uiState.elements.statusText.textContent = data.message || `Running ${data.stage}...`;
-      
+
+      // Update statusDetail with iteration + stage context
+      if (this.uiState.elements.statusDetail) {
+        const stageLabels = {
+          recruitment: 'Expert Recruitment',
+          decision: 'Collaborative Decision',
+          execution: 'Action Execution',
+          evaluation: 'Evaluation',
+          synthesis: 'Synthesis',
+        };
+        const iter = (data.iteration ?? (this.uiState.currentData?._currentIteration - 1)) ?? 0;
+        const maxIter = this.uiState.currentData?.max_iterations || '?';
+        const iterStr = maxIter > 1 ? `Iter ${iter + 1}/${maxIter} · ` : '';
+        this.uiState.elements.statusDetail.textContent =
+          `${iterStr}Stage ${stageNum}: ${stageLabels[data.stage] || data.stage}`;
+      }
+
       // Update progress based on stage
-      const baseProgress = (data.iteration / (this.uiState.currentData?.max_iterations || 3)) * 100;
+      const baseProgress = ((data.iteration ?? 0) / (this.uiState.currentData?.max_iterations || 3)) * 100;
       const stageProgress = ((stageNum - 1) / 5) * (100 / (this.uiState.currentData?.max_iterations || 3));
       this.uiState.elements.progressFill.style.width = `${Math.min(baseProgress + stageProgress, 95)}%`;
     }
@@ -66,7 +89,10 @@ export class StreamingHandler {
    */
   _handleStageComplete(data) {
     const stageNum = data.stage_number;
-    
+    const iter = data.iteration ?? (this.uiState.currentData?._currentIteration - 1) ?? 0;
+    const maxIter = this.uiState.currentData?.max_iterations || '?';
+    const iterPrefix = (maxIter > 1) ? `Iter ${iter + 1}/${maxIter} · ` : '';
+
     if (data.stage === 'recruitment') {
       this.uiState.updateStage(1, 'completed', `${data.experts.length} Experts`, `
         <p><strong>Structure:</strong> ${escapeHtml(data.communication_structure || 'horizontal')}</p>
@@ -75,16 +101,28 @@ export class StreamingHandler {
       `);
       // Auto-expand recruitment
       document.getElementById('stage1Content').classList.add('expanded');
+      if (this.uiState.elements.statusDetail) {
+        this.uiState.elements.statusDetail.textContent =
+          `${iterPrefix}Recruitment done — ${data.experts.length} experts, ${data.communication_structure || 'horizontal'} structure`;
+      }
     }
     else if (data.stage === 'decision') {
-      this.uiState.updateStage(2, 'completed', data.consensus_reached ? 'Consensus' : 'Decided', 
+      this.uiState.updateStage(2, 'completed', data.consensus_reached ? 'Consensus' : 'Decided',
         `<p>Decision complete after ${data.rounds} round(s)</p>`
       );
+      if (this.uiState.elements.statusDetail) {
+        this.uiState.elements.statusDetail.textContent =
+          `${iterPrefix}Decision done — ${data.rounds} round(s), ${data.consensus_reached ? 'consensus reached' : 'no consensus'}`;
+      }
     }
     else if (data.stage === 'execution') {
-      this.uiState.updateStage(3, 'completed', `${data.success_count}/${data.total}`, 
+      this.uiState.updateStage(3, 'completed', `${data.success_count}/${data.total}`,
         `<p>${data.success_count} succeeded, ${data.failure_count} failed</p>`
       );
+      if (this.uiState.elements.statusDetail) {
+        this.uiState.elements.statusDetail.textContent =
+          `${iterPrefix}Execution done — ${data.success_count}/${data.total} succeeded`;
+      }
     }
     else if (data.stage === 'evaluation') {
       this.uiState.updateStage(4, 'completed', `${data.score}/100`,
@@ -92,6 +130,10 @@ export class StreamingHandler {
          ${data.feedback ? `<p><strong>Feedback:</strong> ${escapeHtml(data.feedback)}</p>` : ''}`
       );
       document.getElementById('stage4Content').classList.add('expanded');
+      if (this.uiState.elements.statusDetail) {
+        this.uiState.elements.statusDetail.textContent =
+          `${iterPrefix}Evaluation done — score ${data.score}/100 ${data.goal_achieved ? '✓ goal achieved' : '✗ iterating'}`;
+      }
     }
     else if (data.stage === 'synthesis') {
       // Merge synthesis result into current data and run full UI update.
@@ -160,6 +202,13 @@ export class StreamingHandler {
    * Handle discussion round event
    */
   _handleDiscussionRound(data) {
+    if (this.uiState.elements.statusDetail) {
+      const iter = data.iteration ?? (this.uiState.currentData?._currentIteration - 1) ?? 0;
+      const maxIter = this.uiState.currentData?.max_iterations || '?';
+      const iterPrefix = maxIter > 1 ? `Iter ${iter + 1}/${maxIter} · ` : '';
+      this.uiState.elements.statusDetail.textContent =
+        `${iterPrefix}Stage 2: Decision — Round ${data.round}${data.consensus ? ' ✓ consensus' : ''}`;
+    }
     const results2 = document.getElementById('stage2Results');
     const existingContent = results2.innerHTML;
     results2.innerHTML = existingContent + `
@@ -182,6 +231,13 @@ export class StreamingHandler {
    * Handle execution result event
    */
   _handleExecutionResult(data) {
+    if (this.uiState.elements.statusDetail) {
+      const iter = data.iteration ?? (this.uiState.currentData?._currentIteration - 1) ?? 0;
+      const maxIter = this.uiState.currentData?.max_iterations || '?';
+      const iterPrefix = maxIter > 1 ? `Iter ${iter + 1}/${maxIter} · ` : '';
+      this.uiState.elements.statusDetail.textContent =
+        `${iterPrefix}Stage 3: Execution — ${data.completed}/${data.total} agents done`;
+    }
     const results3 = document.getElementById('stage3Results');
     const existingContent = results3.innerHTML;
     const statusClass = data.success ? 'success' : 'failure';
@@ -288,19 +344,21 @@ export class StreamingHandler {
       const decoder = new TextDecoder();
       let buffer = '';
       let sawComplete = false;
-      
+      // These must live OUTSIDE the while loop so that SSE events whose
+      // "event:", "data:", and blank-line terminator arrive in different
+      // read() chunks are not silently dropped.
+      let currentEvent = null;
+      let eventDataStr = '';
+
       while (true) {
         const { done, value } = await reader.read();
-        
+
         if (done) break;
-        
+
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep incomplete line in buffer
-        
-        let currentEvent = null;
-        let eventDataStr = '';
-        
+
         for (const line of lines) {
           if (line.startsWith('event:')) {
             currentEvent = line.substring(6).trim();
@@ -372,9 +430,17 @@ export class StreamingHandler {
         }
       }
       
-      // If the stream ended without a complete event, treat as an error
+      // If the stream ended without a complete event, only treat it as an
+      // error if synthesis never ran. If synthesis already fired (final_output
+      // was set and the UI was marked complete) the "complete" event is
+      // redundant — large payloads can occasionally be dropped or arrive
+      // truncated, so we gracefully accept synthesis as a completion signal.
       if (!sawComplete) {
-        throw new Error('Streaming ended before workflow completion.');
+        const hasSynthesisResult = !!(this.uiState.currentData?.final_output);
+        if (!hasSynthesisResult) {
+          throw new Error('Streaming ended before workflow completion.');
+        }
+        console.warn('[AgentVerse] Stream ended without "complete" event but synthesis was received — treating as success.');
       }
       
     } catch (error) {
