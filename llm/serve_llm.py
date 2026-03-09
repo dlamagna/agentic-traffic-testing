@@ -141,6 +141,11 @@ if _METRICS_READY:
         "KV-cache-derived max concurrency: num_gpu_blocks * block_size / max_model_len "
         "(matches the 'Maximum concurrency for X tokens' line vLLM logs at startup)",
     )
+    INTERARRIVAL_TIME = Histogram(
+        f"{LLM_METRICS_PREFIX}_interarrival_seconds",
+        "Time between consecutive LLM request arrivals",
+        buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
+    )
 
 
 def _log_prompt(source: str, prompt: str) -> None:
@@ -460,6 +465,8 @@ _backend: Optional[AsyncVLLMBackend] = None
 _tracer = get_tracer("llm-backend")
 _inflight_count = 0
 _inflight_lock = asyncio.Lock()
+_last_arrival_time: Optional[float] = None
+_arrival_lock = asyncio.Lock()
 
 
 def _otel_span_metadata(span: Any) -> Dict[str, Any]:
@@ -505,7 +512,7 @@ async def handle_metrics(request: web.Request) -> web.Response:
 
 async def handle_chat(request: web.Request) -> web.Response:
     """Handle chat/completion requests with async batching."""
-    global _backend, _inflight_count
+    global _backend, _inflight_count, _last_arrival_time
 
     if _backend is None:
         return web.json_response({"error": "Backend not initialized"}, status=503)
@@ -520,6 +527,12 @@ async def handle_chat(request: web.Request) -> web.Response:
         kind=SpanKind.SERVER,
     ) as span:
         start_time = time.monotonic()
+
+        # Record interarrival time
+        async with _arrival_lock:
+            if _last_arrival_time is not None and _METRICS_READY:
+                INTERARRIVAL_TIME.observe(start_time - _last_arrival_time)
+            _last_arrival_time = start_time
 
         # Track in-flight requests
         async with _inflight_lock:

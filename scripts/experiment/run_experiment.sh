@@ -4,7 +4,7 @@
 # =============================================================================
 # Repeatable experiment runner for AgentVerse traffic characterisation.
 #
-# Runs "Math problem" and "Coding task" N times each, saving:
+# Runs every task defined in agents/templates/agentverse_workflow.json N times, saving:
 #   - AgentVerse JSON response
 #   - Per-run and aggregate Prometheus metrics (CSV)
 #   - Matplotlib plots mirroring the Grafana dashboard
@@ -34,6 +34,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DASHBOARD_JSON="$REPO_ROOT/infra/monitoring/grafana/provisioning/dashboards/agentic-traffic.json"
 SCRAPE_SCRIPT="$SCRIPT_DIR/scrape_metrics.py"
 PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
+WORKFLOW_TEMPLATE="$REPO_ROOT/agents/templates/agentverse_workflow.json"
 
 # Defaults
 AGENT_A_URL="${AGENT_A_URL:-http://localhost:8101}"
@@ -41,6 +42,43 @@ PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
 ITERATIONS=""
 WAIT_AFTER_RUN=20
 OUTPUT_DIR_OVERRIDE=""
+
+load_tasks_from_template() {
+python3 - "$WORKFLOW_TEMPLATE" <<'PYEOF'
+import json, sys, re
+
+path = sys.argv[1]
+
+with open(path) as f:
+    data = json.load(f)
+
+# Load every example_task — no filtering so new tasks added to the
+# template are automatically picked up on the next experiment run.
+for t in data.get("example_tasks", []):
+    name = t.get("name", "")
+    task = t.get("task", "").strip()
+    if not task:
+        continue
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    print(f"{slug}|||{task}")
+PYEOF
+}
+
+TASK_NAMES=()
+TASK_SLUGS=()
+
+while IFS="|||" read -r slug task; do
+    TASK_SLUGS+=("$slug")
+    TASK_NAMES+=("$task")
+done < <(load_tasks_from_template)
+
+echo ""
+echo "Loaded tasks from template:"
+for i in "${!TASK_NAMES[@]}"; do
+    echo "  ${TASK_SLUGS[$i]} -> ${TASK_NAMES[$i]:0:80}..."
+done
+echo ""
+
 
 usage() {
     sed -n '3,30p' "$0" | sed 's/^# //' | sed 's/^#//'
@@ -69,17 +107,6 @@ if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]] || [[ "$ITERATIONS" -lt 1 ]]; then
     exit 1
 fi
 
-# -------------------------------------------------------------------------
-# Tasks to run (name → slug pairs)
-# -------------------------------------------------------------------------
-TASK_NAMES=(
-    "Solve the equation: 2x + 5 = 17, showing all steps. Then verify the answer."
-    "Write a Python function to find the nth Fibonacci number using dynamic programming. Include docstring, type hints, and example usage."
-)
-TASK_SLUGS=(
-    "math-problem"
-    "coding-task"
-)
 
 # -------------------------------------------------------------------------
 # Set up experiment output directory
@@ -155,6 +182,8 @@ except Exception:
     print('unknown')
 "
 }
+
+
 
 # -------------------------------------------------------------------------
 # Main experiment loop

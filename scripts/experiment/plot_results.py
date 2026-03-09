@@ -516,7 +516,108 @@ def plot_per_run_summary(
     plt.close(fig)
     print(f"  saved  {out_path}")
 
+def plot_task_comparison(
+    experiment_dir: Path,
+    df_all: pd.DataFrame,
+    output_dir: Path,
+) -> None:
+    """
+    Compare math vs coding tasks using run-level aggregates.
+    """
 
+    IAT_TITLE = "LLM Interarrival Time (30s rolling avg)"
+    LAT_TITLE = "LLM End-to-end Latency (p50/p95)"
+
+    # ---- Load run metadata ----
+    metas = []
+    for run_dir in sorted(experiment_dir.iterdir()):
+        meta = run_dir / "meta.json"
+        if meta.exists():
+            metas.append(json.loads(meta.read_text()))
+
+    if not metas:
+        return
+
+    df_meta = pd.DataFrame(metas)
+
+    # ---- Compute per-run metric means ----
+    run_stats = []
+
+    for run_dir in sorted(experiment_dir.iterdir()):
+        csv_path = run_dir / "metrics.csv"
+        meta_path = run_dir / "meta.json"
+
+        if not csv_path.exists() or not meta_path.exists():
+            continue
+
+        meta = json.loads(meta_path.read_text())
+        df = load_metrics_csv(csv_path)
+
+        def mean_metric(title):
+            sub = df[df["panel_title"] == title]["value"].dropna()
+            return sub.mean() if not sub.empty else np.nan
+
+        run_stats.append({
+            "task_slug": meta.get("task_slug"),
+            "iteration": meta.get("iteration"),
+            "duration_s": meta.get("duration_s"),
+            "iat_mean": mean_metric(IAT_TITLE),
+            "lat_mean": mean_metric(LAT_TITLE),
+        })
+
+    df_runs = pd.DataFrame(run_stats)
+
+    if df_runs.empty:
+        return
+
+    # ---- Aggregate across runs per task ----
+    summary = (
+        df_runs
+        .groupby("task_slug")
+        .agg({
+            "duration_s": ["mean", "std"],
+            "iat_mean": ["mean", "std"],
+            "lat_mean": ["mean", "std"],
+        })
+    )
+
+    summary.columns = ["_".join(c) for c in summary.columns]
+    summary.reset_index(inplace=True)
+
+    # ---- Plot comparison figure ----
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    fig.patch.set_facecolor(DARK_BG)
+    fig.suptitle("Task-Level Comparison (Run Aggregates)", fontsize=12, fontweight="bold")
+
+    metrics = [
+        ("duration_s_mean", "Mean Duration (s)"),
+        ("iat_mean_mean", "Mean Interarrival Time (s)"),
+        ("lat_mean_mean", "Mean Latency (s)"),
+    ]
+
+    for ax, (col, label) in zip(axes, metrics):
+        ax.set_facecolor(PANEL_BG)
+        ax.set_title(label, loc="left")
+        ax.grid(True)
+
+        x = np.arange(len(summary))
+        vals = summary[col].values
+
+        ax.bar(x, vals, color=[PALETTE[i] for i in range(len(x))], alpha=0.8)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(summary["task_slug"], rotation=20)
+
+        for i, v in enumerate(vals):
+            ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=8)
+
+    plt.tight_layout()
+
+    out_path = output_dir / "task_comparison_summary.png"
+    fig.savefig(out_path, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+
+    print(f"  saved  {out_path}")
 # ---------------------------------------------------------------------------
 # Statistics table (printed to stdout and saved as text)
 # ---------------------------------------------------------------------------
@@ -641,7 +742,7 @@ def main() -> None:
     # 3. Per-run summary (duration, etc.)
     # -----------------------------------------------------------------------
     plot_per_run_summary(experiment_dir, df_all, plots_dir)
-
+    plot_task_comparison(experiment_dir, df_all, plots_dir)
     # -----------------------------------------------------------------------
     # 4. Statistics table
     # -----------------------------------------------------------------------
