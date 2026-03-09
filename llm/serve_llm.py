@@ -57,6 +57,7 @@ LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
 LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
 LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
+LLM_MAX_MODEL_LEN = int(os.environ.get("LLM_MAX_MODEL_LEN") or "0")
 LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
     "1",
@@ -91,13 +92,16 @@ if _METRICS_READY:
         "Total LLM requests",
         ["status"],
     )
+    _LLM_LATENCY_BUCKETS = [0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0]
     REQUEST_LATENCY = Histogram(
         f"{LLM_METRICS_PREFIX}_request_latency_seconds",
         "End-to-end LLM request latency",
+        buckets=_LLM_LATENCY_BUCKETS,
     )
     QUEUE_WAIT = Histogram(
         f"{LLM_METRICS_PREFIX}_queue_wait_seconds",
         "Time spent waiting in vLLM queue",
+        buckets=_LLM_LATENCY_BUCKETS,
     )
     INFLIGHT = Gauge(
         f"{LLM_METRICS_PREFIX}_inflight_requests",
@@ -131,6 +135,11 @@ if _METRICS_READY:
     CONFIG_MAX_TOKENS = Gauge(
         f"{LLM_METRICS_PREFIX}_config_max_tokens",
         "Configured max tokens per generation (LLM_MAX_TOKENS)",
+    )
+    CONFIG_COMPUTED_MAX_CONCURRENCY = Gauge(
+        f"{LLM_METRICS_PREFIX}_computed_max_concurrency",
+        "KV-cache-derived max concurrency: num_gpu_blocks * block_size / max_model_len "
+        "(matches the 'Maximum concurrency for X tokens' line vLLM logs at startup)",
     )
 
 
@@ -171,6 +180,65 @@ def _record_metrics(
         PROMPT_TOKENS.inc(prompt_tokens)
     if completion_tokens is not None:
         COMPLETION_TOKENS.inc(completion_tokens)
+
+
+async def _probe_engine_max_concurrency() -> None:
+    """Background task: expose vLLM's KV-cache-derived max concurrency as a Prometheus gauge.
+
+    vLLM logs this at startup:
+        Maximum concurrency for <max_model_len> tokens per request: X.XXx
+
+    The value is: num_gpu_blocks * block_size / max_model_len.
+    We try two strategies depending on the vLLM version:
+      1. Pre-V1 (<0.6): access engine.cache_config directly via the sync engine attribute.
+      2. V1+ (>=0.6):   vLLM's StatLogger registers 'vllm:num_gpu_blocks' in the global
+                        prometheus_client registry — we scan for it there.
+    """
+    if not _METRICS_READY:
+        return
+    await asyncio.sleep(5)  # Give the engine workers time to fully initialise
+    try:
+        # Strategy 1: pre-V1 AsyncLLMEngine wraps a sync LLMEngine as .engine
+        core = _backend._engine.engine  # type: ignore[union-attr]
+        num_gpu_blocks: int = core.cache_config.num_gpu_blocks
+        block_size: int = core.cache_config.block_size
+        max_model_len: int = core.model_config.max_model_len
+        if num_gpu_blocks and max_model_len:
+            CONFIG_COMPUTED_MAX_CONCURRENCY.set((num_gpu_blocks * block_size) / max_model_len)
+            print(
+                f"[llm-metrics] computed_max_concurrency="
+                f"{(num_gpu_blocks * block_size) / max_model_len:.2f} "
+                f"(gpu_blocks={num_gpu_blocks} block_size={block_size} max_model_len={max_model_len})"
+            )
+            return
+    except AttributeError:
+        pass
+
+    # Strategy 2: vLLM V1 StatLogger writes num_gpu_blocks into the global registry
+    try:
+        from prometheus_client import REGISTRY  # type: ignore
+        ref_max_model_len = LLM_MAX_MODEL_LEN
+        for metric_family in REGISTRY.collect():
+            if metric_family.name in ("vllm:num_gpu_blocks", "vllm_num_gpu_blocks"):
+                for sample in metric_family.samples:
+                    if sample.value > 0 and ref_max_model_len > 0:
+                        # vLLM V1 uses block_size=32 by default; override via VLLM_BLOCK_SIZE if needed
+                        block_size = int(os.environ.get("VLLM_BLOCK_SIZE", "32"))
+                        computed = (sample.value * block_size) / ref_max_model_len
+                        CONFIG_COMPUTED_MAX_CONCURRENCY.set(computed)
+                        print(
+                            f"[llm-metrics] computed_max_concurrency={computed:.2f} "
+                            f"(gpu_blocks={sample.value} block_size={block_size} "
+                            f"max_model_len={ref_max_model_len})"
+                        )
+                        return
+    except Exception:
+        pass
+
+    print(
+        "[llm-metrics] Warning: could not determine computed_max_concurrency "
+        "from vLLM internals — gauge will remain unset."
+    )
 
 
 class AsyncVLLMBackend:
@@ -666,6 +734,10 @@ async def run_async_server(
     print("=" * 60)
 
     await site.start()
+
+    # Probe vLLM's KV cache config once the engine workers have initialised
+    # and expose the computed max concurrency as a Prometheus gauge.
+    asyncio.create_task(_probe_engine_max_concurrency())
 
     # Keep running until interrupted
     try:
