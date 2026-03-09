@@ -48,12 +48,14 @@ Usage: run_experiment.sh -n <iterations> [options]
   -h         Show help
 ```
 
-Tasks run per iteration:
+Tasks run per iteration — read directly from `agents/templates/agentverse_workflow.json` (`example_tasks[]`), so adding a task to the template is the only change needed:
 
-| Slug | Task text |
-|------|-----------|
-| `math-problem` | Solve 2x + 5 = 17, showing all steps, then verify the answer |
-| `coding-task`  | Write a Python Fibonacci function with dynamic programming, docstring, type hints, and examples |
+| Slug | Name |
+|------|------|
+| `mathematical-problem` | Mathematical Problem |
+| `research-task`        | Research Task        |
+| `software-development` | Software Development |
+| `consulting`           | Consulting           |
 
 ### `scrape_metrics.py`
 
@@ -230,20 +232,20 @@ To look up a specific run in Jaeger:
 
 ### Adding tasks
 
-Edit the `TASK_NAMES` and `TASK_SLUGS` arrays near the top of `run_experiment.sh`:
+Add an entry to `example_tasks[]` in `agents/templates/agentverse_workflow.json`:
 
-```bash
-TASK_NAMES=(
-    "Solve the equation: 2x + 5 = 17 ..."
-    "Write a Python function ..."
-    "Explain the CAP theorem in one paragraph."   # ← add here
-)
-TASK_SLUGS=(
-    "math-problem"
-    "coding-task"
-    "theory-question"                              # ← matching slug
-)
+```json
+{
+  "name": "Theory Question",
+  "task": "Explain the CAP theorem in one paragraph.",
+  "recommended_structure": "horizontal",
+  "recommended_experts": ["researcher", "summarizer"]
+}
 ```
+
+The slug is derived automatically from `name` (lowercased, non-alphanumeric chars replaced with `-`).  No changes to any script are needed.
+
+> **Note on `recommended_structure` / `recommended_experts`:** These fields are **not sent to the agent**. The `/agentverse` endpoint only accepts `task`, `max_iterations`, `success_threshold`, and `stream`. The orchestrator calls the LLM independently during the recruitment stage to decide structure and expert composition from the task text alone, so these fields introduce no bias — they exist only as human-readable documentation inside the template.
 
 ### Adding metrics
 
