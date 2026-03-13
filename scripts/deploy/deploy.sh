@@ -206,7 +206,7 @@ elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
     echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
-    docker compose -f docker-compose.monitoring.distributed.yml up -d prometheus grafana
+    docker compose -f docker-compose.monitoring.distributed.yml up --build -d prometheus grafana docker-mapping-exporter
     echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
     if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
       echo "    cadvisor-host already running; skipping."
@@ -290,7 +290,7 @@ else
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
     echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
-    docker compose -f docker-compose.monitoring.yml up -d prometheus grafana
+    docker compose -f docker-compose.monitoring.yml up --build -d prometheus grafana docker-mapping-exporter
     echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
     if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
       echo "    cadvisor-host already running; skipping."

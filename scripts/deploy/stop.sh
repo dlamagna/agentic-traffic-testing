@@ -126,12 +126,12 @@ cd "${COMPOSE_DIR}"
 case "${DEPLOYMENT_MODE}" in
   single)
     echo "[*] Stopping single-network deployment..."
-    docker compose down
+    docker compose -f docker-compose.yml -f docker-compose.monitoring.yml down
     ;;
     
   distributed)
     echo "[*] Stopping distributed deployment..."
-    docker compose -f docker-compose.distributed.yml down
+    docker compose -f docker-compose.distributed.yml -f docker-compose.monitoring.distributed.yml down
     
     if [[ "${REMOVE_NETWORKS}" == "true" ]]; then
       echo "[*] Removing distributed networks..."
