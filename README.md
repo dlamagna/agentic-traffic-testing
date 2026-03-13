@@ -21,6 +21,7 @@ This MVP runs entirely on a **single GPU server**, using a **virtual multi-node 
 - [7. Shared GPU usage checks (read-only)](#7-shared-gpu-usage-checks-read-only)
 - [8. Health check script](#8-health-check-script)
 - [9. MCP-Universe benchmark integration](#9-mcp-universe-benchmark-integration)
+- [10. Experiment runner (bulk data collection & plotting)](#10-experiment-runner)
 
 ---
 
@@ -323,4 +324,19 @@ See **[docs/mcp_universe_integration.md](docs/mcp_universe_integration.md)** for
 - Cloning and configuring MCP-Universe
 - Running the OpenAI proxy to bridge MCP-Universe to your local LLM backend
 - Running benchmarks via `scripts/experiment/run_mcp_universe.py`
+
+---
+
+## 10. Experiment runner
+
+Repeatable bulk-collection pipeline for interarrival time and related metrics.
+
+```bash
+# Run 5 iterations of each task (math-problem + coding-task)
+./scripts/experiment/run_experiment.sh -n 5
+```
+
+Each run saves the AgentVerse JSON response, scrapes all Prometheus metrics whose PromQL queries are defined in the Grafana dashboard JSON, and generates Grafana-style matplotlib plots and an interarrival time distribution analysis.
+
+See **[docs/experiment_runner.md](docs/experiment_runner.md)** for full usage, output layout, CSV schema, and how to extend tasks or metrics.
 

@@ -47,6 +47,8 @@ build/
 .idea/
 .vscode/
 Thumbs.db
+~/.cursor/
+.cursor/
 
 # Node
 node_modules/

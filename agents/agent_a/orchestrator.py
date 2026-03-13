@@ -385,12 +385,14 @@ class AgentVerseOrchestrator:
         otel: Optional[Dict[str, Any]] = None,
         llm_meta: Optional[Dict[str, Any]] = None,
         start_time_utc: Optional[str] = None,
+        error: bool = False,
     ) -> None:
         """Record an LLM request/response for the detailed flow.
 
         duration_seconds: end-to-end task duration (LLM call for Agent A direct calls,
         or full Agent B round-trip including network, Agent B processing, and LLM call).
         start_time_utc: ISO 8601 UTC timestamp when the request started (for tracing and UI).
+        error: True when the LLM call failed (e.g. context-length exceeded, 5xx).
         """
         seq = len(state.llm_requests) + 1
         role = agent_role
@@ -405,6 +407,7 @@ class AgentVerseOrchestrator:
             "prompt": prompt,
             "response": response,
             "endpoint": endpoint or LLM_SERVER_URL,
+            "error": error,
         }
         if start_time_utc is not None:
             entry["start_time_utc"] = start_time_utc
@@ -421,9 +424,81 @@ class AgentVerseOrchestrator:
         if duration_seconds is not None:
             entry["duration_seconds"] = round(duration_seconds, 2)
         state.llm_requests.append(entry)
-        
-        # Send progress update with new LLM request
-        self._send_progress("llm_request", entry)
+
+        # Send progress update — use "llm_error" event type for failures so
+        # streaming clients (UI) can highlight the failed call immediately.
+        event_type = "llm_error" if error else "llm_request"
+        self._send_progress(event_type, entry)
+
+    def _call_llm_tracked(
+        self,
+        state: AgentVerseState,
+        prompt: str,
+        stage: str,
+        label: str,
+        agent_role: str = "orchestrator",
+        headers: Optional[Dict[str, str]] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Call the LLM and always record the attempt in state.llm_requests.
+
+        On success the entry is flagged error=False.  On any exception the
+        entry is flagged error=True (with the error message as the response
+        field) and an "llm_error" SSE progress event is emitted so streaming
+        UIs show the failure immediately.  The exception is then re-raised so
+        callers can handle it appropriately.
+        """
+        if headers is None:
+            headers = {}
+        request_id = self._new_llm_request_id(state)
+        headers["X-Request-ID"] = request_id
+        t0 = time.time()
+        start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
+        try:
+            response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=max_tokens)
+            duration = time.time() - t0
+            self._record_llm_request(
+                state,
+                stage=stage,
+                label=label,
+                prompt=prompt,
+                response=response,
+                source="Agent A",
+                agent_role=agent_role,
+                duration_seconds=duration,
+                request_id=request_id,
+                otel=llm_trace_meta.get("otel"),
+                llm_meta=llm_trace_meta.get("llm_backend"),
+                start_time_utc=start_time_utc,
+                error=False,
+            )
+            return response, llm_trace_meta
+        except Exception as exc:
+            duration = time.time() - t0
+            # Extract the server-side error message when available.
+            error_detail = str(exc)
+            if hasattr(exc, "response"):
+                try:
+                    body = exc.response.json()  # type: ignore[union-attr]
+                    error_detail = body.get("error", error_detail)
+                except Exception:
+                    pass
+            self._record_llm_request(
+                state,
+                stage=stage,
+                label=label,
+                prompt=prompt,
+                response=f"[LLM ERROR: {error_detail}]",
+                source="Agent A",
+                agent_role=agent_role,
+                duration_seconds=duration,
+                request_id=request_id,
+                otel=None,
+                llm_meta={"error": error_detail},
+                start_time_utc=start_time_utc,
+                error=True,
+            )
+            raise
     
     def _new_llm_request_id(self, state: AgentVerseState) -> str:
         """Generate a short, human-friendly ID for an LLM call.
@@ -784,26 +859,8 @@ class AgentVerseOrchestrator:
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
-            request_id = self._new_llm_request_id(state)
-            headers["X-Request-ID"] = request_id
-            t0 = time.time()
-            response, llm_trace_meta = self._call_llm(prompt, headers=headers)
-            duration = time.time() - t0
-            start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
-
-            self._record_llm_request(
-                state,
-                stage="recruitment",
-                label="expert_recruitment",
-                prompt=prompt,
-                response=response,
-                source="Agent A",
-                agent_role="orchestrator",
-                duration_seconds=duration,
-                request_id=request_id,
-                otel=llm_trace_meta.get("otel"),
-                llm_meta=llm_trace_meta.get("llm_backend"),
-                start_time_utc=start_time_utc,
+            response, llm_trace_meta = self._call_llm_tracked(
+                state, prompt, stage="recruitment", label="expert_recruitment", headers=headers,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -1008,12 +1065,13 @@ class AgentVerseOrchestrator:
                     round_num=round_num,
                 )
                 
+                headers: Dict[str, str] = {}
+                propagate.inject(headers)
+                request_id = self._new_llm_request_id(state)
+                headers["X-Request-ID"] = request_id
+                t0 = time.time()
+                start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                 try:
-                    headers: Dict[str, str] = {}
-                    propagate.inject(headers)
-                    request_id = self._new_llm_request_id(state)
-                    headers["X-Request-ID"] = request_id
-                    t0 = time.time()
                     response = self._call_agent_b(
                         subtask=prompt,
                         agent_b_role=expert.role,
@@ -1023,7 +1081,6 @@ class AgentVerseOrchestrator:
                         task_id=state.task_id,
                     )
                     duration = time.time() - t0
-                    start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                     output = response.get("output", "")
                     llm_prompt = response.get("llm_prompt") or prompt
                     llm_response = response.get("llm_response") or output
@@ -1045,6 +1102,20 @@ class AgentVerseOrchestrator:
                     )
                 except Exception as exc:
                     output = f"[Agent error: {exc}]"
+                    self._record_llm_request(
+                        state,
+                        stage="decision",
+                        label=f"horizontal_discussion_round{round_num}",
+                        prompt=prompt,
+                        response=output,
+                        source=f"agent-b-{expert.index + 1}",
+                        agent_role=expert.role,
+                        round_num=round_num,
+                        duration_seconds=time.time() - t0,
+                        request_id=request_id,
+                        start_time_utc=start_time_utc,
+                        error=True,
+                    )
                 
                 round_responses.append({
                     "expert": expert.role,
@@ -1154,12 +1225,13 @@ class AgentVerseOrchestrator:
                 critiques=critique_context,
             )
             
+            headers: Dict[str, str] = {}
+            propagate.inject(headers)
+            request_id = self._new_llm_request_id(state)
+            headers["X-Request-ID"] = request_id
+            t0 = time.time()
+            start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
             try:
-                headers: Dict[str, str] = {}
-                propagate.inject(headers)
-                request_id = self._new_llm_request_id(state)
-                headers["X-Request-ID"] = request_id
-                t0 = time.time()
                 response = self._call_agent_b(
                     subtask=solver_prompt,
                     agent_b_role=solver.role,
@@ -1169,7 +1241,6 @@ class AgentVerseOrchestrator:
                     task_id=state.task_id,
                 )
                 duration = time.time() - t0
-                start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
                 proposal = response.get("output", "")
                 llm_prompt = response.get("llm_prompt") or solver_prompt
                 llm_response = response.get("llm_response") or proposal
@@ -1191,6 +1262,20 @@ class AgentVerseOrchestrator:
                 )
             except Exception as exc:
                 proposal = f"[Solver error: {exc}]"
+                self._record_llm_request(
+                    state,
+                    stage="decision",
+                    label=f"vertical_solver_iter{iteration}",
+                    prompt=solver_prompt,
+                    response=proposal,
+                    source=f"agent-b-{solver.index + 1}",
+                    agent_role=solver.role,
+                    round_num=iteration,
+                    duration_seconds=time.time() - t0,
+                    request_id=request_id,
+                    start_time_utc=start_time_utc,
+                    error=True,
+                )
             
             # Reviewers critique (in parallel)
             reviewer_responses: List[Dict[str, Any]] = []
@@ -1217,37 +1302,52 @@ class AgentVerseOrchestrator:
                         request_id = self._new_llm_request_id(state)
                         headers["X-Request-ID"] = request_id
                         t0 = time.time()
-                        response = self._call_agent_b(
-                            subtask=reviewer_prompt,
-                            agent_b_role=reviewer.role,
-                            agent_b_contract=reviewer.contract,
-                            agent_b_url=reviewer.endpoint,
-                            headers=headers,
-                            task_id=state.task_id,
-                        )
-                        duration = time.time() - t0
                         start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
-                        critique = response.get("output", "")
-                        llm_prompt = response.get("llm_prompt") or reviewer_prompt
-                        llm_response = response.get("llm_response") or critique
-                        self._record_llm_request(
-                            state,
-                            stage="decision",
-                            label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
-                            prompt=llm_prompt,
-                            response=llm_response,
-                            source=f"agent-b-{reviewer.index + 1}",
-                            agent_role=reviewer.role,
-                            endpoint=response.get("llm_endpoint"),
-                            round_num=iteration,
-                            duration_seconds=duration,
-                            request_id=request_id,
-                            otel=response.get("otel"),
-                            llm_meta=response.get("llm_meta"),
-                            start_time_utc=start_time_utc,
-                        )
-                    except Exception as exc:
-                        critique = f"[Reviewer error: {exc}]"
+                        try:
+                            response = self._call_agent_b(
+                                subtask=reviewer_prompt,
+                                agent_b_role=reviewer.role,
+                                agent_b_contract=reviewer.contract,
+                                agent_b_url=reviewer.endpoint,
+                                headers=headers,
+                                task_id=state.task_id,
+                            )
+                            duration = time.time() - t0
+                            critique = response.get("output", "")
+                            llm_prompt = response.get("llm_prompt") or reviewer_prompt
+                            llm_response = response.get("llm_response") or critique
+                            self._record_llm_request(
+                                state,
+                                stage="decision",
+                                label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
+                                prompt=llm_prompt,
+                                response=llm_response,
+                                source=f"agent-b-{reviewer.index + 1}",
+                                agent_role=reviewer.role,
+                                endpoint=response.get("llm_endpoint"),
+                                round_num=iteration,
+                                duration_seconds=duration,
+                                request_id=request_id,
+                                otel=response.get("otel"),
+                                llm_meta=response.get("llm_meta"),
+                                start_time_utc=start_time_utc,
+                            )
+                        except Exception as exc:
+                            critique = f"[Reviewer error: {exc}]"
+                            self._record_llm_request(
+                                state,
+                                stage="decision",
+                                label=f"vertical_reviewer_{reviewer.role}_iter{iteration}",
+                                prompt=reviewer_prompt,
+                                response=critique,
+                                source=f"agent-b-{reviewer.index + 1}",
+                                agent_role=reviewer.role,
+                                round_num=iteration,
+                                duration_seconds=time.time() - t0,
+                                request_id=request_id,
+                                start_time_utc=start_time_utc,
+                                error=True,
+                            )
                     finally:
                         otel_context.detach(token)
 
@@ -1323,24 +1423,10 @@ class AgentVerseOrchestrator:
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
-        request_id = self._new_llm_request_id(state)
-        headers["X-Request-ID"] = request_id
-        t0 = time.time()
         # Allow a larger completion for the final synthesized answer
-        response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=2048)
-        duration = time.time() - t0
-        self._record_llm_request(
-            state,
-            stage="decision",
-            label="synthesize_discussion",
-            prompt=prompt,
-            response=response,
-            source="Agent A",
-            agent_role="orchestrator",
-            duration_seconds=duration,
-            request_id=request_id,
-            otel=llm_trace_meta.get("otel"),
-            llm_meta=llm_trace_meta.get("llm_backend"),
+        response, _llm_meta = self._call_llm_tracked(
+            state, prompt, stage="decision", label="synthesize_discussion",
+            headers=headers, max_tokens=2048,
         )
         return response
     
@@ -1431,40 +1517,63 @@ class AgentVerseOrchestrator:
                         request_id = self._new_llm_request_id(state)
                         headers["X-Request-ID"] = request_id
                         t0 = time.time()
-                        response = self._call_agent_b(
-                            subtask=prompt,
-                            agent_b_role=expert.role,
-                            agent_b_contract=expert.contract,
-                            agent_b_url=expert.endpoint,
-                            headers=headers,
-                            task_id=state.task_id,
-                        )
-                        duration = time.time() - t0
                         start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
-                        llm_prompt = response.get("llm_prompt") or prompt
-                        llm_response = response.get("llm_response") or response.get("output", "")
-                        self._record_llm_request(
-                            state,
-                            stage="execution",
-                            label=f"execute_{expert.role}",
-                            prompt=llm_prompt,
-                            response=llm_response,
-                            source=f"agent-b-{expert.index + 1}",
-                            agent_role=expert.role,
-                            endpoint=response.get("llm_endpoint"),
-                            duration_seconds=duration,
-                            request_id=request_id,
-                            otel=response.get("otel"),
-                            llm_meta=response.get("llm_meta"),
-                            start_time_utc=start_time_utc,
-                        )
-                        return {
-                            "expert": expert.role,
-                            "index": expert.index,
-                            "subtask": subtask,
-                            "output": response.get("output", ""),
-                            "success": True,
-                        }
+                        try:
+                            response = self._call_agent_b(
+                                subtask=prompt,
+                                agent_b_role=expert.role,
+                                agent_b_contract=expert.contract,
+                                agent_b_url=expert.endpoint,
+                                headers=headers,
+                                task_id=state.task_id,
+                            )
+                            duration = time.time() - t0
+                            llm_prompt = response.get("llm_prompt") or prompt
+                            llm_response = response.get("llm_response") or response.get("output", "")
+                            self._record_llm_request(
+                                state,
+                                stage="execution",
+                                label=f"execute_{expert.role}",
+                                prompt=llm_prompt,
+                                response=llm_response,
+                                source=f"agent-b-{expert.index + 1}",
+                                agent_role=expert.role,
+                                endpoint=response.get("llm_endpoint"),
+                                duration_seconds=duration,
+                                request_id=request_id,
+                                otel=response.get("otel"),
+                                llm_meta=response.get("llm_meta"),
+                                start_time_utc=start_time_utc,
+                            )
+                            return {
+                                "expert": expert.role,
+                                "index": expert.index,
+                                "subtask": subtask,
+                                "output": response.get("output", ""),
+                                "success": True,
+                            }
+                        except Exception as exc:
+                            error_output = f"Execution failed: {exc}"
+                            self._record_llm_request(
+                                state,
+                                stage="execution",
+                                label=f"execute_{expert.role}",
+                                prompt=prompt,
+                                response=error_output,
+                                source=f"agent-b-{expert.index + 1}",
+                                agent_role=expert.role,
+                                duration_seconds=time.time() - t0,
+                                request_id=request_id,
+                                start_time_utc=start_time_utc,
+                                error=True,
+                            )
+                            return {
+                                "expert": expert.role,
+                                "index": expert.index,
+                                "subtask": subtask,
+                                "output": error_output,
+                                "success": False,
+                            }
                 except Exception as exc:
                     return {
                         "expert": expert.role,
@@ -1602,28 +1711,9 @@ Focus on what is relevant to your expertise.
             
             headers: Dict[str, str] = {}
             propagate.inject(headers)
-            request_id = self._new_llm_request_id(state)
-            headers["X-Request-ID"] = request_id
-            t0 = time.time()
-            response, llm_trace_meta = self._call_llm(
-                prompt, headers=headers, max_tokens=LLM_EVAL_MAX_TOKENS
-            )
-            duration = time.time() - t0
-            start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
-
-            self._record_llm_request(
-                state,
-                stage="evaluation",
-                label="evaluate_results",
-                prompt=prompt,
-                response=response,
-                source="Agent A",
-                agent_role="orchestrator",
-                duration_seconds=duration,
-                request_id=request_id,
-                otel=llm_trace_meta.get("otel"),
-                llm_meta=llm_trace_meta.get("llm_backend"),
-                start_time_utc=start_time_utc,
+            response, _llm_trace_meta = self._call_llm_tracked(
+                state, prompt, stage="evaluation", label="evaluate_results",
+                headers=headers, max_tokens=LLM_EVAL_MAX_TOKENS,
             )
             
             parsed = self._parse_json_response(response, {})
@@ -1793,100 +1883,124 @@ Focus on what is relevant to your expertise.
             )
             
             feedback: Optional[str] = None
-            
-            while state.iteration < state.max_iterations:
-                iteration_start = time.time()
-                
-                # Send progress update: starting iteration
-                self._send_progress("iteration_start", {
+            workflow_error: Optional[str] = None
+
+            try:
+                while state.iteration < state.max_iterations:
+                    iteration_start = time.time()
+
+                    # Send progress update: starting iteration
+                    self._send_progress("iteration_start", {
+                        "iteration": state.iteration,
+                        "max_iterations": state.max_iterations,
+                        "message": f"Starting iteration {state.iteration + 1} of {state.max_iterations}..."
+                    })
+
+                    # Stage 1: Expert Recruitment
+                    state.recruitment = self.recruit_experts(state, feedback)
+
+                    # Stage 2: Collaborative Decision-Making
+                    state.decision = self.collaborative_decision(state, state.recruitment)
+
+                    # Stage 3: Action Execution
+                    state.execution = self.execute_actions(
+                        state, state.recruitment, state.decision
+                    )
+
+                    # Stage 4: Evaluation
+                    state.evaluation = self.evaluate_results(state, state.execution)
+
+                    # Record iteration
+                    iteration_time = time.time() - iteration_start
+                    iteration_entry = {
+                        "iteration": state.iteration,
+                        "duration_seconds": round(iteration_time, 2),
+                        "recruitment": {
+                            "experts": [e.role for e in state.recruitment.experts],
+                            "structure": state.recruitment.communication_structure.value,
+                        },
+                        "decision": {
+                            "consensus": state.decision.consensus_reached,
+                            "rounds": len(state.decision.discussion_rounds),
+                        },
+                        "execution": {
+                            "success": state.execution.success_count,
+                            "failures": state.execution.failure_count,
+                        },
+                        "evaluation": {
+                            "goal_achieved": state.evaluation.goal_achieved,
+                            "score": state.evaluation.score,
+                            "criteria": state.evaluation.criteria,
+                            "rationale": state.evaluation.rationale,
+                            "feedback": state.evaluation.feedback or "",
+                        },
+                    }
+                    state.iteration_history.append(iteration_entry)
+
+                    # Stream iteration_complete so UI can update iteration history live
+                    self._send_progress("iteration_complete", {
+                        "iteration_history": state.iteration_history,
+                    })
+
+                    # Check if we should continue
+                    if not state.evaluation.should_iterate:
+                        break
+
+                    feedback = state.evaluation.feedback
+                    state.iteration += 1
+
+                # Generate final output
+                self._send_progress("stage_start", {
+                    "stage": "synthesis",
+                    "stage_number": 5,
                     "iteration": state.iteration,
-                    "max_iterations": state.max_iterations,
-                    "message": f"Starting iteration {state.iteration + 1} of {state.max_iterations}..."
+                    "message": "Generating final synthesized output..."
                 })
-                
-                # Stage 1: Expert Recruitment
-                state.recruitment = self.recruit_experts(state, feedback)
-                
-                # Stage 2: Collaborative Decision-Making
-                state.decision = self.collaborative_decision(state, state.recruitment)
-                
-                # Stage 3: Action Execution
-                state.execution = self.execute_actions(
-                    state, state.recruitment, state.decision
+
+                state.final_output = self._generate_final_output(state)
+                state.completed = True
+
+                # Send progress update: synthesis complete
+                self._send_progress("stage_complete", {
+                    "stage": "synthesis",
+                    "stage_number": 5,
+                    "iteration": state.iteration,
+                    "final_output": state.final_output
+                })
+
+                self.logger.log(
+                    task_id=task_id,
+                    event_type="agentverse_workflow_complete",
+                    message="AgentVerse workflow complete",
+                    extra={
+                        "iterations": state.iteration + 1,
+                        "final_score": state.evaluation.score if state.evaluation else 0,
+                    },
                 )
-                
-                # Stage 4: Evaluation
-                state.evaluation = self.evaluate_results(state, state.execution)
-                
-                # Record iteration
-                iteration_time = time.time() - iteration_start
-                iteration_entry = {
-                    "iteration": state.iteration,
-                    "duration_seconds": round(iteration_time, 2),
-                    "recruitment": {
-                        "experts": [e.role for e in state.recruitment.experts],
-                        "structure": state.recruitment.communication_structure.value,
-                    },
-                    "decision": {
-                        "consensus": state.decision.consensus_reached,
-                        "rounds": len(state.decision.discussion_rounds),
-                    },
-                    "execution": {
-                        "success": state.execution.success_count,
-                        "failures": state.execution.failure_count,
-                    },
-                    "evaluation": {
-                        "goal_achieved": state.evaluation.goal_achieved,
-                        "score": state.evaluation.score,
-                        "criteria": state.evaluation.criteria,
-                        "rationale": state.evaluation.rationale,
-                        "feedback": state.evaluation.feedback or "",
-                    },
-                }
-                state.iteration_history.append(iteration_entry)
-                
-                # Stream iteration_complete so UI can update iteration history live
-                self._send_progress("iteration_complete", {
-                    "iteration_history": state.iteration_history,
+
+            except Exception as exc:
+                # Record the failure and emit an error progress event so that
+                # streaming UIs know the workflow aborted.  We still return
+                # whatever partial state was built up so the UI can show which
+                # LLM calls completed before the failure.
+                workflow_error = str(exc)
+                span.set_attribute("app.workflow_error", workflow_error)
+                self.logger.log(
+                    task_id=task_id,
+                    event_type="agentverse_workflow_error",
+                    message=f"Workflow aborted: {workflow_error}",
+                )
+                self._send_progress("workflow_error", {
+                    "error": workflow_error,
+                    "completed_llm_calls": len(state.llm_requests),
+                    "failed_calls": sum(1 for r in state.llm_requests if r.get("error")),
                 })
-                
-                # Check if we should continue
-                if not state.evaluation.should_iterate:
-                    break
-                
-                feedback = state.evaluation.feedback
-                state.iteration += 1
-            
-            # Generate final output
-            self._send_progress("stage_start", {
-                "stage": "synthesis",
-                "stage_number": 5,
-                "iteration": state.iteration,
-                "message": "Generating final synthesized output..."
-            })
-            
-            state.final_output = self._generate_final_output(state)
-            state.completed = True
-            
-            # Send progress update: synthesis complete
-            self._send_progress("stage_complete", {
-                "stage": "synthesis",
-                "stage_number": 5,
-                "iteration": state.iteration,
-                "final_output": state.final_output
-            })
-            
-            self.logger.log(
-                task_id=task_id,
-                event_type="agentverse_workflow_complete",
-                message="AgentVerse workflow complete",
-                extra={
-                    "iterations": state.iteration + 1,
-                    "final_score": state.evaluation.score if state.evaluation else 0,
-                },
-            )
-            
-            return self._state_to_response(state)
+
+            response = self._state_to_response(state)
+            if workflow_error is not None:
+                response["workflow_error"] = workflow_error
+                response["partial"] = True
+            return response
     
     def _generate_final_output(self, state: AgentVerseState) -> str:
         """Generate the final synthesized output."""
@@ -1921,25 +2035,9 @@ Feedback: {state.evaluation.feedback}
         
         headers: Dict[str, str] = {}
         propagate.inject(headers)
-        request_id = self._new_llm_request_id(state)
-        headers["X-Request-ID"] = request_id
-        t0 = time.time()
-        response, llm_trace_meta = self._call_llm(prompt, headers=headers, max_tokens=4096)
-        duration = time.time() - t0
-        start_time_utc = datetime.fromtimestamp(t0, tz=timezone.utc).isoformat()
-        self._record_llm_request(
-            state,
-            stage="synthesis",
-            label="final_output",
-            prompt=prompt,
-            response=response,
-            source="Agent A",
-            agent_role="orchestrator",
-            duration_seconds=duration,
-            request_id=request_id,
-            otel=llm_trace_meta.get("otel"),
-            llm_meta=llm_trace_meta.get("llm_backend"),
-            start_time_utc=start_time_utc,
+        response, _llm_meta = self._call_llm_tracked(
+            state, prompt, stage="synthesis", label="final_output",
+            headers=headers, max_tokens=4096,
         )
         return response
     

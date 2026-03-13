@@ -57,6 +57,10 @@ LLM_MAX_NUM_SEQS = os.environ.get("LLM_MAX_NUM_SEQS")
 LLM_MAX_NUM_BATCHED_TOKENS = os.environ.get("LLM_MAX_NUM_BATCHED_TOKENS")
 LLM_GPU_MEMORY_UTILIZATION = os.environ.get("LLM_GPU_MEMORY_UTILIZATION")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
+LLM_MAX_MODEL_LEN = int(os.environ.get("LLM_MAX_MODEL_LEN") or "0")
+# Safety margin (tokens) reserved beyond the completion budget to absorb
+# chat-template overhead and minor tokenizer discrepancies.
+LLM_PROMPT_SAFETY_MARGIN_TOKENS = int(os.environ.get("LLM_PROMPT_SAFETY_MARGIN_TOKENS", "128"))
 LLM_METRICS_ENABLED = os.environ.get("LLM_METRICS_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 LLM_METRICS_INCLUDE_TOKENS = os.environ.get("LLM_METRICS_INCLUDE_TOKENS", "1").lower() in (
     "1",
@@ -91,13 +95,16 @@ if _METRICS_READY:
         "Total LLM requests",
         ["status"],
     )
+    _LLM_LATENCY_BUCKETS = [0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0]
     REQUEST_LATENCY = Histogram(
         f"{LLM_METRICS_PREFIX}_request_latency_seconds",
         "End-to-end LLM request latency",
+        buckets=_LLM_LATENCY_BUCKETS,
     )
     QUEUE_WAIT = Histogram(
         f"{LLM_METRICS_PREFIX}_queue_wait_seconds",
         "Time spent waiting in vLLM queue",
+        buckets=_LLM_LATENCY_BUCKETS,
     )
     INFLIGHT = Gauge(
         f"{LLM_METRICS_PREFIX}_inflight_requests",
@@ -115,6 +122,32 @@ if _METRICS_READY:
         f"{LLM_METRICS_PREFIX}_batch_size",
         "Number of requests batched together",
         buckets=[1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 32],
+    )
+    CONFIG_MAX_NUM_SEQS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_num_seqs",
+        "Configured max_num_seqs (vLLM scheduler concurrency); -1 means default",
+    )
+    CONFIG_MAX_NUM_BATCHED_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_num_batched_tokens",
+        "Configured max_num_batched_tokens (vLLM scheduler); -1 means default",
+    )
+    CONFIG_GPU_MEMORY_UTILIZATION = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_gpu_memory_utilization",
+        "Configured GPU memory utilization target (0-1); -1 means default",
+    )
+    CONFIG_MAX_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_config_max_tokens",
+        "Configured max tokens per generation (LLM_MAX_TOKENS)",
+    )
+    CONFIG_COMPUTED_MAX_CONCURRENCY = Gauge(
+        f"{LLM_METRICS_PREFIX}_computed_max_concurrency",
+        "KV-cache-derived max concurrency: num_gpu_blocks * block_size / max_model_len "
+        "(matches the 'Maximum concurrency for X tokens' line vLLM logs at startup)",
+    )
+    INTERARRIVAL_TIME = Histogram(
+        f"{LLM_METRICS_PREFIX}_interarrival_seconds",
+        "Time between consecutive LLM request arrivals",
+        buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
     )
 
 
@@ -155,6 +188,103 @@ def _record_metrics(
         PROMPT_TOKENS.inc(prompt_tokens)
     if completion_tokens is not None:
         COMPLETION_TOKENS.inc(completion_tokens)
+
+
+async def _probe_engine_max_concurrency() -> None:
+    """Background task: expose vLLM's KV-cache-derived max concurrency as a Prometheus gauge.
+
+    vLLM logs this at startup:
+        Maximum concurrency for <max_model_len> tokens per request: X.XXx
+
+    The value is: num_gpu_blocks * block_size / max_model_len.
+    We try multiple strategies in order of reliability:
+      1. Pre-V1 (<0.6): access engine.cache_config via several possible sync-engine attributes.
+      2. Prometheus registry scan: look for any vLLM metric whose name contains 'num_gpu_blocks'
+         but not 'used' (total-blocks metrics), with dynamic block_size detection.
+    The probe is retried up to 3 times with increasing delays to handle slow engine init.
+    """
+    if not _METRICS_READY:
+        return
+
+    for attempt, delay in enumerate([5, 15, 30]):
+        await asyncio.sleep(delay)
+
+        # Strategy 1: pre-V1 AsyncLLMEngine wraps a sync LLMEngine under various attribute names
+        for attr in ("engine", "_engine", "llm_engine", "_llm_engine"):
+            try:
+                core = getattr(_backend._engine, attr)  # type: ignore[union-attr]
+                num_gpu_blocks: int = core.cache_config.num_gpu_blocks
+                block_size: int = core.cache_config.block_size
+                max_model_len: int = core.model_config.max_model_len
+                if num_gpu_blocks and max_model_len:
+                    computed = (num_gpu_blocks * block_size) / max_model_len
+                    CONFIG_COMPUTED_MAX_CONCURRENCY.set(computed)
+                    print(
+                        f"[llm-metrics] computed_max_concurrency={computed:.2f} "
+                        f"(gpu_blocks={num_gpu_blocks} block_size={block_size} "
+                        f"max_model_len={max_model_len}) [attempt {attempt + 1}]"
+                    )
+                    return
+            except AttributeError:
+                continue
+
+        # Strategy 2: scan Prometheus registry for any vLLM gpu-blocks total metric.
+        # Metric names vary by vLLM version; we match dynamically instead of hardcoding.
+        try:
+            from prometheus_client import REGISTRY  # type: ignore
+
+            ref_max_model_len = LLM_MAX_MODEL_LEN
+
+            # If LLM_MAX_MODEL_LEN was not configured, try to read it from the engine
+            if ref_max_model_len == 0:
+                for attr_chain in [
+                    ("engine", "model_config", "max_model_len"),
+                    ("_engine", "model_config", "max_model_len"),
+                    ("model_config", "max_model_len"),
+                ]:
+                    try:
+                        obj = _backend._engine  # type: ignore[union-attr]
+                        for attr in attr_chain:
+                            obj = getattr(obj, attr)
+                        ref_max_model_len = int(obj)  # type: ignore[arg-type]
+                        break
+                    except AttributeError:
+                        continue
+
+            # Also try to read block_size from the registry
+            detected_block_size: Optional[int] = None
+            num_gpu_blocks_val: float = 0.0
+
+            for metric_family in REGISTRY.collect():
+                name_norm = metric_family.name.lower().replace(":", "_")
+                # Match any metric that exposes total GPU blocks (exclude *_used variants)
+                if "num_gpu_blocks" in name_norm and "used" not in name_norm:
+                    for sample in metric_family.samples:
+                        if sample.value > 0:
+                            num_gpu_blocks_val = sample.value
+                # Some vLLM versions expose block_size directly
+                if "block_size" in name_norm and "gpu" in name_norm:
+                    for sample in metric_family.samples:
+                        if sample.value > 0:
+                            detected_block_size = int(sample.value)
+
+            if num_gpu_blocks_val > 0 and ref_max_model_len > 0:
+                block_size = detected_block_size or int(os.environ.get("VLLM_BLOCK_SIZE", "16"))
+                computed = (num_gpu_blocks_val * block_size) / ref_max_model_len
+                CONFIG_COMPUTED_MAX_CONCURRENCY.set(computed)
+                print(
+                    f"[llm-metrics] computed_max_concurrency={computed:.2f} "
+                    f"(gpu_blocks={num_gpu_blocks_val} block_size={block_size} "
+                    f"max_model_len={ref_max_model_len}) [attempt {attempt + 1}]"
+                )
+                return
+        except Exception:
+            pass
+
+    print(
+        "[llm-metrics] Warning: could not determine computed_max_concurrency "
+        "from vLLM internals after 3 attempts — gauge will remain unset."
+    )
 
 
 class AsyncVLLMBackend:
@@ -376,6 +506,8 @@ _backend: Optional[AsyncVLLMBackend] = None
 _tracer = get_tracer("llm-backend")
 _inflight_count = 0
 _inflight_lock = asyncio.Lock()
+_last_arrival_time: Optional[float] = None
+_arrival_lock = asyncio.Lock()
 
 
 def _otel_span_metadata(span: Any) -> Dict[str, Any]:
@@ -421,7 +553,7 @@ async def handle_metrics(request: web.Request) -> web.Response:
 
 async def handle_chat(request: web.Request) -> web.Response:
     """Handle chat/completion requests with async batching."""
-    global _backend, _inflight_count
+    global _backend, _inflight_count, _last_arrival_time
 
     if _backend is None:
         return web.json_response({"error": "Backend not initialized"}, status=503)
@@ -436,6 +568,12 @@ async def handle_chat(request: web.Request) -> web.Response:
         kind=SpanKind.SERVER,
     ) as span:
         start_time = time.monotonic()
+
+        # Record interarrival time
+        async with _arrival_lock:
+            if _last_arrival_time is not None and _METRICS_READY:
+                INTERARRIVAL_TIME.observe(start_time - _last_arrival_time)
+            _last_arrival_time = start_time
 
         # Track in-flight requests
         async with _inflight_lock:
@@ -488,18 +626,62 @@ async def handle_chat(request: web.Request) -> web.Response:
         if not skip_template:
             prompt = _backend.apply_chat_template(prompt, system_prompt)
 
+        # Truncate the formatted prompt if it would exceed the model's context
+        # window.  We work at the token level so the cut is clean, then decode
+        # back to a string for vLLM.  This is a last-resort safety net; the
+        # orchestrator-side guardrails should trim prompts earlier in most cases.
+        prompt_truncated = False
+        prompt_truncated_tokens: Optional[int] = None
+        if LLM_MAX_MODEL_LEN > 0:
+            _backend._resolve_tokenizer()
+            if _backend._tokenizer is not None:
+                try:
+                    effective_max_new_tokens = (
+                        max_tokens if max_tokens is not None else LLM_MAX_TOKENS
+                    )
+                    max_input_tokens = max(
+                        0,
+                        LLM_MAX_MODEL_LEN
+                        - effective_max_new_tokens
+                        - LLM_PROMPT_SAFETY_MARGIN_TOKENS,
+                    )
+                    token_ids = _backend._tokenizer.encode(
+                        prompt, add_special_tokens=False
+                    )
+                    if len(token_ids) > max_input_tokens:
+                        prompt_truncated_tokens = len(token_ids) - max_input_tokens
+                        token_ids = token_ids[:max_input_tokens]
+                        prompt = _backend._tokenizer.decode(token_ids)
+                        prompt_truncated = True
+                        print(
+                            f"[llm] req={request_id} PROMPT_TRUNCATED "
+                            f"original_tokens={len(token_ids) + prompt_truncated_tokens} "
+                            f"kept={max_input_tokens} "
+                            f"dropped={prompt_truncated_tokens}",
+                            flush=True,
+                        )
+                except Exception as _trunc_exc:
+                    print(
+                        f"[llm] req={request_id} WARNING: prompt truncation failed: {_trunc_exc}",
+                        flush=True,
+                    )
+
         span.set_attribute("app.prompt_length", len(original_prompt))
         span.set_attribute("app.formatted_prompt_length", len(prompt))
         span.set_attribute("app.chat_template_applied", not skip_template and LLM_APPLY_CHAT_TEMPLATE)
+        span.set_attribute("app.prompt_truncated", prompt_truncated)
+        if prompt_truncated_tokens is not None:
+            span.set_attribute("app.prompt_truncated_tokens", int(prompt_truncated_tokens))
         if LOG_LLM_REQUESTS:
             span.set_attribute("app.prompt_preview", original_prompt[:200])
         _log_prompt("http", original_prompt)
 
         # Log request start
         template_info = " (templated)" if (not skip_template and LLM_APPLY_CHAT_TEMPLATE) else ""
+        trunc_info = f" [TRUNCATED -{prompt_truncated_tokens}tok]" if prompt_truncated else ""
         print(
             f"[llm] req={request_id} START inflight={current_inflight} "
-            f"prompt_len={len(original_prompt)}{template_info}",
+            f"prompt_len={len(original_prompt)}{template_info}{trunc_info}",
             flush=True,
         )
 
@@ -622,6 +804,19 @@ async def run_async_server(
         gpu_memory_utilization=gpu_memory_utilization,
     )
 
+    # Export static configuration values as Prometheus gauges so Grafana can
+    # put concurrency and latency into context.
+    if _METRICS_READY:
+        # Use -1 to indicate "default" / not explicitly set for optional values.
+        CONFIG_MAX_NUM_SEQS.set(float(max_num_seqs) if max_num_seqs is not None else -1.0)
+        CONFIG_MAX_NUM_BATCHED_TOKENS.set(
+            float(max_num_batched_tokens) if max_num_batched_tokens is not None else -1.0
+        )
+        CONFIG_GPU_MEMORY_UTILIZATION.set(
+            float(gpu_memory_utilization) if gpu_memory_utilization is not None else -1.0
+        )
+        CONFIG_MAX_TOKENS.set(float(LLM_MAX_TOKENS))
+
     app = create_app()
     runner = web.AppRunner(app)
     await runner.setup()
@@ -637,6 +832,10 @@ async def run_async_server(
     print("=" * 60)
 
     await site.start()
+
+    # Probe vLLM's KV cache config once the engine workers have initialised
+    # and expose the computed max concurrency as a Prometheus gauge.
+    asyncio.create_task(_probe_engine_max_concurrency())
 
     # Keep running until interrupted
     try:

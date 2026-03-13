@@ -11,3 +11,7 @@ mcp>=1.2.0
 fastmcp>=2.0.0
 pydantic>=2.0.0
 
+# experiment
+matplotlib
+pandas
+

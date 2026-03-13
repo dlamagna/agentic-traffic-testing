@@ -21,6 +21,7 @@ class AgentVerseApp {
       workflowPanel: document.querySelector('.workflow-panel'),
       statusIndicator: document.getElementById('statusIndicator'),
       statusText: document.getElementById('statusText'),
+      statusDetail: document.getElementById('statusDetail'),
       statusTime: document.getElementById('statusTime'),
       progressFill: document.getElementById('progressFill'),
       finalOutputContainer: document.getElementById('finalOutputContainer'),

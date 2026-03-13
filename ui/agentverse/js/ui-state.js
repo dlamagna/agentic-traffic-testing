@@ -64,6 +64,7 @@ export class UIState {
     this.timerInterval = null;
     this.elements.statusIndicator.className = success ? 'status-indicator complete' : 'status-indicator error';
     this.elements.statusText.textContent = success ? 'Complete' : 'Error';
+    if (this.elements.statusDetail) this.elements.statusDetail.textContent = '';
   }
 
   /**
@@ -107,6 +108,7 @@ export class UIState {
     // Reset status
     this.elements.statusIndicator.className = 'status-indicator';
     this.elements.statusText.textContent = 'Ready';
+    if (this.elements.statusDetail) this.elements.statusDetail.textContent = '';
     this.elements.statusTime.textContent = '';
     this.elements.llmRequestCount.textContent = '';
     

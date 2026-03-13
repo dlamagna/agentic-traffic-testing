@@ -20,6 +20,10 @@ scrape_configs:
         regex: 'host.docker.internal:(.*)'
         target_label: __address__
         replacement: '172.17.0.1:$1'
+    metric_relabel_configs:
+    - source_labels: [__name__]
+      regex: 'container_blkio_device_usage_total|container_tasks_state|container_memory_failures_total|container_fs_.*'
+      action: drop
 
   # TCP Metrics Collector (runs on host, captures packet-level metrics)
   # Start with: sudo python scripts/monitoring/tcp_metrics_collector.py
@@ -40,7 +44,7 @@ scrape_configs:
     static_configs:
       - targets: ['llm-backend:8000']
     metrics_path: /metrics
-    scrape_interval: 10s
+    scrape_interval: 2s
 
   # Agent A metrics (if we add a /metrics endpoint)
   - job_name: 'agent-a'
@@ -54,7 +58,7 @@ scrape_configs:
   # Agent B metrics
   - job_name: 'agent-b'
     static_configs:
-      - targets: 
+      - targets:
         - 'agent-b:8102'
         - 'agent-b-2:8103'
         - 'agent-b-3:8104'
@@ -63,3 +67,10 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 5s
     honor_labels: true
+
+  # Docker Mapping Exporter - Maps Docker IDs to human-readable names
+  - job_name: 'docker-mapping'
+    static_configs:
+      - targets: ['docker-mapping-exporter:9101']
+    metrics_path: /metrics
+    scrape_interval: 10s
