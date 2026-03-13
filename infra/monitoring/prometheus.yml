@@ -58,7 +58,7 @@ scrape_configs:
   # Agent B metrics
   - job_name: 'agent-b'
     static_configs:
-      - targets: 
+      - targets:
         - 'agent-b:8102'
         - 'agent-b-2:8103'
         - 'agent-b-3:8104'
@@ -67,3 +67,10 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 5s
     honor_labels: true
+
+  # Docker Mapping Exporter - Maps Docker IDs to human-readable names
+  - job_name: 'docker-mapping'
+    static_configs:
+      - targets: ['docker-mapping-exporter:9101']
+    metrics_path: /metrics
+    scrape_interval: 10s
