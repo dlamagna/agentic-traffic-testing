@@ -71,6 +71,26 @@ services:
         ipv4_address: 172.23.0.72
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Docker Mapping Exporter - Maps Docker IDs to human-readable names
+  # ---------------------------------------------------------------------------
+  docker-mapping-exporter:
+    build:
+      context: ../scripts/monitoring
+      dockerfile: Dockerfile.exporter
+    container_name: docker-mapping-exporter
+    hostname: docker-mapping-exporter
+    environment:
+      - EXPORTER_PORT=9101
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "9101:9101"
+    networks:
+      inter_agent_network:
+        ipv4_address: 172.23.0.73
+    restart: unless-stopped
+
 networks:
   inter_agent_network:
     external: true

@@ -96,6 +96,25 @@ services:
       - agent-net
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Docker Mapping Exporter - Maps Docker IDs to human-readable names
+  # ---------------------------------------------------------------------------
+  docker-mapping-exporter:
+    build:
+      context: ../scripts/monitoring
+      dockerfile: Dockerfile.exporter
+    container_name: docker-mapping-exporter
+    hostname: docker-mapping-exporter
+    environment:
+      - EXPORTER_PORT=9101
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "9101:9101"
+    networks:
+      - agent-net
+    restart: unless-stopped
+
 networks:
   agent-net:
     external: true
