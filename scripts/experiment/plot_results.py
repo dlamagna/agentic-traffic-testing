@@ -51,16 +51,19 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
-# Grafana-inspired dark style
+# White background style
 # ---------------------------------------------------------------------------
-DARK_BG   = "#111217"
-PANEL_BG  = "#181b1f"
-GRID_COL  = "#2a2d35"
-TEXT_COL  = "#d8d9da"
+DARK_BG   = "white"
+PANEL_BG  = "#f7f7f7"
+GRID_COL  = "#cccccc"
+TEXT_COL  = "#222222"
+
+# Hard cap on the interarrival-time x-axis — matches the LLM request timeout
+IAT_MAX_S = 180
 PALETTE   = [
-    "#7eb26d", "#eab839", "#6ed0e0", "#ef843c",
-    "#e24d42", "#1f78c1", "#ba43a9", "#705da0",
-    "#508642", "#cca300",
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+    "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    "#bcbd22", "#17becf",
 ]
 
 plt.rcParams.update({
@@ -74,7 +77,7 @@ plt.rcParams.update({
     "text.color":        TEXT_COL,
     "grid.color":        GRID_COL,
     "grid.linestyle":    "--",
-    "grid.alpha":        0.5,
+    "grid.alpha":        0.6,
     "legend.facecolor":  PANEL_BG,
     "legend.edgecolor":  GRID_COL,
     "legend.fontsize":   7,
@@ -619,6 +622,527 @@ def plot_task_comparison(
 
     print(f"  saved  {out_path}")
 # ---------------------------------------------------------------------------
+# Specialised: interarrival times from response.json LLM request timestamps
+# ---------------------------------------------------------------------------
+
+def load_arrival_times_from_responses(
+    experiment_dir: Path,
+) -> tuple[dict[str, list[float]], dict[str, list[float]], list[float]]:
+    """Walk run dirs, read response.json llm_requests, collect arrival timestamps.
+
+    Captures every LLM request from every agent source (Agent A, agent-b-*, etc.)
+    that reached the LLM backend, as recorded in each run's response.json.
+
+    Returns:
+        by_task   – {task_slug: sorted timestamps}  (requests grouped by run task)
+        by_source – {source: sorted timestamps}      (requests grouped by agent type)
+        all_ts    – globally sorted list of all timestamps (LLM-server perspective)
+    """
+    from datetime import datetime
+
+    by_task:   dict[str, list[float]] = {}
+    by_source: dict[str, list[float]] = {}
+    all_ts:    list[float] = []
+
+    for run_dir in sorted(experiment_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        resp_path = run_dir / "response.json"
+        if not resp_path.exists():
+            continue
+
+        # Determine task slug: prefer meta.json, fall back to dir name parsing
+        task_slug: str | None = None
+        meta_path = run_dir / "meta.json"
+        if meta_path.exists():
+            try:
+                task_slug = json.loads(meta_path.read_text()).get("task_slug")
+            except Exception:
+                pass
+        if not task_slug:
+            # dir name pattern: YYYY-MM-DD_HH-MM-SS_<task-slug>_<uuid>
+            parts = run_dir.name.split("_")
+            if len(parts) >= 4:
+                task_slug = "_".join(parts[2:-1])
+            else:
+                task_slug = run_dir.name
+
+        try:
+            data = json.loads(resp_path.read_text())
+        except Exception:
+            continue
+
+        for req in data.get("llm_requests", []):
+            ts_str = req.get("start_time_utc")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str).timestamp()
+            except Exception:
+                continue
+            source = req.get("source", "unknown")
+            by_task.setdefault(task_slug, []).append(ts)
+            by_source.setdefault(source, []).append(ts)
+            all_ts.append(ts)
+
+    for d in (by_task, by_source):
+        for k in d:
+            d[k].sort()
+    all_ts.sort()
+
+    return by_task, by_source, all_ts
+
+
+def plot_interarrival_from_responses(
+    experiment_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Compute and plot interarrival time distribution from response.json timestamps.
+
+    Produces a separate PNG (interarrival_from_responses.png) that is
+    independent of Grafana / Prometheus data.
+    """
+    by_task, by_source, all_ts = load_arrival_times_from_responses(experiment_dir)
+
+    if not all_ts:
+        print("  WARN  no response.json llm_requests found – skipping response-based IAT plot")
+        return
+
+    # Per-task IATs (diff within each task's sorted stream)
+    iat_by_task: dict[str, np.ndarray] = {
+        task: np.diff(np.array(ts))
+        for task, ts in by_task.items()
+        if len(ts) >= 2
+    }
+    # Per-source IATs
+    iat_by_source: dict[str, np.ndarray] = {
+        src: np.diff(np.array(ts))
+        for src, ts in by_source.items()
+        if len(ts) >= 2
+    }
+    # Global IAT: diff over the entire sorted stream — true LLM-server view
+    global_iats = np.diff(np.array(all_ts))
+
+    if not iat_by_task:
+        print("  WARN  insufficient arrival timestamps for IAT calculation")
+        return
+
+    tasks   = sorted(iat_by_task.keys())
+    sources = sorted(iat_by_source.keys())
+    all_t0  = all_ts[0]
+
+    def _hist_kde(ax, vals, color, label):
+        clipped = vals[vals <= IAT_MAX_S]
+        n_over = len(vals) - len(clipped)
+        lbl = label if n_over == 0 else f"{label} ({n_over} > {IAT_MAX_S}s clipped)"
+        ax.hist(clipped, bins=30, density=True, alpha=0.4, color=color, label=lbl)
+        if SCIPY_AVAILABLE and len(clipped) > 5:
+            kde = scipy_stats.gaussian_kde(clipped)
+            xs = np.linspace(0, IAT_MAX_S, 300)
+            ax.plot(xs, kde(xs), color=color, linewidth=2)
+        ax.set_xlim(0, IAT_MAX_S)
+
+    def _annotate_pct(ax, vals, color, row_offset=0):
+        for pct, ls in [(50, "--"), (95, ":")]:
+            pval = np.percentile(vals, pct)
+            ax.axvline(pval, color=color, linestyle=ls, alpha=0.6, linewidth=1)
+            ax.text(pval, 0.02 + row_offset * 0.07, f"p{pct}={pval:.2f}s",
+                    color=color, fontsize=6, ha="left")
+
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+    fig.patch.set_facecolor(DARK_BG)
+    fig.suptitle(
+        "LLM Interarrival Time Distribution — all agents → LLM backend"
+        " (source: response.json request timestamps)",
+        fontsize=11, color=TEXT_COL, fontweight="bold",
+    )
+
+    # ── Row 0 left: arrival timeline coloured by task ──────────────────────
+    ax = axes[0][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Request Arrival Times (by task)", loc="left", fontsize=9)
+    ax.set_ylabel("task")
+    ax.set_xlabel("time (relative, s)")
+    ax.grid(True)
+    for i, task in enumerate(tasks):
+        ts = np.array(by_task[task]) - all_t0
+        color = PALETTE[i % len(PALETTE)]
+        ax.scatter(ts, [task] * len(ts), s=6, color=color, alpha=0.55, label=task)
+    ax.legend(fontsize=6, loc="upper left")
+
+    # ── Row 0 right: arrival timeline coloured by source agent ─────────────
+    ax = axes[0][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Request Arrival Times (by agent source)", loc="left", fontsize=9)
+    ax.set_ylabel("source")
+    ax.set_xlabel("time (relative, s)")
+    ax.grid(True)
+    for i, src in enumerate(sources):
+        ts = np.array(by_source[src]) - all_t0
+        color = PALETTE[i % len(PALETTE)]
+        ax.scatter(ts, [src] * len(ts), s=6, color=color, alpha=0.55, label=src)
+    ax.legend(fontsize=6, loc="upper left")
+
+    # ── Row 1 left: per-task IAT histogram + KDE ───────────────────────────
+    ax = axes[1][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Interarrival Time Histogram (per task)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("density")
+    ax.grid(True)
+    for i, task in enumerate(tasks):
+        _hist_kde(ax, iat_by_task[task], PALETTE[i % len(PALETTE)],
+                  f"{task} (n={len(iat_by_task[task])})")
+    ax.legend(fontsize=7)
+
+    # ── Row 1 right: per-source IAT histogram + KDE ────────────────────────
+    ax = axes[1][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Interarrival Time Histogram (per agent source)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("density")
+    ax.grid(True)
+    for i, src in enumerate(sources):
+        _hist_kde(ax, iat_by_source[src], PALETTE[i % len(PALETTE)],
+                  f"{src} (n={len(iat_by_source[src])})")
+    ax.legend(fontsize=7)
+
+    # ── Row 2 left: per-task ECDF ──────────────────────────────────────────
+    ax = axes[2][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Interarrival Time ECDF (per task)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("P(X ≤ x)")
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, IAT_MAX_S)
+    ax.grid(True)
+    for i, task in enumerate(tasks):
+        vals = np.sort(iat_by_task[task])
+        ax.plot(vals, np.arange(1, len(vals) + 1) / len(vals),
+                label=f"{task} (n={len(vals)})",
+                color=PALETTE[i % len(PALETTE)], linewidth=2)
+        _annotate_pct(ax, vals, PALETTE[i % len(PALETTE)], row_offset=i)
+    ax.legend(fontsize=7)
+
+    # ── Row 2 right: globally-sorted IAT (true LLM-server view) ───────────
+    ax = axes[2][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title(
+        f"Global Interarrival Time – all agents, all tasks (n={len(global_iats)})",
+        loc="left", fontsize=9,
+    )
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("density")
+    ax.grid(True)
+    agg_color = PALETTE[len(tasks) % len(PALETTE)]
+    global_clipped = global_iats[global_iats <= IAT_MAX_S]
+    n_over_global = len(global_iats) - len(global_clipped)
+    global_lbl = f"global (n={len(global_iats)}" + (f", {n_over_global} clipped)" if n_over_global else ")")
+    ax.hist(global_clipped, bins=40, density=True, alpha=0.5, color=agg_color, label=global_lbl)
+    if SCIPY_AVAILABLE and len(global_clipped) > 5:
+        kde = scipy_stats.gaussian_kde(global_clipped)
+        xs = np.linspace(0, IAT_MAX_S, 300)
+        ax.plot(xs, kde(xs), color=agg_color, linewidth=2.5, label="KDE")
+    ax.set_xlim(0, IAT_MAX_S)
+    for pct, ls in [(50, "--"), (95, ":"), (99, "-.")]:
+        pval = np.percentile(global_iats, pct)
+        ax.axvline(pval, color=TEXT_COL, linestyle=ls, alpha=0.7, linewidth=1.2)
+        ax.text(pval, 0, f"p{pct}={pval:.2f}s", color=TEXT_COL, fontsize=7,
+                ha="left", transform=ax.get_xaxis_transform(), va="bottom")
+    ax.legend(fontsize=7)
+
+    plt.tight_layout()
+    out_path = output_dir / "interarrival_from_responses.png"
+    fig.savefig(out_path, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"  saved  {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Distribution fitting & hypothesis tests for interarrival times
+# ---------------------------------------------------------------------------
+
+# Candidate distributions with display names
+_CANDIDATE_DISTS = [
+    ("expon",       "Exponential (Poisson process)"),
+    ("weibull_min", "Weibull"),
+    ("lognorm",     "Log-normal"),
+    ("gamma",       "Gamma"),
+    ("pareto",      "Pareto (heavy-tail)"),
+]
+
+
+def _fit_and_test(vals: np.ndarray) -> list[dict]:
+    """Fit each candidate distribution to *vals* via MLE, run KS test, compute AIC."""
+    results = []
+    n = len(vals)
+    for dist_name, dist_label in _CANDIDATE_DISTS:
+        dist = getattr(scipy_stats, dist_name)
+        try:
+            params = dist.fit(vals, floc=0)   # fix location=0 (IATs ≥ 0)
+            log_ll = np.sum(dist.logpdf(vals, *params))
+            k      = len(params)
+            aic    = 2 * k - 2 * log_ll
+            bic    = k * np.log(n) - 2 * log_ll
+            ks_stat, ks_p = scipy_stats.kstest(vals, dist_name, args=params)
+            results.append({
+                "name":    dist_name,
+                "label":   dist_label,
+                "params":  params,
+                "log_ll":  log_ll,
+                "aic":     aic,
+                "bic":     bic,
+                "ks_stat": ks_stat,
+                "ks_p":    ks_p,
+            })
+        except Exception:
+            pass
+    results.sort(key=lambda r: r["aic"])
+    return results
+
+
+def _descriptive_stats(vals: np.ndarray) -> dict:
+    """Return a dict of descriptive statistics relevant to IAT characterisation."""
+    mean = vals.mean()
+    std  = vals.std()
+    cv   = std / mean if mean > 0 else float("nan")   # CV=1 → exponential
+
+    # Autocorrelation at lags 1..5 (Poisson ≈ 0 at all lags)
+    acf = [float(pd.Series(vals).autocorr(lag=lag)) for lag in range(1, 6)]
+
+    # Ljung-Box test for independence (H0: no autocorrelation up to lag 10)
+    try:
+        from statsmodels.stats.diagnostic import acorr_ljungbox  # type: ignore
+        lb_result = acorr_ljungbox(vals, lags=[10], return_df=True)
+        lb_stat = float(lb_result["lb_stat"].iloc[0])
+        lb_p    = float(lb_result["lb_pvalue"].iloc[0])
+    except Exception:
+        lb_stat, lb_p = float("nan"), float("nan")
+
+    return {
+        "n":        len(vals),
+        "mean":     mean,
+        "std":      std,
+        "cv":       cv,
+        "skewness": float(scipy_stats.skew(vals)),
+        "kurtosis": float(scipy_stats.kurtosis(vals)),
+        "p50":      float(np.percentile(vals, 50)),
+        "p95":      float(np.percentile(vals, 95)),
+        "p99":      float(np.percentile(vals, 99)),
+        "acf":      acf,
+        "lb_stat":  lb_stat,
+        "lb_p":     lb_p,
+    }
+
+
+def _interpret(stats: dict, fits: list[dict]) -> list[str]:
+    """Return plain-English interpretation lines."""
+    lines = []
+    cv = stats["cv"]
+    if cv < 0.8:
+        lines.append(f"  CV={cv:.3f} < 1  → more regular than Poisson (sub-exponential variability)")
+    elif cv > 1.2:
+        lines.append(f"  CV={cv:.3f} > 1  → burstier than Poisson (super-exponential variability)")
+    else:
+        lines.append(f"  CV={cv:.3f} ≈ 1  → variability consistent with Poisson/exponential")
+
+    if not np.isnan(stats["lb_p"]):
+        if stats["lb_p"] < 0.05:
+            lines.append(
+                f"  Ljung-Box p={stats['lb_p']:.4f} < 0.05  → significant autocorrelation; "
+                "arrivals are NOT independent (not pure Poisson)"
+            )
+        else:
+            lines.append(
+                f"  Ljung-Box p={stats['lb_p']:.4f} ≥ 0.05  → no significant autocorrelation; "
+                "arrival independence assumption not rejected"
+            )
+
+    best = fits[0]
+    lines.append(
+        f"  Best-fit by AIC: {best['label']}  "
+        f"(AIC={best['aic']:.1f}, KS p={best['ks_p']:.4f})"
+    )
+    if best["ks_p"] >= 0.05:
+        lines.append(f"  KS test does NOT reject {best['label']} at α=0.05")
+    else:
+        lines.append(
+            f"  KS test REJECTS {best['label']} at α=0.05 — "
+            "no candidate fits perfectly; consider a mixture or empirical model"
+        )
+    return lines
+
+
+def _format_fit_table(fits: list[dict]) -> list[str]:
+    lines = []
+    lines.append(
+        f"  {'Distribution':<36} {'AIC':>10} {'BIC':>10} "
+        f"{'KS stat':>9} {'KS p':>8}  {'not rejected?':>14}"
+    )
+    lines.append("  " + "-" * 92)
+    for r in fits:
+        reject = "yes (α=0.05)" if r["ks_p"] >= 0.05 else "NO"
+        lines.append(
+            f"  {r['label']:<36} {r['aic']:>10.1f} {r['bic']:>10.1f} "
+            f"{r['ks_stat']:>9.4f} {r['ks_p']:>8.4f}  {reject:>14}"
+        )
+    return lines
+
+
+def analyse_iat_distributions(
+    experiment_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Fit candidate distributions and run hypothesis tests on IAT data.
+
+    Outputs:
+      - interarrival_fit_report.txt  – detailed text report
+      - interarrival_fit.png         – histogram + fitted PDFs + probability plots
+    """
+    if not SCIPY_AVAILABLE:
+        print("  WARN  scipy not available – skipping distribution fitting")
+        return
+
+    _, _, all_ts = load_arrival_times_from_responses(experiment_dir)
+    if len(all_ts) < 10:
+        print("  WARN  too few arrival timestamps for distribution fitting")
+        return
+
+    global_iats = np.diff(np.array(all_ts))
+    # Remove exact zeros (simultaneous log entries) to avoid degenerate fits
+    vals = global_iats[global_iats > 0]
+
+    stats  = _descriptive_stats(vals)
+    fits   = _fit_and_test(vals)
+    interp = _interpret(stats, fits)
+
+    # ── Text report ──────────────────────────────────────────────────────────
+    report_lines: list[str] = []
+    report_lines.append("=" * 96)
+    report_lines.append("  Interarrival Time Distribution Analysis  (global stream — all agents)")
+    report_lines.append("=" * 96)
+    report_lines.append(
+        f"\n  Samples (n):  {stats['n']}   "
+        f"mean={stats['mean']:.4f}s   std={stats['std']:.4f}s   "
+        f"CV={stats['cv']:.3f}"
+    )
+    report_lines.append(
+        f"  p50={stats['p50']:.4f}s   p95={stats['p95']:.4f}s   p99={stats['p99']:.4f}s"
+    )
+    report_lines.append(
+        f"  skewness={stats['skewness']:.3f}   excess kurtosis={stats['kurtosis']:.3f}"
+    )
+    acf_str = "  ".join(f"lag{i+1}={v:.3f}" for i, v in enumerate(stats["acf"]))
+    report_lines.append(f"\n  ACF: {acf_str}")
+    if not np.isnan(stats["lb_stat"]):
+        report_lines.append(
+            f"  Ljung-Box (lag=10): stat={stats['lb_stat']:.3f}  p={stats['lb_p']:.4f}"
+        )
+
+    report_lines.append("\n  Goodness-of-fit (MLE fit, KS test, AIC/BIC):\n")
+    report_lines.extend(_format_fit_table(fits))
+
+    report_lines.append("\n  Interpretation:\n")
+    report_lines.extend(interp)
+    report_lines.append("\n" + "=" * 96)
+
+    report_text = "\n".join(report_lines)
+    print(report_text)
+    (output_dir / "interarrival_fit_report.txt").write_text(report_text + "\n")
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    n_prob = min(3, len(fits))   # probability plots for top-N fits
+    fig = plt.figure(figsize=(16, 10))
+    fig.patch.set_facecolor(DARK_BG)
+    fig.suptitle(
+        "IAT Distribution Fitting — all agents → LLM backend (global stream)",
+        fontsize=11, color=TEXT_COL, fontweight="bold",
+    )
+
+    # Left panel: histogram + fitted PDFs
+    ax_hist = fig.add_subplot(1, 2, 1)
+    ax_hist.set_facecolor(PANEL_BG)
+    ax_hist.set_title("Global IAT: histogram + fitted PDFs", loc="left", fontsize=9)
+    ax_hist.set_xlabel("interarrival time (s)")
+    ax_hist.set_ylabel("density")
+    ax_hist.grid(True)
+
+    vals_clipped = vals[vals <= IAT_MAX_S]
+    n_over_fit = len(vals) - len(vals_clipped)
+    fit_lbl = f"observed (n={len(vals)}" + (f", {n_over_fit} clipped)" if n_over_fit else ")")
+    ax_hist.hist(vals_clipped, bins=50, density=True, alpha=0.35,
+                 color=PALETTE[0], label=fit_lbl)
+    # KDE of empirical data
+    kde = scipy_stats.gaussian_kde(vals_clipped)
+    xs  = np.linspace(0, IAT_MAX_S, 500)
+    ax_hist.plot(xs, kde(xs), color=PALETTE[0], linewidth=2, linestyle="--", label="empirical KDE")
+
+    for i, fit in enumerate(fits):
+        dist   = getattr(scipy_stats, fit["name"])
+        params = fit["params"]
+        color  = PALETTE[(i + 1) % len(PALETTE)]
+        reject = "" if fit["ks_p"] >= 0.05 else " ✗"
+        ax_hist.plot(
+            xs, dist.pdf(xs, *params),
+            color=color, linewidth=1.8,
+            label=f"{fit['label']}{reject}  (AIC={fit['aic']:.0f}, p={fit['ks_p']:.3f})",
+        )
+    ax_hist.set_xlim(0, IAT_MAX_S)
+    ax_hist.legend(fontsize=6.5)
+
+    # Right panel(s): probability plots for top-N candidates, stacked vertically
+    gs_right = fig.add_gridspec(n_prob, 2, left=0.55, right=0.97,
+                                hspace=0.55, wspace=0.3)
+    for i in range(n_prob):
+        fit   = fits[i]
+        dist  = getattr(scipy_stats, fit["name"])
+        color = PALETTE[(i + 1) % len(PALETTE)]
+
+        ax_pp = fig.add_subplot(gs_right[i, 0])
+        ax_pp.set_facecolor(PANEL_BG)
+        ax_pp.set_title(f"Prob. plot: {fit['label']}", loc="left", fontsize=7.5)
+        ax_pp.grid(True)
+
+        (osm, osr), (slope, intercept, r) = scipy_stats.probplot(
+            vals, dist=fit["name"], sparams=fit["params"][:-2],   # shape params only
+            fit=True,
+        )
+        ax_pp.scatter(osm, osr, s=4, alpha=0.5, color=color)
+        line_x = np.array([osm.min(), osm.max()])
+        ax_pp.plot(line_x, slope * line_x + intercept,
+                   color=TEXT_COL, linewidth=1.2, linestyle="--",
+                   label=f"R²={r**2:.4f}")
+        ax_pp.set_xlabel("theoretical quantiles", fontsize=7)
+        ax_pp.set_ylabel("sample quantiles", fontsize=7)
+        ax_pp.legend(fontsize=6.5)
+
+        # ACF bar chart alongside each prob plot
+        ax_acf = fig.add_subplot(gs_right[i, 1])
+        ax_acf.set_facecolor(PANEL_BG)
+        ax_acf.set_title("Autocorrelation (lags 1–5)", loc="left", fontsize=7.5)
+        ax_acf.grid(True)
+        lags = list(range(1, 6))
+        acf_vals = stats["acf"]
+        bar_colors = [PALETTE[2] if abs(v) < 0.1 else PALETTE[3] for v in acf_vals]
+        ax_acf.bar(lags, acf_vals, color=bar_colors, alpha=0.75)
+        ax_acf.axhline(0, color=TEXT_COL, linewidth=0.8)
+        # ±1.96/√n confidence bounds
+        ci = 1.96 / np.sqrt(len(vals))
+        ax_acf.axhline(ci,  color=PALETTE[3], linewidth=0.8, linestyle="--", label=f"±95% CI ({ci:.3f})")
+        ax_acf.axhline(-ci, color=PALETTE[3], linewidth=0.8, linestyle="--")
+        ax_acf.set_xlabel("lag", fontsize=7)
+        ax_acf.set_ylabel("ACF", fontsize=7)
+        ax_acf.legend(fontsize=6)
+        break   # only draw ACF once (top row), leave remaining rows for prob plots only
+
+    plt.tight_layout(rect=[0, 0, 0.53, 1])
+    out_path = output_dir / "interarrival_fit.png"
+    fig.savefig(out_path, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"  saved  {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Statistics table (printed to stdout and saved as text)
 # ---------------------------------------------------------------------------
 
@@ -743,8 +1267,19 @@ def main() -> None:
     # -----------------------------------------------------------------------
     plot_per_run_summary(experiment_dir, df_all, plots_dir)
     plot_task_comparison(experiment_dir, df_all, plots_dir)
+
     # -----------------------------------------------------------------------
-    # 4. Statistics table
+    # 4. Interarrival times from raw response.json timestamps (no Grafana)
+    # -----------------------------------------------------------------------
+    plot_interarrival_from_responses(experiment_dir, plots_dir)
+
+    # -----------------------------------------------------------------------
+    # 5. Distribution fitting & hypothesis tests
+    # -----------------------------------------------------------------------
+    analyse_iat_distributions(experiment_dir, plots_dir)
+
+    # -----------------------------------------------------------------------
+    # 6. Statistics table
     # -----------------------------------------------------------------------
     print_stats_table(df_all, plots_dir)
 
