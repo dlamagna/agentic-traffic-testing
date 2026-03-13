@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY docker_mapping_exporter.py .
+
+EXPOSE 9101
+
+CMD ["python3", "-u", "docker_mapping_exporter.py"]
