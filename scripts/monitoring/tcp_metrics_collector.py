@@ -147,21 +147,22 @@ def bucket_for_rtt(rtt: float) -> str:
 def parse_tcpdump_line(line: str) -> Optional[dict]:
     """
     Parse a tcpdump output line.
-    
+
     Example formats with -tt timestamps:
     1772100649.468003 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [S], seq 123, length 0
     1772100649.468060 IP 172.23.0.10.8101 > 172.23.0.30.8000: Flags [.], ack 1, length 1024
     """
-    # Pattern for tcpdump verbose output (we ignore the exact timestamp format)
-    pattern = r'\S+\s+IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+):\s+Flags\s+\[([^\]]+)\].*?length\s+(\d+)'
-    
+    # Capture the unix timestamp so we can use actual packet time for RTT calculations
+    pattern = r'(\d+\.\d+)\s+IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+)\.(\d+):\s+Flags\s+\[([^\]]+)\].*?length\s+(\d+)'
+
     match = re.search(pattern, line)
     if not match:
         return None
-    
-    src_ip, src_port, dst_ip, dst_port, flags, length = match.groups()
-    
+
+    ts, src_ip, src_port, dst_ip, dst_port, flags, length = match.groups()
+
     return {
+        "ts": float(ts),
         "src_ip": src_ip,
         "src_port": int(src_port),
         "dst_ip": dst_ip,
@@ -174,30 +175,32 @@ def parse_tcpdump_line(line: str) -> Optional[dict]:
 def process_packet(pkt: dict) -> None:
     """Process a parsed packet and update metrics."""
     global metrics
-    
+
     src_service = ip_to_service(pkt["src_ip"])
     dst_service = ip_to_service(pkt["dst_ip"])
     service_pair = (src_service, dst_service)
-    
+
     # Flow key (bidirectional)
     flow_key = tuple(sorted([
         (pkt["src_ip"], pkt["src_port"]),
         (pkt["dst_ip"], pkt["dst_port"])
     ]))
-    
-    now = time.time()
-    
+
+    # Use the actual packet timestamp from tcpdump -tt output for timing accuracy.
+    # Falling back to wall-clock only if the field is missing (shouldn't happen).
+    pkt_time: float = pkt.get("ts") or time.time()
+
     with metrics.lock:
         metrics.packets_processed += 1
-        
+
         # Update counters
         metrics.packets[service_pair] += 1
         metrics.bytes[service_pair] += pkt["length"]
-        
+
         # Update packet size histogram
         size_bucket = bucket_for_size(pkt["length"])
         metrics.packet_size_buckets[size_bucket] += 1
-        
+
         # Check flags
         flags = pkt["flags"]
         # SYN (not SYN-ACK)
@@ -205,14 +208,14 @@ def process_packet(pkt: dict) -> None:
             metrics.syn_count[service_pair] += 1
             # Record SYN timestamp keyed by 4-tuple (client -> server)
             syn_key = (pkt["src_ip"], pkt["src_port"], pkt["dst_ip"], pkt["dst_port"])
-            metrics.syn_timestamps[syn_key] = now
+            metrics.syn_timestamps[syn_key] = pkt_time
         # SYN-ACK (both S and . set in flags)
         elif "S" in flags and "." in flags:
             # Reverse 4-tuple to find matching SYN
             syn_key = (pkt["dst_ip"], pkt["dst_port"], pkt["src_ip"], pkt["src_port"])
             t0 = metrics.syn_timestamps.pop(syn_key, None)
             if t0 is not None:
-                rtt = now - t0
+                rtt = pkt_time - t0
                 bucket = bucket_for_rtt(rtt)
                 client_ip, _cport, server_ip, _sport = syn_key
                 client_service = ip_to_service(client_ip)
@@ -222,7 +225,7 @@ def process_packet(pkt: dict) -> None:
             metrics.fin_count[service_pair] += 1
         if "R" in flags:
             metrics.rst_count[service_pair] += 1
-        
+
         # Track flows
         if flow_key not in metrics.flows:
             metrics.flows[flow_key] = FlowState(
@@ -232,21 +235,21 @@ def process_packet(pkt: dict) -> None:
                 dst_service=dst_service,
                 src_port=pkt["src_port"],
                 dst_port=pkt["dst_port"],
-                start_time=now,
-                last_seen=now,
+                start_time=pkt_time,
+                last_seen=pkt_time,
             )
-        
+
         flow = metrics.flows[flow_key]
-        flow.last_seen = now
+        flow.last_seen = pkt_time
         flow.packets += 1
         flow.bytes += pkt["length"]
-        
+
         if "S" in flags:
             flow.syn_seen = True
         if "F" in flags:
             flow.fin_seen = True
             # Flow is closing, record duration
-            duration = now - flow.start_time
+            duration = pkt_time - flow.start_time
             bucket = bucket_for_duration(duration)
             metrics.flow_duration_buckets[(flow.src_service, flow.dst_service, bucket)] += 1
 
