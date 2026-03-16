@@ -1,254 +1,218 @@
 # Agentic Traffic Testbed
 
-This repository contains an **initial testbed** to study how **agentic software** (LLM-powered agents with tools) generates traffic patterns that differ from **non-agentic**, traditional microservice-based applications.
+A testbed to study how **agentic software** (LLM-powered agents with tools) generates traffic patterns that differ from non-agentic workloads.
 
-The long-term goal is to characterise, at the **network level (L3/L4)**, how agentic workloads behave: burstiness, RTT distributions, retransmissions, traffic fan-out, and the relationship between semantic workflow (AgentID, TaskID, ToolCallID) and packet/flow-level behaviour.
+The goal is to characterise, across multiple layers (L2–L8), how agentic workflows behave: request interarrival distributions, burstiness, RTT, flow durations, and the relationship between semantic workflow decisions (orchestration mode, tool use, agent fan-out) and packet/flow-level network behaviour.
 
-This MVP runs entirely on a **single GPU server**, using a **virtual multi-node setup** (multiple VMs or lightweight “nodes” on the same host).
+Runs entirely on a **single GPU server** using **Docker containers** to simulate a multi-node setup.
 
 ---
 
 ## Table of contents
 
-- [1. High-level architecture (MVP)](#1-high-level-architecture-mvp)
-- [2. What is eBPF and why we use it here](#2-what-is-ebpf-and-why-we-use-it-here)
-  - [Installing eBPF tools (Debian/Ubuntu)](#installing-ebpf-tools-debianubuntu)
-  - [Example commands to collect L3/L4 metrics](#example-commands-to-collect-l3l4-metrics)
-- [3. Repository layout](#3-repository-layout)
-- [4. LLM config](#4-llm-config)
-- [5. Agent endpoints](#5-agent-endpoints)
-- [6. Agent config and roles](#6-agent-config-and-roles)
-- [7. Shared GPU usage checks (read-only)](#7-shared-gpu-usage-checks-read-only)
-- [8. Health check script](#8-health-check-script)
-- [9. MCP-Universe benchmark integration](#9-mcp-universe-benchmark-integration)
-- [10. Experiment runner (bulk data collection & plotting)](#10-experiment-runner)
+- [1. Architecture](#1-architecture)
+- [2. Repository layout](#2-repository-layout)
+- [3. Quickstart](#3-quickstart)
+- [4. Agent endpoints](#4-agent-endpoints)
+- [5. Agent config and roles](#5-agent-config-and-roles)
+- [6. Monitoring](#6-monitoring)
+- [7. Experiment runner](#7-experiment-runner)
+- [8. MCP-Universe benchmark integration](#8-mcp-universe-benchmark-integration)
+- [9. Shared GPU usage](#9-shared-gpu-usage)
 
 ---
 
-## 1. High-level architecture (MVP)
-
-The MVP architecture looks like this:
+## 1. Architecture
 
 ```mermaid
-flowchart LR
-    %% Physical host
-    subgraph Host["Physical Server (GPU)"]
-        
-        %% Virtual node 1: Agent A
-        subgraph Node1["VM / Node 1 - Agent A"]
-            AgentA["Agent A (MCP host + LLM client)"]
-            AgentALogger["Agent A Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
-        end
+flowchart TB
 
-        %% Virtual node 2: Agent B
-        subgraph Node2["VM / Node 2 - Agent B"]
-            AgentB["Agent B (MCP host + LLM client)"]
-            BaselineSvc["Baseline Non-agentic Service (e.g. fixed microservice chain)"]
-            AgentBLogger["Agent B Telemetry Hooks (TaskID / AgentID / ToolCallID)"]
-        end
+%% LAYERS
+L8["L8 Workflow (AgentVerse)"]
+L7["L7 Agents + MCP (python)"]
+L6["L6 Docker Containers"]
+L5["L5 LLM Backend (vLLM + Llama)"]
+L34["L3/4 Docker Networks"]
+L2["L2 Traffic Capture (tcpdump)"]
 
-        %% Virtual node 3: Local LLM / SLM server
-        subgraph Node3["VM / Node 3 - LLM / SLM Server"]
-            LLM["Local LLM / SLM Server (vLLM or similar)"]
-        end
+%% MAIN STACK
+L8 --> L7
+L7 --> L6
+L6 --> L5
+L34 --> L2
 
-        %% Virtual node 4: MCP Tool Servers
-        subgraph Node4["VM / Node 4 - MCP Tool Servers"]
-            Tool1["MCP Tool Server 1 (e.g. DB / HTTP API)"]
-            Tool2["MCP Tool Server 2 (e.g. Synthetic microservice)"]
-            ToolN["MCP Tool Server N (additional tools)"]
-        end
+%% NETWORK PATHS
+L6 --> L34
+L5 --> L34
 
-        %% eBPF observability on each node
-        subgraph Obs1["Node 1 eBPF"]
-            BCC1["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
-        end
+%% MONITORING
+PROM["Prometheus"]
+GRAF["Grafana"]
 
-        subgraph Obs2["Node 2 eBPF"]
-            BCC2["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
-        end
+PROM --> GRAF
 
-        subgraph Obs3["Node 3 eBPF"]
-            BCC3["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
-        end
+%% METRICS
+L8 -. workflow latency .-> PROM
+L7 -. token usage .-> PROM
+L6 -. cpu / memory .-> PROM
+L5 -. model latency / TTFT .-> PROM
+L34 -. connection rates .-> PROM
+L2 -. packet timing .-> PROM
 
-        subgraph Obs4["Node 4 eBPF"]
-            BCC4["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
-        end
-
-        %% Optional metrics store on host
-        MetricsDB["(Optional Metrics Store (e.g. Prometheus / logs folder))"]
-    end
-
-    %% Traffic paths (logical)
-    User((User / Benchmark Driver)) -->|User task / intent| AgentA
-    AgentA -->|Agent message / subtask| AgentB
-    AgentA -->|MCP tool calls| Tool1
-    AgentA -->|MCP tool calls| Tool2
-    AgentB -->|MCP tool calls| Tool1
-    AgentB -->|MCP tool calls| Tool2
-    AgentA -->|Service calls| BaselineSvc
-    AgentB -->|Service calls| BaselineSvc
-
-    AgentA -->|LLM queries| LLM
-    AgentB -->|LLM queries| LLM
-
-    %% eBPF data flow
-    AgentA --- BCC1
-    AgentB --- BCC2
-    BaselineSvc --- BCC2
-    LLM --- BCC3
-    Tool1 --- BCC4
-    Tool2 --- BCC4
-    ToolN --- BCC4
-
-    BCC1 -->|export logs / metrics| MetricsDB
-    BCC2 -->|export logs / metrics| MetricsDB
-    BCC3 -->|export logs / metrics| MetricsDB
-    BCC4 -->|export logs / metrics| MetricsDB
+%% STYLING
+style L8 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+style L7 fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+style L6 fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+style L5 fill:#fce4ec,stroke:#d81b60,stroke-width:2px
+style L34 fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
+style L2 fill:#eceff1,stroke:#546e7a,stroke-width:2px
 ```
 
-### Components
+The testbed runs in **distributed mode** (default): each logical service gets an isolated Docker network plus every service joins a shared `inter_agent_network` (`172.23.0.0/24`) that carries all cross-service traffic.
 
-* **Node 1 – Agent A**
+| Service | agent_a_network | agent_b_network | llm_network | tools_network | inter_agent_network |
+|---|---|---|---|---|---|
+| agent-a | 172.20.0.10 | — | — | — | 172.23.0.10 |
+| agent-b | — | 172.21.0.10 | — | — | 172.23.0.20 |
+| agent-b-2 | — | 172.21.0.11 | — | — | 172.23.0.21 |
+| agent-b-3 | — | 172.21.0.12 | — | — | 172.23.0.22 |
+| agent-b-4 | — | 172.21.0.13 | — | — | 172.23.0.23 |
+| agent-b-5 | — | 172.21.0.14 | — | — | 172.23.0.24 |
+| llm-backend | — | — | 172.22.0.10 | — | 172.23.0.30 |
+| mcp-tool-db | — | — | — | 172.24.0.10 | 172.23.0.40 |
+| prometheus | — | — | — | — | 172.23.0.70 |
+| grafana | — | — | — | — | 172.23.0.71 |
+| cadvisor | — | — | — | — | 172.23.0.72 |
+| docker-mapping-exporter | — | — | — | — | 172.23.0.73 |
 
-  * Agent A: LLM-based agent (MCP host + LLM client).
-  * Emits application-level telemetry: `TaskID`, `AgentID`, `ToolCallID`.
+All IPs are overridable via environment variables in `infra/.env`. The conditions of each network can be manipulated to introduce delay, jitter, and packet loss. See [docs/networking.md](docs/networking.md) for full network topology details.
 
-* **Node 2 – Agent B**
+### Services
 
-  * Agent B: second agent (e.g. planner, tool specialist, summariser).
-  * `BaselineSvc`: non-agentic baseline microservice chain (fixed call graph, no LLM).
+| Service | Role |
+|---------|------|
+| **agent-a** | Orchestrator — recruits Agent B experts, calls LLM, uses MCP tools |
+| **agent-b** (×1–5 replicas) | Worker — receives subtasks from Agent A, calls LLM |
+| **llm-backend** | vLLM server (Llama) — serves inference to all agents |
+| **mcp-tool-db** | MCP tool server (database / synthetic tools) |
+| **prometheus / grafana / cadvisor** | Metrics collection and visualisation |
+| **docker-mapping-exporter** | Translates raw bridge/cgroup IDs → human-readable service names |
 
-* **Node 3 – Local LLM / SLM**
+### Metrics layers
 
-  * Local LLM server (e.g. vLLM or similar) serving requests from Agent A and Agent B.
+| Layer | What is measured |
+|-------|-----------------|
+| **L8 — Workflow** | Workflow latency, inter-agent timing |
+| **L7 — Agents + MCP** | Token usage, request latency, tool invocation rate |
+| **L6 — Containers** | CPU, memory, network I/O (cAdvisor) |
+| **L5 — LLM Backend** | Token throughput, model latency, TTFT, in-flight requests |
+| **L3/4 — Networking** | TCP bytes/packets, flow durations, SYN RTTs by service pair |
+| **L2 — Traffic Capture** | Raw packet timestamps via `tcpdump` on the inter-agent bridge |
 
-* **Node 4 – MCP Tool Servers** *(separate from agents)*
-
-  * `Tool1` / `Tool2` / `ToolN`: MCP tool servers (e.g. DB, HTTP API, synthetic microservice).
-  * Isolated on a separate network to enable traffic analysis of agent ↔ tool communication.
-
-* **Observability**
-
-  * On each node, **eBPF-based tools** (BCC / bpftrace) export:
-
-    * TCP connection lifetimes (`tcplife`)
-    * Connection events (`tcpconnect`, `tcpaccept`)
-    * RTT distributions (`tcprtt`)
-    * Retransmissions (`tcpretrans`)
-  * **Metrics and dashboards**: an optional Prometheus + Grafana + cAdvisor stack (enabled via `ENABLE_MONITORING=1` in `infra/.env`) scrapes:
-    * `cAdvisor` for container-level `container_*` CPU, memory, and network metrics.
-    * `llm-backend`'s `/metrics` endpoint for `llm_*` latency/throughput metrics.
-    * `scripts/monitoring/tcp_metrics_collector.py` for `tcp_*` metrics on the `inter_agent_network`, exposed via a Prometheus `/metrics` endpoint on port `9100`.
-  * See `docs/monitoring.md` for full details on enabling and using monitoring.
+See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md) and [docs/networking.md](docs/networking.md) for full details.
 
 ---
 
-## 2. What is eBPF and why we use it here
-
-**eBPF** lets us attach sandboxed programs to kernel events (network, syscalls) without modifying kernel code. We use BCC/bpftrace to observe L3/L4 metrics per flow (RTT, retransmissions, connection lifetimes) without changing agents or tools.
-
-### Installing eBPF tools (Debian/Ubuntu)
-
-On each node, run:
-
-```bash
-./scripts/setup/install_ebpf_tools.sh
-```
-
-### Example commands to collect L3/L4 metrics
-
-On each node:
-
-```bash
-sudo tcpconnect    # Watch new TCP connections
-sudo tcprtt        # Per-socket RTT
-sudo tcplife       # Connection lifetimes
-sudo tcpretrans    # Retransmissions
-```
-
-Redirect to logs: `sudo tcprtt > logs/tcprtt_node1.log`
-
----
-
-## 3. Repository layout 
-
+## 2. Repository layout
 
 ```text
 .
 ├── agents/
-│   ├── agent_a/
-│   ├── agent_b/
-│   └── common/
-├── tools/
-│   ├── mcp_tool_db/
-│   └── mcp_tool_synthetic/
-├── baseline/
-│   └── service_chain/
+│   ├── agent_a/          # Orchestrator (AgentVerse, multi-hop, parallel scenarios)
+│   ├── agent_b/          # Worker agent
+│   ├── common/           # Shared MCP client, telemetry, tracing
+│   ├── templates/        # AgentVerse workflow and contract templates
+│   └── Dockerfile
 ├── llm/
-│   ├── serve_llm.py
+│   ├── serve_llm.py      # vLLM server with Prometheus metrics
 │   ├── config/
-│   │   └── llama-3.1-8b.yaml
 │   └── Dockerfile
 ├── infra/
-│   └── docker-compose.yml
+│   ├── docker-compose.yml                        # Simple (single-network) mode
+│   ├── docker-compose.distributed.yml            # Distributed (multi-network) mode
+│   ├── docker-compose.monitoring*.yml            # Prometheus / Grafana / cAdvisor
+│   └── monitoring/
+│       ├── prometheus.yml
+│       └── grafana/provisioning/                 # Datasources + auto-provisioned dashboard
 ├── scripts/
-│   ├── reset_testbed.sh
-│   ├── fetch_endpoints.sh
-│   ├── deploy/          # deployment & lifecycle
-│   ├── setup/           # prerequisites (Docker, eBPF)
-│   ├── experiment/      # run experiments, query agents
-│   ├── monitoring/      # health check, metrics
-│   ├── traffic/         # traffic collection & analysis
-│   └── dev/             # SSH forwarding, multi-VM utilities
-├── logs/
-│   └── ...
-├── requirements.txt
-└── README.md
+│   ├── deploy/           # Deployment and lifecycle scripts
+│   ├── experiment/       # Experiment runner, query scripts, plotting
+│   ├── monitoring/       # tcp_metrics_collector.py, docker_mapping_exporter.py, health_check.py
+│   ├── setup/            # Prerequisites (Docker)
+│   └── traffic/          # Traffic collection helpers
+├── data/
+│   └── runs/             # Experiment output (JSON responses, scraped metrics, plots)
+├── docs/
+│   ├── monitoring.md
+│   ├── networking.md
+│   ├── interarrival_metrics.md
+│   ├── experiment_runner.md
+│   ├── mcp_universe_integration.md
+│   └── architecture_diagrams/
+└── logs/
 ```
 
-See `infra/README.md` for deployment details.
+---
 
-## 4. LLM config
+## 3. Quickstart
 
-See [`infra/README.md`](infra/README.md) for LLM setup, model configuration, and environment variables.
+```bash
+# 1. Configure environment
+cd infra
+cp .env.example .env
+# Edit .env: set MODEL_NAME, ENABLE_MONITORING=1, etc.
 
-## 5. Agent endpoints
+# 2. Deploy (distributed mode with monitoring)
+cd ..
+./scripts/deploy/deploy.sh
+
+# 3. Check health
+python scripts/monitoring/health_check.py
+```
+
+- **Grafana**: `http://localhost:3001` (admin/admin) — *Agentic Traffic Testbed* dashboard
+- **Prometheus**: `http://localhost:9090`
+- **Agent A**: `http://localhost:8101`
+
+See [`infra/README.md`](infra/README.md) for full deployment options, LLM config, and environment variables.
+
+---
+
+## 4. Agent endpoints
 
 **Agent A** (port 8101):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/task` | POST | Main task endpoint. Agent A may call Agent B and/or LLM based on scenario. |
+| `/task` | POST | Main task endpoint. Scenario controls whether Agent A calls Agent B and/or LLM. |
 | `/agentverse` | POST | Full AgentVerse 4-stage workflow (recruitment → decision → execution → evaluation). |
 
-**Agent B** (ports 8102–8106 for multiple instances):
+**Agent B** (ports 8102–8106):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/subtask` | POST | Receives subtasks from Agent A; calls LLM and returns result. |
-| `/discuss` | POST | Alias for `/subtask`. Same payload and behavior; used in AgentVerse collaborative discussions. |
+| `/discuss` | POST | Alias for `/subtask`; used in AgentVerse collaborative discussions. |
 
 ### Quick smoke tests
 
 ```bash
-# Agent A - single hop (Agent A → LLM)
+# Agent A — single hop (Agent A → LLM)
 curl -X POST http://localhost:8101/task \
   -H "Content-Type: application/json" \
   -d '{"task":"Summarise what this testbed is for."}'
 
-# Agent A - multi-hop (Agent A → Agent B → LLM)
+# Agent A — multi-hop (Agent A → Agent B → LLM)
 curl -X POST http://localhost:8101/task \
   -H "Content-Type: application/json" \
   -d '{"task":"Produce a 3-step plan for RTT metrics.","scenario":"agentic_multi_hop"}'
 
-# Agent A - full AgentVerse workflow (4 stages)
+# Agent A — full AgentVerse workflow (4 stages)
 curl -X POST http://localhost:8101/agentverse \
   -H "Content-Type: application/json" \
   -d '{"task":"Design a traffic analysis experiment."}'
 
-# Agent B directly (/subtask or /discuss)
+# Agent B directly
 curl -X POST http://localhost:8102/subtask \
   -H "Content-Type: application/json" \
   -d '{"subtask":"List two example MCP tool calls."}'
@@ -256,7 +220,7 @@ curl -X POST http://localhost:8102/subtask \
 
 ---
 
-## 6. Agent config and roles
+## 5. Agent config and roles
 
 ### Payload fields
 
@@ -268,66 +232,68 @@ curl -X POST http://localhost:8102/subtask \
 - `agent_count`, `agent_b_workers`: For `agentic_parallel`; control worker count and per-worker endpoints/roles.
 
 **`/agentverse`** (Agent A):
-- `task` (required): User task. Triggers full 4-stage workflow.
+- `task` (required): Triggers full 4-stage workflow.
 
 **`/subtask`** and **`/discuss`** (Agent B):
 - `subtask` (required): Subtask text.
-- `scenario`: Optional label for telemetry (e.g. `agentic_verse`).
-- `agent_b_role`, `agent_b_contract`: Optional. Role and contract applied to this Agent B instance for this request.
+- `scenario`: Optional label for telemetry.
+- `agent_b_role`, `agent_b_contract`: Optional per-request role and contract.
 
-### Roles in the codebase
+### Agent roles
 
-Agent A acts as the **orchestrator** and can recruit Agent B instances with these roles (assigned dynamically via `agent_b_role` or by the AgentVerse recruitment stage):
+Agent A acts as the **orchestrator** and recruits Agent B instances dynamically:
 
 | Role | Description |
 |------|-------------|
-| **orchestrator** | Agent A; recruits experts, coordinates decision-making, synthesizes results. |
-| **planner** | Plans approach; often acts as solver in vertical (solver+reviewers) mode. |
-| **researcher** | Researches and gathers information. |
+| **orchestrator** | Agent A; recruits experts, coordinates decision-making, synthesises results. |
+| **planner** | Plans approach; acts as solver in vertical (solver + reviewers) mode. |
+| **researcher** | Gathers information. |
 | **executor** | Executes specific subtasks. |
 | **critic** | Critiques proposals; reviewer in vertical mode. |
-| **summarizer** | Summarizes discussion or results. |
+| **summarizer** | Summarises discussion or results. |
 
-All Agent B instances run the same code; roles are passed per-request. The **AgentVerse orchestrator** (`agents/agent_a/orchestrator.py`) implements a 4-stage workflow:
+All Agent B instances run the same code; roles are passed per-request. The **AgentVerse orchestrator** (`agents/agent_a/orchestrator.py`) implements:
+
 1. **Expert recruitment** – LLM decides which roles and how many agents.
-2. **Collaborative decision** – Horizontal (democratic discussion) or vertical (solver proposes, reviewers critique).
+2. **Collaborative decision** – Horizontal (democratic discussion) or vertical (solver + reviewers).
 3. **Action execution** – Experts execute subtasks in parallel.
 4. **Evaluation** – Assess results; optionally iterate with feedback.
 
 ---
 
-## 7. Shared GPU usage checks (read-only)
+## 6. Monitoring
 
-```bash
-nvidia-smi
-nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
-```
+When `ENABLE_MONITORING=1`, the stack deploys **Prometheus**, **Grafana**, and **cAdvisor**, and starts the **TCP metrics collector** on the host.
 
-Avoid killing processes you don't own. If GPU memory is tight, lower model size or run off-peak.
+### Components
+
+| Component | What it does |
+|-----------|-------------|
+| **cAdvisor** | Container-level CPU, memory, network I/O |
+| **llm-backend `/metrics`** | `llm_*` latency, TTFT, token throughput, in-flight requests |
+| **TCP metrics collector** (`scripts/monitoring/tcp_metrics_collector.py`) | Captures traffic on the `inter_agent_network` bridge via `tcpdump`; exports `tcp_bytes_total`, `tcp_packets_total`, `tcp_flow_duration_seconds_bucket`, `tcp_rtt_handshake_seconds_bucket` labelled by `src_service`/`dst_service` |
+| **Docker mapping exporter** (`scripts/monitoring/docker_mapping_exporter.py`) | Translates `br-xxxx` bridge IDs and cgroup scope paths to human-readable service names for Grafana panels |
+
+### Dashboard
+
+The **Agentic Traffic Testbed** dashboard (`http://localhost:3001`) is auto-provisioned and covers:
+
+- Overview (active containers, network TX/RX, LLM request rate)
+- Network Traffic (bytes/packets by Docker network)
+- Resource Usage (CPU and memory per container)
+- Service-level Network / TCP (bytes, flow durations, SYN RTTs by service pair)
+- AI Performance / LLM (latency p50/p95, TTFT, tokens/s, in-flight)
+- Interarrival Interpretation (mean interarrival time, burstiness coefficient)
+- Traffic Characterisation (interarrival jitter, queue wait distribution)
+- LLM Configuration (vLLM settings, KV-cache concurrency, error counts)
+
+See [docs/monitoring.md](docs/monitoring.md) for the full PromQL reference, how to start the TCP collector manually, and tips on enabling per-container cAdvisor metrics.
+
+See [docs/interarrival_metrics.md](docs/interarrival_metrics.md) for how interarrival time is derived and interpreted alongside latency and queue metrics.
 
 ---
 
-## 8. Health check script
-
-```bash
-python scripts/monitoring/health_check.py
-```
-
----
-
-## 9. MCP-Universe benchmark integration
-
-This testbed integrates the [MCP-Universe](https://github.com/SalesforceAIResearch/MCP-Universe) benchmark framework for **recognized, measurable** MCP tool evaluation. MCP-Universe provides execution-based benchmarks across 6 domains (Location Navigation, Repository Management, Financial Analysis, 3D Design, Browser Automation, Web Search) and can run against your **local LLM** via an OpenAI-compatible proxy.
-
-See **[docs/mcp_universe_integration.md](docs/mcp_universe_integration.md)** for full setup, including:
-
-- Cloning and configuring MCP-Universe
-- Running the OpenAI proxy to bridge MCP-Universe to your local LLM backend
-- Running benchmarks via `scripts/experiment/run_mcp_universe.py`
-
----
-
-## 10. Experiment runner
+## 7. Experiment runner
 
 Repeatable bulk-collection pipeline for interarrival time and related metrics.
 
@@ -336,7 +302,25 @@ Repeatable bulk-collection pipeline for interarrival time and related metrics.
 ./scripts/experiment/run_experiment.sh -n 5
 ```
 
-Each run saves the AgentVerse JSON response, scrapes all Prometheus metrics whose PromQL queries are defined in the Grafana dashboard JSON, and generates Grafana-style matplotlib plots and an interarrival time distribution analysis.
+Each run saves the AgentVerse JSON response, scrapes all Prometheus metrics, and generates matplotlib plots and an interarrival time distribution analysis.
 
-See **[docs/experiment_runner.md](docs/experiment_runner.md)** for full usage, output layout, CSV schema, and how to extend tasks or metrics.
+See [docs/experiment_runner.md](docs/experiment_runner.md) for full usage, output layout, CSV schema, and how to extend tasks or metrics.
 
+---
+
+## 8. MCP-Universe benchmark integration
+
+Integrates the [MCP-Universe](https://github.com/SalesforceAIResearch/MCP-Universe) benchmark framework for execution-based MCP tool evaluation across 6 domains. Runs against the local LLM backend via an OpenAI-compatible proxy.
+
+See [docs/mcp_universe_integration.md](docs/mcp_universe_integration.md) for setup and usage.
+
+---
+
+## 9. Shared GPU usage
+
+```bash
+nvidia-smi
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+Avoid killing processes you don't own. If GPU memory is tight, lower model size or run off-peak.

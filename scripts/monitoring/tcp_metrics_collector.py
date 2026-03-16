@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Optional, Set, Tuple
+import socket
+import os
 
 # Service IP mapping for distributed mode (inter_agent_network IPs)
 SERVICE_IPS = {
@@ -53,6 +55,35 @@ SERVICE_IPS = {
     "172.24.0.10": "mcp_tool_db",
 }
 
+
+def ensure_port_free(port: int) -> None:
+    """Check if the port is in use, and kill the process using it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            s.listen(1)
+            return  # Port is free
+        except OSError:
+            pass  # Port is in use
+
+    # Find PID using lsof
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True
+        )
+        pids = result.stdout.strip().split()
+        for pid_str in pids:
+            try:
+                pid = int(pid_str)
+                log(f"[*] Killing process {pid} using port {port}")
+                os.kill(pid, signal.SIGTERM)
+            except Exception as e:
+                log(f"[!] Could not kill PID {pid_str}: {e}")
+        time.sleep(1)  # Give OS a moment to free port
+    except Exception as e:
+        log(f"[!] Error checking port {port}: {e}")
 
 def ip_to_service(ip: str) -> str:
     """Convert IP to service name, or return 'external'."""
@@ -497,7 +528,8 @@ def main():
     log(f"[*] Metrics port: {args.port}")
     
     # Start HTTP server for metrics
-    server = HTTPServer(("0.0.0.0", args.port), MetricsHandler)
+    ensure_port_free(args.port)
+    server = HTTPServer(("0.0.0.0", args.port), MetricsHandler)    
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     log(f"[*] Metrics endpoint: http://localhost:{args.port}/metrics")

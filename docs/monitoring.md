@@ -21,6 +21,7 @@ When `ENABLE_MONITORING=1` in `infra/.env`, deployment will:
     - `prometheus` itself
     - `cadvisor:8080` (container / host metrics)
     - `llm-backend:8000/metrics` (LLM performance metrics)
+    - `docker-mapping-exporter:9101` (Docker ID → name mappings)
     - `tcp_metrics_collector.py` on port `9100` (TCP service‑level metrics)
 
 - **Grafana**
@@ -40,6 +41,21 @@ When `ENABLE_MONITORING=1` in `infra/.env`, deployment will:
     - `/var/run/docker.sock`
     and Docker must be using cgroups in a way that cAdvisor understands (including cgroups v2). See "Enabling per‑container CPU / memory metrics" below.
 
+- **Docker Mapping Exporter**
+  - Script: `scripts/monitoring/docker_mapping_exporter.py`
+  - Runs as a container, exposes metrics on `http://localhost:9101/metrics`.
+  - Queries the Docker Engine API via the Unix socket (`/var/run/docker.sock`, mounted read-only).
+  - Produces three mapping metric families (gauge, always value `1`):
+
+    | Metric | Labels | Description |
+    |---|---|---|
+    | `docker_network_mapping` | `interface`, `network_name` | Maps `br-xxxx` bridge IDs → Docker network name |
+    | `docker_container_mapping` | `id`, `container_name`, `service_name` | Maps `/system.slice/docker-<id>.scope` cgroup paths → container/service name |
+    | `docker_ip_mapping` | `ip_address`, `container_name`, `service_name` | Maps container IPs on `infra_inter_agent_network` → container/service name |
+
+  - Results are cached for 10 seconds (configurable via `CACHE_TTL` env var).
+  - These mappings are used by Grafana panels via PromQL vector joins (e.g. `* on(interface) group_left(network_name) docker_network_mapping`) to replace raw bridge IDs and cgroup paths with human-readable names.
+
 - **TCP Metrics Collector**
   - Script: `scripts/monitoring/tcp_metrics_collector.py`
   - Runs on the **host**, not in Docker.
@@ -48,6 +64,7 @@ When `ENABLE_MONITORING=1` in `infra/.env`, deployment will:
     - `tcp_packets_total{src_service, dst_service}`
     - `tcp_bytes_total{src_service, dst_service}`
     - `tcp_flow_duration_seconds_bucket{src_service, dst_service, le}`
+    - `tcp_rtt_handshake_seconds_bucket{src_service, dst_service, le}`
     - `tcp_packet_size_bytes_bucket{le}`
     - `tcp_syn_total`, `tcp_fin_total`, `tcp_rst_total`
 
@@ -119,39 +136,99 @@ python3 scripts/monitoring/tcp_metrics_collector.py
 
 ## Dashboard Layout (Agentic Traffic Testbed)
 
-The provisioned Grafana dashboard (`agentic-traffic-testbed`) is structured into three main layers:
+The provisioned Grafana dashboard (`agentic-traffic-testbed`) is structured into the following rows. All panels use the `${datasource}` variable pointing at Prometheus.
 
-1. **Overview**
-   - Active Docker containers (from `container_cpu_usage_seconds_total`).
-   - Docker network TX/RX rate (by Docker service).
-   - LLM request rate (from `llm_requests_total`).
+### 1. Overview
 
-2. **Network Traffic**
-   - Docker network transmit/receive rates and packets per second, broken down by Docker service / container label (`container_label_com_docker_compose_service`).
+| Panel | PromQL | Unit |
+|---|---|---|
+| Active Containers (Docker) | `count(container_cpu_usage_seconds_total{cpu="total",id=~"/system.slice/docker-.*\\.scope"})` | count |
+| Docker Network TX Rate | `sum(rate(container_network_transmit_bytes_total{id="/",interface=~"br-.*"}[1m]))` | Bps |
+| Docker Network RX Rate | `sum(rate(container_network_receive_bytes_total{id="/",interface=~"br-.*"}[1m]))` | Bps |
+| LLM Request Rate — success vs error | `rate(llm_requests_total{status="success"}[30s])` / `rate(llm_requests_total{status="error"}[30s])` | req/s |
 
-3. **Resource Usage**
-   - CPU usage (`container_cpu_usage_seconds_total`).
-   - Memory usage (`container_memory_usage_bytes`).
-   - When cAdvisor exposes per‑container metrics (not just `id="/"`), these panels can be switched to show **per‑container** or **per‑service** usage (e.g. grouped by `container_label_com_docker_compose_service` and filtered to agent containers only).
+### 2. Network Traffic
 
-4. **Service‑level Network (TCP)**
-   - `TCP Bytes/s by Service Pair`:
-     - Uses `rate(tcp_bytes_total{src_service!="external",dst_service!="external"}[1m])`.
-     - Legend: `src_service → dst_service` (e.g. `agent_a → llm_backend`).
-   - `TCP Flow Duration (Agent A → LLM)`:
-     - `histogram_quantile` over `tcp_flow_duration_seconds_bucket` for p50/p95 flow duration between `agent_a` and `llm_backend`.
+Network panels use `docker_network_mapping` PromQL joins so bridge IDs become human-readable Docker network names.
 
-5. **AI Performance (LLM)**
-   - `LLM End-to-end Latency (p50/p95)`:
-     - Uses `llm_request_latency_seconds_bucket`.
-   - `LLM Time-to-First-Token (TTFT p50/p95)`:
-     - Uses `llm_queue_wait_seconds_bucket`.
-   - `Prompt Tokens / s`:
-     - `rate(llm_prompt_tokens_total[1m])`.
-   - `Completion Tokens / s`:
-     - `rate(llm_completion_tokens_total[1m])`.
-   - `In-flight LLM Requests`:
-     - `llm_inflight_requests`.
+| Panel | PromQL | Unit |
+|---|---|---|
+| Network Transmit Rate by Interface | `rate(container_network_transmit_bytes_total{id="/",interface=~"br-.*"}[30s]) * on(interface) group_left(network_name) docker_network_mapping` | Bps |
+| Network Receive Rate by Interface | `rate(container_network_receive_bytes_total{id="/",interface=~"br-.*"}[30s]) * on(interface) group_left(network_name) docker_network_mapping` | Bps |
+| Packets Transmitted (by Interface) | `rate(container_network_transmit_packets_total{id="/",interface=~"br-.*"}[30s]) * on(interface) group_left(network_name) docker_network_mapping` | pps |
+| Packets per Minute (by Interface) | `increase(container_network_transmit_packets_total{id="/",interface=~"br-.*"}[1m]) * on(interface) group_left(network_name) docker_network_mapping` | pkts |
+
+### 3. Resource Usage
+
+Resource panels use `docker_container_mapping` joins so cgroup scope IDs become compose service names.
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| CPU (core equivalents per container) | `sum by (id) (rate(container_cpu_usage_seconds_total{cpu="total",id=~"/system.slice/docker-.*\\.scope"}[1m])) * on(id) group_left(service_name) docker_container_mapping` | cores |
+| Memory Usage per container | `container_memory_usage_bytes{id=~"/system.slice/docker-.*\\.scope"} * on(id) group_left(service_name) docker_container_mapping` | bytes |
+
+### 4. Service‑level Network (TCP)
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| TCP Bytes/s by Service Pair | `rate(tcp_bytes_total{src_service!="external",dst_service!="external",src_service!="jaeger",dst_service!="jaeger"}[1m])` — legend `src → dst` | Bps |
+| TCP Bytes/s from LLM Backend | `sum(rate(tcp_bytes_total{src_service="llm_backend",dst_service!="external"}[1m]))` | Bps |
+| TCP RTT (SYN/SYN-ACK Agent A → LLM) | `histogram_quantile(0.5/0.95, sum by (le) (rate(tcp_rtt_handshake_seconds_bucket{src_service="agent_a",dst_service="llm_backend"}[5m])))` | s |
+| TCP Flow Duration (Agent A → LLM) | `histogram_quantile(0.5/0.95, sum by (le) (rate(tcp_flow_duration_seconds_bucket{src_service="agent_a",dst_service="llm_backend"}[5m])))` | s |
+
+### 5. AI Performance (LLM)
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| LLM End-to-end Latency (p50/p95) | `histogram_quantile(0.5/0.95, sum by (le) (rate(llm_request_latency_seconds_bucket[5m])))` | s |
+| LLM Time-to-First-Token (TTFT p50/p95) | `histogram_quantile(0.5/0.95, sum by (le) (rate(llm_queue_wait_seconds_bucket[5m])))` | s |
+| Prompt Tokens / s | `rate(llm_prompt_tokens_total[1m])` | tok/s |
+| Completion Tokens / s | `rate(llm_completion_tokens_total[1m])` | tok/s |
+| In-flight LLM Requests | `llm_inflight_requests` | count |
+| LLM Tokens & In-flight Requests (overlay) | `rate(llm_prompt_tokens_total[1m])`, `rate(llm_completion_tokens_total[1m])`, `llm_inflight_requests` | mixed |
+
+### 6. Interarrival Interpretation
+
+Panels focused on understanding the inter-request arrival pattern (burstiness, clustering, queue effects).
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| LLM Interarrival Time (30s rolling avg) | `1 / sum(rate(llm_requests_total[30s]))` | s |
+| Request arrivals in last 4s (by status) | `increase(llm_requests_total{status="success"}[4s])`, `increase(llm_requests_total{status="error"}[4s])` | count |
+| LLM Request Rate — success vs error (30s window) | `rate(llm_requests_total{status="success/error"}[30s])` | req/s |
+| LLM End-to-end Latency (p50/p95) | *(repeat of AI Performance panel — for side-by-side context)* | s |
+| LLM Time-to-First-Token (TTFT p50/p95) | *(repeat of AI Performance panel — for side-by-side context)* | s |
+| Concurrent In-flight Requests (burst signature) | `llm_inflight_requests` | count |
+
+### 7. LLM Configuration
+
+Static/config panels showing how vLLM is configured for the current run. These are useful for cross-referencing performance results against configuration.
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| vLLM KV-cache max concurrency | `llm_computed_max_concurrency` | count |
+| vLLM max_num_batched_tokens | `llm_config_max_num_batched_tokens` | count |
+| Max tokens per generation (LLM_MAX_TOKENS) | `llm_config_max_tokens` | count |
+| GPU memory utilization target | `llm_config_gpu_memory_utilization` | % |
+| LLM Errors — total (since restart) | `llm_requests_total{status="error"}` | count |
+| LLM Errors — last 1h | `increase(llm_requests_total{status="error"}[1h])` | count |
+| Free Concurrent Slots (KV-cache − in-flight) | `clamp_min(llm_computed_max_concurrency - llm_inflight_requests, 0)` | count |
+
+### 8. Traffic Characterization
+
+Deep-dive panels for classifying the traffic regime (Poisson, bursty, periodic, etc.).
+
+| Panel | PromQL | Unit |
+|---|---|---|
+| Interarrival Jitter (p95 − p50) | `histogram_quantile(0.5/0.95, ...(rate(llm_interarrival_seconds_bucket[5m])))` — also shows `p95-p50` spread | s |
+| Queue Wait Distribution (p50/p95/p99) + In-flight | `histogram_quantile(0.5/0.95/0.99, ...(rate(llm_queue_wait_seconds_bucket[5m])))` + `llm_inflight_requests` | s |
+| Burstiness Coefficient (peak 10s / avg 5m) | `max_over_time(rate(llm_requests_total[10s])[5m:10s]) / rate(llm_requests_total[5m])` — also shows avg and peak throughput | ratio |
+
+#### Key metrics for traffic characterization
+
+- `llm_interarrival_seconds_bucket` — histogram of wall-clock gaps between consecutive LLM requests. A narrow distribution centred near `1/λ` indicates Poisson-like arrivals; a wide or multi-modal distribution indicates bursts or periodic patterns.
+- `llm_queue_wait_seconds_bucket` — histogram of how long each request spent waiting before the LLM backend started processing it. Rising p99 relative to p50 is the first sign of queue saturation.
+- Burstiness coefficient > 1 means there are short-term spikes above the average rate; > 5 is considered highly bursty.
 
 ---
 
@@ -288,18 +365,34 @@ This is why the **Service-level Network (TCP)** row in the dashboard can show:
 - `agent_a → llm_backend` instead of raw IPs or `br-*` names.
 - Latency distributions (flow duration) for specific service pairs (e.g. Agent A → LLM).
 
-### 5. Possible future improvements to get friendlier names everywhere
+### 5. How we solved it: the Docker Mapping Exporter
 
-If you want friendlier names on more panels without changing Grafana/Prometheus themselves, some options to explore are:
+The **Docker Mapping Exporter** (`scripts/monitoring/docker_mapping_exporter.py`) provides the missing link. It queries the Docker Engine API at scrape time and emits three gauge families that act as **lookup tables** in PromQL:
 
-- **Enhanced exporters**
-  - Write a small "metadata exporter" that periodically:
-    - Calls `docker ps`, `docker network ls`, and systemd APIs.
-    - Exposes metrics like `network_info{interface="br-df4088ff2909", network="infra_inter_agent_network"}` and `container_info{id="/system.slice/docker-a86e...", service="agent-a"}`.
-  - Grafana panels could then at least show friendlier names by plotting these metadata metrics or combining them in annotations/tooltips.
+```
+docker_network_mapping{interface="br-df4088ff2909", network_name="infra_inter_agent_network"} 1
+docker_container_mapping{id="/system.slice/docker-a86e...scope", container_name="infra-agent-a-1", service_name="agent-a"} 1
+docker_ip_mapping{ip_address="172.23.0.5", container_name="infra-agent-a-1", service_name="agent-a"} 1
+```
+
+Grafana panels then join these with cAdvisor metrics using PromQL vector matching:
+
+```promql
+# Interface → network name
+rate(container_network_transmit_bytes_total{id="/",interface=~"br-.*"}[30s])
+  * on(interface) group_left(network_name) docker_network_mapping
+
+# Cgroup scope → service name
+sum by (id) (rate(container_cpu_usage_seconds_total{cpu="total",id=~"/system.slice/docker-.*\\.scope"}[1m]))
+  * on(id) group_left(service_name) docker_container_mapping
+```
+
+This gives every Network Traffic and Resource Usage panel human-readable labels without requiring Kubernetes or a service mesh.
+
+### 6. Possible future improvements
 
 - **Alternative observability stacks**
   - Kubernetes + CNI observability (Cilium, Hubble, Pixie) inherently track flows at the **pod/service** level and expose richer labels.
   - Service meshes (e.g., Istio/Linkerd) can add HTTP/gRPC metrics with service names and richer routing metadata.
 
-This repo deliberately stays "vanilla" Docker + cAdvisor + Prometheus + Grafana, so some of those richer mappings are intentionally left out to avoid adding heavyweight dependencies—but the TCP collector and this document are structured so you can plug in other technologies that provide first-class service naming. 
+This repo deliberately stays "vanilla" Docker + cAdvisor + Prometheus + Grafana. The Docker Mapping Exporter and TCP collector are structured so you can plug in other technologies that provide first-class service naming.
