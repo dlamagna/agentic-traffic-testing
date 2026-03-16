@@ -8,6 +8,7 @@ from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
 
 from agents.agent_b.main import LLM_SERVER_URL, call_llm
+from agents.common.metrics_logger import MetricsLogger
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer, span_to_metadata
 
@@ -34,6 +35,7 @@ def _log_llm_prompt(label: str, prompt: str) -> None:
 class AgentBRequestHandler(BaseHTTPRequestHandler):
     logger = TelemetryLogger(agent_id="AgentB")
     tracer = get_tracer("agent-b")
+    metrics_logger = MetricsLogger()
 
     def _set_cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -74,6 +76,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
         carrier = {key: value for key, value in self.headers.items()}
         agent_index = self.headers.get("x-agent-index")
         incoming_request_id = self.headers.get("X-Request-ID")
+        incoming_task_id = self.headers.get("X-Task-ID")
         ctx = propagate.extract(carrier)
         with self.tracer.start_as_current_span(
             "agent_b.handle_subtask",
@@ -113,7 +116,9 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
 
             logger = self.logger
             logger.scenario = scenario  # type: ignore[assignment]
-            task_id = logger.new_task_id()
+            # Reuse the parent task_id when propagated via X-Task-ID header so that
+            # agent_b LLM calls can be correlated with the originating agent_a task.
+            task_id = incoming_task_id or logger.new_task_id()
             span.set_attribute("app.task_id", task_id)
             logger.log(
                 task_id=task_id,
@@ -159,8 +164,15 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 propagate.inject(headers)
                 if incoming_request_id:
                     headers["X-Request-ID"] = incoming_request_id
+                headers["X-Task-ID"] = task_id
                 output, llm_meta = call_llm(prompt, headers=headers)
+                end_time_utc = datetime.now(timezone.utc).isoformat()
                 agent_b_span_meta = span_to_metadata(span_llm)
+                self.metrics_logger.log_call(
+                    task_id=task_id, agent_id="AgentB", call_type="sub_call",
+                    timestamp_start=start_time_utc, timestamp_end=end_time_utc,
+                    http_status=200, llm_meta=llm_meta,
+                )
 
             llm_request = {
                 "source": "agent_b",

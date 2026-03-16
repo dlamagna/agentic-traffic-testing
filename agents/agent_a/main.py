@@ -1,6 +1,6 @@
 import argparse
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 import os
@@ -23,7 +23,7 @@ if not AGENT_B_URLS:
     AGENT_B_URLS = [AGENT_B_URL]
 
 
-def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
+def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> Tuple[str, Dict[str, Any]]:
     resp = httpx.post(
         LLM_SERVER_URL,
         json={"prompt": prompt},
@@ -32,7 +32,7 @@ def call_llm(prompt: str, headers: Optional[Dict[str, str]] = None) -> str:
     )
     resp.raise_for_status()
     data: Dict[str, Any] = resp.json()
-    return str(data.get("output", ""))
+    return str(data.get("output", "")), (data.get("meta") if isinstance(data.get("meta"), dict) else {})
 
 
 def call_agent_b(
@@ -64,6 +64,7 @@ def call_agent_b(
         "llm_prompt": data.get("llm_prompt"),
         "llm_response": data.get("llm_response"),
         "llm_endpoint": data.get("llm_endpoint"),
+        "llm_meta": data.get("llm_meta"),
     }
 
 
@@ -91,7 +92,7 @@ def main() -> None:
         extra={"url": LLM_SERVER_URL},
     )
 
-    output = call_llm(args.task)
+    output, _meta = call_llm(args.task)
 
     logger.log(
         task_id=task_id,
