@@ -82,12 +82,12 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "llm_computed_max_concurrency",
-          "legendFormat": "KV-cache max concurrency",
+          "expr": "llm_kv_cache_est_max_concurrency_at_max_model_len",
+          "legendFormat": "KV-cache-limited max concurrency",
           "refId": "A"
         }
       ],
-      "title": "vLLM KV-cache max concurrency",
+      "title": "KV-cache-limited max concurrency",
       "type": "stat"
     },
     {
