@@ -25,48 +25,67 @@ Runs entirely on a **single GPU server** using **Docker containers** to simulate
 ## 1. Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
 
-%% EXPERIMENT CONFIGURATION
-WF["Workflow Variant"]
-LLM_V["LLM Backend Variant"]
+%% LAYERS
+L8["L8 Workflow (AgentVerse)"]
+L7["L7 Agents + MCP (python)"]
+L6["L6 Docker Containers"]
+L5["L5 LLM Backend (vLLM + Llama)"]
+L34["L3/4 Docker Networks"]
+L2["L2 Traffic Capture (tcpdump)"]
 
-%% TESTBED
-RUN["Agentic Traffic Testbed"]
+%% MAIN STACK
+L8 --> L7
+L7 --> L6
+L6 --> L5
+L34 --> L2
+
+%% NETWORK PATHS
+L6 --> L34
+L5 --> L34
+
+%% MONITORING
+PROM["Prometheus"]
+GRAF["Grafana"]
+
+PROM --> GRAF
 
 %% METRICS
-METRICS["Traffic + System Metrics"]
+L8 -. workflow latency .-> PROM
+L7 -. token usage .-> PROM
+L6 -. cpu / memory .-> PROM
+L5 -. model latency / TTFT .-> PROM
+L34 -. connection rates .-> PROM
+L2 -. packet timing .-> PROM
 
-%% ANALYSIS
-ANALYSIS["Interarrival Analysis"]
-COMPARE["Cross-layer Comparison"]
-
-WF --> RUN
-LLM_V --> RUN
-RUN --> METRICS
-METRICS --> ANALYSIS
-ANALYSIS --> COMPARE
+%% STYLING
+style L8 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+style L7 fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+style L6 fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+style L5 fill:#fce4ec,stroke:#d81b60,stroke-width:2px
+style L34 fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
+style L2 fill:#eceff1,stroke:#546e7a,stroke-width:2px
 ```
 
 The testbed runs in **distributed mode** (default): each logical service gets an isolated Docker network plus every service joins a shared `inter_agent_network` (`172.23.0.0/24`) that carries all cross-service traffic.
 
-```
-                    172.23.0.0/24  (inter_agent_network)
-                    ┌────────────────────────────────────────────┐
-                    │                                            │
-  agent_a_network   │  .10  agent-a ──────────────── .30 llm   │
-  172.20.0.0/24 ── agent-a                                      │
-                    │  .20–.24  agent-b (×5) ──────── .30 llm  │
-  agent_b_network   │                                            │
-  172.21.0.0/24 ── agent-b (×5)    .50 chat-ui                 │
-                    │               .60 jaeger                   │
-  llm_network       │               .70 prometheus               │
-  172.22.0.0/24 ── llm-backend      .71 grafana                 │
-                    │               .72 cadvisor                 │
-  tools_network     │               .73 docker-mapping-exporter  │
-  172.24.0.0/24 ── mcp-tool-db (.40)                            │
-                    └────────────────────────────────────────────┘
-```
+| Service | agent_a_network | agent_b_network | llm_network | tools_network | inter_agent_network |
+|---|---|---|---|---|---|
+| agent-a | 172.20.0.10 | — | — | — | 172.23.0.10 |
+| agent-b | — | 172.21.0.10 | — | — | 172.23.0.20 |
+| agent-b-2 | — | 172.21.0.11 | — | — | 172.23.0.21 |
+| agent-b-3 | — | 172.21.0.12 | — | — | 172.23.0.22 |
+| agent-b-4 | — | 172.21.0.13 | — | — | 172.23.0.23 |
+| agent-b-5 | — | 172.21.0.14 | — | — | 172.23.0.24 |
+| llm-backend | — | — | 172.22.0.10 | — | 172.23.0.30 |
+| mcp-tool-db | — | — | — | 172.24.0.10 | 172.23.0.40 |
+| prometheus | — | — | — | — | 172.23.0.70 |
+| grafana | — | — | — | — | 172.23.0.71 |
+| cadvisor | — | — | — | — | 172.23.0.72 |
+| docker-mapping-exporter | — | — | — | — | 172.23.0.73 |
+
+All IPs are overridable via environment variables in `infra/.env`. The conditions of each network can be manipulated to introduce delay, jitter, and packet loss. See [docs/networking.md](docs/networking.md) for full network topology details.
 
 ### Services
 
