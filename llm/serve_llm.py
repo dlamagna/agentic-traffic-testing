@@ -206,6 +206,21 @@ def _record_metrics(
         COMPLETION_TOKENS.inc(completion_tokens)
 
 
+def _update_kv_cache_gauges(num_gpu_blocks: int, block_size: int, max_model_len: int) -> None:
+    """Set all KV-cache Prometheus gauges to real values."""
+    if not _METRICS_READY:
+        return
+    KV_CACHE_NUM_GPU_BLOCKS.set(float(num_gpu_blocks))
+    KV_CACHE_BLOCK_SIZE_TOKENS.set(float(block_size))
+    total_tokens = num_gpu_blocks * block_size
+    KV_CACHE_TOTAL_TOKENS.set(float(total_tokens))
+    if max_model_len > 0:
+        est = total_tokens // max_model_len
+        KV_CACHE_EST_MAX_CONCURRENCY_AT_MAX_MODEL_LEN.set(float(est))
+    if max_model_len > 0:
+        CONFIG_COMPUTED_MAX_CONCURRENCY.set(total_tokens / max_model_len)
+
+
 async def _probe_engine_max_concurrency() -> None:
     """Background task: expose vLLM's KV-cache-derived max concurrency as a Prometheus gauge.
 
@@ -214,6 +229,8 @@ async def _probe_engine_max_concurrency() -> None:
 
     The value is: num_gpu_blocks * block_size / max_model_len.
     We try multiple strategies in order of reliability:
+      0. V1 (0.6+): engine.vllm_config.cache_config (num_gpu_blocks set via subprocess
+         ready-message handshake before from_engine_args() returns).
       1. Pre-V1 (<0.6): access engine.cache_config via several possible sync-engine attributes.
       2. Prometheus registry scan: look for any vLLM metric whose name contains 'num_gpu_blocks'
          but not 'used' (total-blocks metrics), with dynamic block_size detection.
@@ -225,6 +242,27 @@ async def _probe_engine_max_concurrency() -> None:
     for attempt, delay in enumerate([5, 15, 30]):
         await asyncio.sleep(delay)
 
+        # Strategy 0: vLLM 0.12.0+ V1 API — vllm_config is directly on the engine.
+        # num_gpu_blocks is set synchronously during from_engine_args() via subprocess IPC.
+        try:
+            cache_cfg = _backend._engine.vllm_config.cache_config  # type: ignore[union-attr]
+            model_cfg = _backend._engine.vllm_config.model_config  # type: ignore[union-attr]
+            num_gpu_blocks_v1: int = cache_cfg.num_gpu_blocks
+            block_size_v1: int = cache_cfg.block_size
+            max_model_len_v1: int = model_cfg.max_model_len
+            if num_gpu_blocks_v1 and block_size_v1 and max_model_len_v1:
+                _update_kv_cache_gauges(num_gpu_blocks_v1, block_size_v1, max_model_len_v1)
+                print(
+                    f"[llm-metrics] kv_cache updated via vllm_config: "
+                    f"gpu_blocks={num_gpu_blocks_v1} block_size={block_size_v1} "
+                    f"max_model_len={max_model_len_v1} "
+                    f"est_max_concurrency={num_gpu_blocks_v1 * block_size_v1 // max_model_len_v1} "
+                    f"[attempt {attempt + 1}]"
+                )
+                return
+        except (AttributeError, TypeError):
+            pass
+
         # Strategy 1: pre-V1 AsyncLLMEngine wraps a sync LLMEngine under various attribute names
         for attr in ("engine", "_engine", "llm_engine", "_llm_engine"):
             try:
@@ -233,10 +271,9 @@ async def _probe_engine_max_concurrency() -> None:
                 block_size: int = core.cache_config.block_size
                 max_model_len: int = core.model_config.max_model_len
                 if num_gpu_blocks and max_model_len:
-                    computed = (num_gpu_blocks * block_size) / max_model_len
-                    CONFIG_COMPUTED_MAX_CONCURRENCY.set(computed)
+                    _update_kv_cache_gauges(num_gpu_blocks, block_size, max_model_len)
                     print(
-                        f"[llm-metrics] computed_max_concurrency={computed:.2f} "
+                        f"[llm-metrics] computed_max_concurrency={num_gpu_blocks * block_size / max_model_len:.2f} "
                         f"(gpu_blocks={num_gpu_blocks} block_size={block_size} "
                         f"max_model_len={max_model_len}) [attempt {attempt + 1}]"
                     )
@@ -360,13 +397,31 @@ class AsyncVLLMBackend:
     def effective_max_model_len(self) -> Optional[int]:
         try:
             value = getattr(self._engine_args, "max_model_len", None)
-            return int(value) if value is not None else None
+            if value is not None:
+                return int(value)
         except Exception:
+            pass
+        # Fallback: read the resolved value from vLLM V1 config
+        try:
+            return int(self._engine.vllm_config.model_config.max_model_len)
+        except (AttributeError, TypeError):
             return None
 
     def _kv_cache_info(self) -> tuple[Optional[int], Optional[int]]:
         """Best-effort KV cache (num_gpu_blocks, block_size_tokens)."""
-        # vLLM internals vary across versions; try a few known paths.
+        # vLLM 0.12.0+ V1 API: engine.vllm_config.cache_config has both fields.
+        # num_gpu_blocks is set synchronously during from_engine_args() via the
+        # subprocess ready-message handshake; block_size is set by platform check.
+        try:
+            cache_cfg = self._engine.vllm_config.cache_config
+            num_blocks = getattr(cache_cfg, "num_gpu_blocks", None)
+            block_size = getattr(cache_cfg, "block_size", None)
+            if block_size is not None:
+                return (int(num_blocks) if num_blocks is not None else None, int(block_size))
+        except AttributeError:
+            pass
+
+        # Pre-V1 / fallback: try a few known attribute paths.
         candidates = []
         try:
             candidates.append(getattr(self._engine, "engine_config", None))
@@ -938,14 +993,28 @@ async def run_async_server(
             float(gpu_memory_utilization) if gpu_memory_utilization is not None else -1.0
         )
         CONFIG_MAX_TOKENS.set(float(LLM_MAX_TOKENS))
-        # Export KV-cache-derived capacity (best-effort).
+        # Export KV-cache-derived capacity.
+        # In vLLM V1, num_gpu_blocks is set synchronously during from_engine_args()
+        # via the subprocess ready-message handshake, so these values should be
+        # real (non -1) immediately after backend construction.
         kv_num_blocks, kv_block_size = _backend._kv_cache_info()
-        KV_CACHE_NUM_GPU_BLOCKS.set(float(kv_num_blocks) if kv_num_blocks is not None else -1.0)
-        KV_CACHE_BLOCK_SIZE_TOKENS.set(float(kv_block_size) if kv_block_size is not None else -1.0)
-        kv_total = _backend.kv_cache_total_tokens()
-        KV_CACHE_TOTAL_TOKENS.set(float(kv_total) if kv_total is not None else -1.0)
-        kv_est = _backend.kv_cache_est_max_concurrency_at_max_model_len()
-        KV_CACHE_EST_MAX_CONCURRENCY_AT_MAX_MODEL_LEN.set(float(kv_est) if kv_est is not None else -1.0)
+        kv_max_model_len = _backend.effective_max_model_len()
+        if kv_num_blocks is not None and kv_block_size is not None and kv_max_model_len is not None:
+            _update_kv_cache_gauges(kv_num_blocks, kv_block_size, kv_max_model_len)
+            print(
+                f"[llm-metrics] KV cache gauges set at startup: "
+                f"num_gpu_blocks={kv_num_blocks} block_size={kv_block_size} "
+                f"max_model_len={kv_max_model_len} "
+                f"total_tokens={kv_num_blocks * kv_block_size} "
+                f"est_max_concurrency={kv_num_blocks * kv_block_size // kv_max_model_len}"
+            )
+        else:
+            KV_CACHE_NUM_GPU_BLOCKS.set(float(kv_num_blocks) if kv_num_blocks is not None else -1.0)
+            KV_CACHE_BLOCK_SIZE_TOKENS.set(float(kv_block_size) if kv_block_size is not None else -1.0)
+            kv_total = _backend.kv_cache_total_tokens()
+            KV_CACHE_TOTAL_TOKENS.set(float(kv_total) if kv_total is not None else -1.0)
+            kv_est = _backend.kv_cache_est_max_concurrency_at_max_model_len()
+            KV_CACHE_EST_MAX_CONCURRENCY_AT_MAX_MODEL_LEN.set(float(kv_est) if kv_est is not None else -1.0)
 
     app = create_app()
     runner = web.AppRunner(app)
