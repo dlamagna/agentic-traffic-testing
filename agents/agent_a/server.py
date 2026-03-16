@@ -15,6 +15,7 @@ import httpx
 
 from agents.agent_a.main import AGENT_B_URL, AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
 from agents.agent_a.orchestrator import AgentVerseOrchestrator
+from agents.common.metrics_logger import MetricsLogger
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
 
@@ -105,6 +106,7 @@ def handle_tool_call(task: str, logger: TelemetryLogger, task_id: str) -> str:
 class AgentARequestHandler(BaseHTTPRequestHandler):
     logger = TelemetryLogger(agent_id="AgentA")
     tracer = get_tracer("agent-a")
+    metrics_logger = MetricsLogger()
 
     def _set_cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -409,6 +411,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             logger = self.logger
             logger.scenario = scenario  # type: ignore[assignment]
             task_id = logger.new_task_id()
+            task_start = datetime.now(timezone.utc).isoformat()
             span.set_attribute("app.task_id", task_id)
             logger.log(
                 task_id=task_id,
@@ -459,6 +462,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         span_plan.set_attribute("app.llm.url", LLM_SERVER_URL)
                         headers: Dict[str, str] = {}
                         propagate.inject(headers)
+                        headers["X-Task-ID"] = task_id
                         _log_llm_prompt("planning", planning_prompt)
                         llm_requests.append(
                             {
@@ -468,8 +472,16 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 "endpoint": LLM_SERVER_URL,
                             }
                         )
-                        planned_raw = call_llm(planning_prompt, headers=headers)
+                        _ts_plan_start = datetime.now(timezone.utc).isoformat()
+                        planned_raw, _plan_meta = call_llm(planning_prompt, headers=headers)
+                        _ts_plan_end = datetime.now(timezone.utc).isoformat()
                         llm_requests[-1]["response"] = planned_raw
+                        llm_requests[-1]["llm_meta"] = _plan_meta
+                        self.metrics_logger.log_call(
+                            task_id=task_id, agent_id="AgentA", call_type="sub_call",
+                            timestamp_start=_ts_plan_start, timestamp_end=_ts_plan_end,
+                            http_status=200, llm_meta=_plan_meta,
+                        )
                 except Exception as exc:
                     logger.log(
                         task_id=task_id,
@@ -506,6 +518,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                 span_b.set_attribute("app.agent_role", role)
                             headers: Dict[str, str] = {"x-agent-index": str(worker_index)}
                             propagate.inject(headers)
+                            headers["X-Task-ID"] = task_id
                             return call_agent_b(
                                 subtask,
                                 scenario=scenario,
@@ -551,6 +564,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             llm_prompt = response.get("llm_prompt")
                             llm_response = response.get("llm_response")
                             llm_endpoint = response.get("llm_endpoint") or LLM_SERVER_URL
+                            llm_meta_b = response.get("llm_meta") or {}
                             agent_b_outputs.append(
                                 {
                                     "agent_index": idx,
@@ -571,6 +585,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                         "response": llm_response,
                                         "agent_index": idx,
                                         "endpoint": llm_endpoint,
+                                        "llm_meta": llm_meta_b,
                                     }
                                 )
                             logger.log(
@@ -663,6 +678,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             span_b.set_attribute("app.turn", turn)
                             headers: Dict[str, str] = {}
                             propagate.inject(headers)
+                            headers["X-Task-ID"] = task_id
                             response = call_agent_b(
                                 subtask,
                                 scenario=scenario,
@@ -674,6 +690,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             llm_prompt = response.get("llm_prompt")
                             llm_response = response.get("llm_response")
                             llm_endpoint = response.get("llm_endpoint") or LLM_SERVER_URL
+                            llm_meta_b = response.get("llm_meta") or {}
                             if llm_prompt:
                                 llm_requests.append(
                                     {
@@ -683,6 +700,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                         "response": llm_response,
                                         "endpoint": llm_endpoint,
                                         "turn": turn,
+                                        "llm_meta": llm_meta_b,
                                     }
                                 )
                     except Exception as exc:
@@ -724,6 +742,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             span_progress.set_attribute("app.turn", turn)
                             headers = {}
                             propagate.inject(headers)
+                            headers["X-Task-ID"] = task_id
                             _log_llm_prompt("progress_check", progress_prompt)
                             llm_requests.append(
                                 {
@@ -734,8 +753,16 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                                     "endpoint": LLM_SERVER_URL,
                                 }
                             )
-                            progress_note = call_llm(progress_prompt, headers=headers)
+                            _ts_prog_start = datetime.now(timezone.utc).isoformat()
+                            progress_note, _prog_meta = call_llm(progress_prompt, headers=headers)
+                            _ts_prog_end = datetime.now(timezone.utc).isoformat()
                             llm_requests[-1]["response"] = progress_note
+                            llm_requests[-1]["llm_meta"] = _prog_meta
+                            self.metrics_logger.log_call(
+                                task_id=task_id, agent_id="AgentA", call_type="sub_call",
+                                timestamp_start=_ts_prog_start, timestamp_end=_ts_prog_end,
+                                http_status=200, llm_meta=_prog_meta,
+                            )
                             agent_a_progress_notes.append(progress_note)
                             logger.log(
                                 task_id=task_id,
@@ -785,6 +812,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                     span_llm.set_attribute("app.llm.url", LLM_SERVER_URL)
                     headers: Dict[str, str] = {}
                     propagate.inject(headers)
+                    headers["X-Task-ID"] = task_id
                     _log_llm_prompt("final", final_prompt)
                     llm_requests.append(
                         {
@@ -794,8 +822,16 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                             "endpoint": LLM_SERVER_URL,
                         }
                     )
-                    output = call_llm(final_prompt, headers=headers)
+                    _ts_final_start = datetime.now(timezone.utc).isoformat()
+                    output, _final_meta = call_llm(final_prompt, headers=headers)
+                    _ts_final_end = datetime.now(timezone.utc).isoformat()
                     llm_requests[-1]["response"] = output
+                    llm_requests[-1]["llm_meta"] = _final_meta
+                    self.metrics_logger.log_call(
+                        task_id=task_id, agent_id="AgentA", call_type="root",
+                        timestamp_start=_ts_final_start, timestamp_end=_ts_final_end,
+                        http_status=200, llm_meta=_final_meta,
+                    )
             except Exception as exc:
                 logger.log(
                     task_id=task_id,
@@ -814,12 +850,55 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 extra={"output_preview": output[:200]},
             )
 
+            task_end = datetime.now(timezone.utc).isoformat()
+
+            # Compute task-level aggregates from per-call llm_meta
+            total_llm_calls = len(llm_requests)
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            total_tokens = 0
+            llm_latency_ms = 0
+            total_agent_hops = 0
+            for _req in llm_requests:
+                _m = _req.get("llm_meta") or {}
+                total_prompt_tokens += _m.get("prompt_tokens") or 0
+                total_completion_tokens += _m.get("completion_tokens") or 0
+                total_tokens += _m.get("total_tokens") or 0
+                llm_latency_ms += _m.get("latency_ms") or 0
+                if _req.get("source") == "agent_b":
+                    total_agent_hops += 1
+            try:
+                _ts_s = datetime.fromisoformat(task_start)
+                _ts_e = datetime.fromisoformat(task_end)
+                total_latency_ms: Optional[int] = int((_ts_e - _ts_s).total_seconds() * 1000)
+            except Exception:
+                total_latency_ms = None
+            _input_rate = float(os.environ.get("COST_PER_INPUT_TOKEN_USD", "0.0"))
+            _output_rate = float(os.environ.get("COST_PER_OUTPUT_TOKEN_USD", "0.0"))
+            if _input_rate or _output_rate:
+                cost_estimate_usd: Optional[float] = round(
+                    total_prompt_tokens * _input_rate + total_completion_tokens * _output_rate, 8
+                )
+            else:
+                cost_estimate_usd = None
+
             self._send_json(
                 200,
                 {
                     "task_id": task_id,
                     "agent_id": "AgentA",
                     "scenario": scenario,
+                    "task_query": task,
+                    "task_start": task_start,
+                    "task_end": task_end,
+                    "total_llm_calls": total_llm_calls,
+                    "total_prompt_tokens": total_prompt_tokens,
+                    "total_completion_tokens": total_completion_tokens,
+                    "total_tokens": total_tokens,
+                    "total_latency_ms": total_latency_ms,
+                    "llm_latency_ms": llm_latency_ms,
+                    "total_agent_hops": total_agent_hops,
+                    "cost_estimate_usd": cost_estimate_usd,
                     "output": output,
                     "agent_b_output": agent_b_output,
                     "agent_b_outputs": agent_b_outputs,
