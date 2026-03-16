@@ -40,6 +40,13 @@ SCRAPE_SCRIPT="$SCRIPT_DIR/scrape_metrics.py"
 PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
 WORKFLOW_TEMPLATE="$REPO_ROOT/agents/templates/agentverse_workflow.json"
 
+# Use the repo's .venv python if available (has matplotlib/pandas/etc.)
+if [[ -x "$REPO_ROOT/.venv/bin/python3" ]]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python3"
+else
+    PYTHON="python3"
+fi
+
 # Defaults
 AGENT_A_URL="${AGENT_A_URL:-http://localhost:8101}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
@@ -47,6 +54,11 @@ ITERATIONS=""
 WAIT_AFTER_RUN=20
 OUTPUT_DIR_OVERRIDE=""
 CONTINUE_MODE=0
+
+# AgentVerse request defaults (mirrors UI payload fields)
+# These are sent to Agent A (/agentverse) and propagate into LLM prompts.
+AGENTVERSE_MAX_ITERATIONS="${AGENTVERSE_MAX_ITERATIONS:-3}"
+AGENTVERSE_SUCCESS_THRESHOLD="${AGENTVERSE_SUCCESS_THRESHOLD:-90}"
 
 # -------------------------------------------------------------------------
 # Load tasks from template
@@ -162,6 +174,27 @@ exec > >(tee -a "$SUMMARY_LOG") 2>&1
 
 # Trap unexpected errors (set -e triggers ERR before EXIT)
 trap 'echo ""; echo "================================================================"; echo "  FATAL: Script interrupted at line $LINENO (exit code $?)"; echo "  Time: $(date +%Y-%m-%d_%H-%M-%S)"; echo "================================================================"' ERR
+
+# -------------------------------------------------------------------------
+# Finalization (idempotent): plots + DONE marker
+# -------------------------------------------------------------------------
+finalize_experiment() {
+    echo ""
+    echo "Generating plots..."
+    if "$PYTHON" "$PLOT_SCRIPT" \
+        --experiment-dir  "$EXPERIMENT_DIR" \
+        --dashboard-json  "$DASHBOARD_JSON" 2>&1; then
+        echo "  Plots saved → $EXPERIMENT_DIR/plots/"
+    else
+        echo "  WARNING: Plotting failed (check dependencies: pip install matplotlib pandas)"
+    fi
+
+    echo ""
+    echo "================================================================"
+    echo "  DONE"
+    echo "  Results: $EXPERIMENT_DIR"
+    echo "================================================================"
+}
 
 # -------------------------------------------------------------------------
 # Resume mode: read original params and detect where to continue from
@@ -282,6 +315,7 @@ PYEOF
     if [[ $START_ITER -gt $ITERATIONS ]]; then
         echo ""
         echo "Experiment already complete! All $TOTAL_RUNS runs finished."
+        finalize_experiment
         exit 0
     fi
 
@@ -312,13 +346,34 @@ EXPERIMENT_START_S=$(date +%s)
 send_agentverse_request() {
     local task="$1"
     local url="$2"
-    python3 - "$task" "$url" <<'PYEOF'
+    local max_iterations="$3"
+    local success_threshold="$4"
+    python3 - "$task" "$url" "$max_iterations" "$success_threshold" <<'PYEOF'
 import json, sys, urllib.request, urllib.error
 
 task_text = sys.argv[1]
 base_url  = sys.argv[2].rstrip("/")
+max_iterations = sys.argv[3]
+success_threshold = sys.argv[4]
 
-payload = json.dumps({"task": task_text, "stream": False, "max_iterations": 2}).encode()
+try:
+    max_iterations = int(max_iterations)
+except Exception:
+    max_iterations = 3
+
+try:
+    success_threshold = int(float(success_threshold))
+except Exception:
+    success_threshold = 90
+
+payload = json.dumps(
+    {
+        "task": task_text,
+        "stream": False,
+        "max_iterations": max_iterations,
+        "success_threshold": success_threshold,
+    }
+).encode()
 req = urllib.request.Request(
     f"{base_url}/agentverse",
     data=payload,
@@ -382,7 +437,7 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
 
         # Send request
         RESPONSE=""
-        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" 2>/tmp/agentverse_err.txt); then
+        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" "$AGENTVERSE_MAX_ITERATIONS" "$AGENTVERSE_SUCCESS_THRESHOLD" 2>/tmp/agentverse_err.txt); then
             :
         else
             ERR=$(cat /tmp/agentverse_err.txt 2>/dev/null || true)
@@ -405,9 +460,31 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         RUN_DIR="$EXPERIMENT_DIR/${RUN_TS}_${TASK_SLUG}_${TASK_ID}"
         mkdir -p "$RUN_DIR"
 
-        # Save metadata
-        python3 - <<PYEOF
+        # Save response JSON (pretty-printed if possible)
+        if ! echo "$RESPONSE" | python3 -m json.tool > "$RUN_DIR/response.json" 2>/dev/null; then
+            echo "$RESPONSE" > "$RUN_DIR/response.json"
+        fi
+
+        # Save metadata (including per-iteration scores)
+        python3 - "$RUN_DIR/response.json" <<PYEOF
 import json
+import sys
+
+response_path = sys.argv[1]
+
+try:
+    with open(response_path) as f:
+        response = json.load(f)
+except Exception:
+    response = {}
+
+scores = []
+for h in (response.get("iteration_history") or []):
+    try:
+        scores.append(int(h.get("evaluation", {}).get("score")))
+    except Exception:
+        scores.append(None)
+
 meta = {
     "task":        "$TASK",
     "task_slug":   "$TASK_SLUG",
@@ -419,15 +496,16 @@ meta = {
     "duration_s":   $DURATION_S,
     "agent_a_url":  "$AGENT_A_URL",
     "prometheus_url": "$PROMETHEUS_URL",
+    "agentverse": {
+        "max_iterations": int("$AGENTVERSE_MAX_ITERATIONS"),
+        "success_threshold": int("$AGENTVERSE_SUCCESS_THRESHOLD"),
+        "iteration_scores": scores,
+    },
 }
+
 with open("$RUN_DIR/meta.json", "w") as f:
     json.dump(meta, f, indent=2)
 PYEOF
-
-        # Save response JSON (pretty-printed if possible)
-        if ! echo "$RESPONSE" | python3 -m json.tool > "$RUN_DIR/response.json" 2>/dev/null; then
-            echo "$RESPONSE" > "$RUN_DIR/response.json"
-        fi
 
         # Append to run log
         python3 - <<PYEOF
@@ -499,21 +577,4 @@ else
     echo "  WARNING: Aggregate metrics scrape failed"
 fi
 
-# -------------------------------------------------------------------------
-# Generate plots
-# -------------------------------------------------------------------------
-echo ""
-echo "Generating plots..."
-if python3 "$PLOT_SCRIPT" \
-    --experiment-dir  "$EXPERIMENT_DIR" \
-    --dashboard-json  "$DASHBOARD_JSON" 2>&1; then
-    echo "  Plots saved → $EXPERIMENT_DIR/plots/"
-else
-    echo "  WARNING: Plotting failed (check dependencies: pip install matplotlib pandas)"
-fi
-
-echo ""
-echo "================================================================"
-echo "  DONE"
-echo "  Results: $EXPERIMENT_DIR"
-echo "================================================================"
+finalize_experiment

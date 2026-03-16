@@ -37,6 +37,10 @@ echo "[monitor] Process not running"
 
 if grep -q "DONE" "$EXPERIMENT_DIR/summary.txt" 2>/dev/null; then
     echo "[monitor] Experiment completed normally"
+    rm -f "$STATE_FILE" 2>/dev/null || true
+    # Remove the cron job now that the experiment is done.
+    crontab -l 2>/dev/null | grep -v "# agentic-experiment-monitor" | crontab -
+    echo "[monitor] Cron job removed"
     exit 0
 fi
 

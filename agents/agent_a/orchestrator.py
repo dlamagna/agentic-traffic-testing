@@ -649,6 +649,7 @@ class AgentVerseOrchestrator:
             "task": state.original_task,
             "iteration": state.iteration + 1,
             "max_iterations": state.max_iterations,
+            "success_threshold": state.success_threshold,
         }
 
         # Prefer token-aware budgeting when we have both a configured limit and
@@ -662,6 +663,7 @@ class AgentVerseOrchestrator:
                     results="",
                     iteration=base_kwargs["iteration"],
                     max_iterations=base_kwargs["max_iterations"],
+                    success_threshold=base_kwargs["success_threshold"],
                 )
                 base_tokens = _count_tokens(base_prompt)
 
@@ -730,6 +732,7 @@ class AgentVerseOrchestrator:
                             results=results_text_trimmed,
                             iteration=base_kwargs["iteration"],
                             max_iterations=base_kwargs["max_iterations"],
+                            success_threshold=base_kwargs["success_threshold"],
                         )
 
                         final_prompt_tokens = _count_tokens(prompt)
@@ -784,6 +787,7 @@ class AgentVerseOrchestrator:
             results=results_text,
             iteration=base_kwargs["iteration"],
             max_iterations=base_kwargs["max_iterations"],
+            success_threshold=base_kwargs["success_threshold"],
         )
 
         if len(prompt) > EVAL_MAX_PROMPT_CHARS:
@@ -792,6 +796,7 @@ class AgentVerseOrchestrator:
                 results="",
                 iteration=base_kwargs["iteration"],
                 max_iterations=base_kwargs["max_iterations"],
+                success_threshold=base_kwargs["success_threshold"],
             )
             max_results_chars = max(EVAL_MAX_PROMPT_CHARS - len(base_prompt), 0)
             if max_results_chars > 0 and len(results_text) > max_results_chars:
@@ -802,6 +807,7 @@ class AgentVerseOrchestrator:
                     results=results_text_trimmed,
                     iteration=base_kwargs["iteration"],
                     max_iterations=base_kwargs["max_iterations"],
+                    success_threshold=base_kwargs["success_threshold"],
                 )
                 span.set_attribute("app.evaluation_prompt_truncated", True)
                 span.set_attribute(

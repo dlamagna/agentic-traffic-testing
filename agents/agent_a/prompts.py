@@ -108,6 +108,7 @@ Agent Results:
 {results}
 
 Iteration: {iteration} of {max_iterations}
+Success threshold (score to accept and stop): {success_threshold}/100
 
 Evaluate the results using the following criteria:
 1. **Completeness** (0-100): Does the solution fully address all aspects of the task?
@@ -145,7 +146,7 @@ Required fields:
   * "relevance": integer 0-100
   * "actionability": integer 0-100
 - "rationale": string - explanation of how the overall score was calculated based on the criteria
-- "feedback": string - REQUIRED when score is below threshold: actionable guidance for the next iteration's recruitment (e.g. which expert types to add/change, what gaps to address). Always provide this when score < 80 so the next iteration can improve.
+- "feedback": string - REQUIRED when score is below threshold: actionable guidance for the next iteration's recruitment (e.g. which expert types to add/change, what gaps to address). Always provide this when score < {success_threshold} so the next iteration can improve.
 - "missing_aspects": array of strings - aspects that are missing or could be improved (empty array [] if none)
 - "should_iterate": boolean - whether to iterate with adjusted experts
 

@@ -139,6 +139,22 @@ if _METRICS_READY:
         f"{LLM_METRICS_PREFIX}_config_max_tokens",
         "Configured max tokens per generation (LLM_MAX_TOKENS)",
     )
+    KV_CACHE_NUM_GPU_BLOCKS = Gauge(
+        f"{LLM_METRICS_PREFIX}_kv_cache_num_gpu_blocks",
+        "vLLM KV cache: number of GPU blocks allocated; -1 means unknown",
+    )
+    KV_CACHE_BLOCK_SIZE_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_kv_cache_block_size_tokens",
+        "vLLM KV cache: tokens per block; -1 means unknown",
+    )
+    KV_CACHE_TOTAL_TOKENS = Gauge(
+        f"{LLM_METRICS_PREFIX}_kv_cache_total_tokens",
+        "vLLM KV cache: total tokens available in GPU KV cache (num_gpu_blocks * block_size); -1 means unknown",
+    )
+    KV_CACHE_EST_MAX_CONCURRENCY_AT_MAX_MODEL_LEN = Gauge(
+        f"{LLM_METRICS_PREFIX}_kv_cache_est_max_concurrency_at_max_model_len",
+        "Estimated max concurrent sequences limited by KV cache at max_model_len; -1 means unknown",
+    )
     CONFIG_COMPUTED_MAX_CONCURRENCY = Gauge(
         f"{LLM_METRICS_PREFIX}_computed_max_concurrency",
         "KV-cache-derived max concurrency: num_gpu_blocks * block_size / max_model_len "
@@ -319,10 +335,116 @@ class AsyncVLLMBackend:
             engine_kwargs["gpu_memory_utilization"] = gpu_memory_utilization
 
         engine_args = AsyncEngineArgs(**engine_kwargs)
+        # Keep the resolved (post-defaults) engine args around so we can export
+        # effective concurrency / KV-cache-related knobs via Prometheus.
+        self._engine_args = engine_args
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
         self._default_sampling = SamplingParams(temperature=0.2, max_tokens=LLM_MAX_TOKENS)
         self._tokenizer = None
         self._tokenizer_ready = False
+
+    def effective_max_num_seqs(self) -> Optional[int]:
+        try:
+            value = getattr(self._engine_args, "max_num_seqs", None)
+            return int(value) if value is not None else None
+        except Exception:
+            return None
+
+    def effective_max_num_batched_tokens(self) -> Optional[int]:
+        try:
+            value = getattr(self._engine_args, "max_num_batched_tokens", None)
+            return int(value) if value is not None else None
+        except Exception:
+            return None
+
+    def effective_max_model_len(self) -> Optional[int]:
+        try:
+            value = getattr(self._engine_args, "max_model_len", None)
+            return int(value) if value is not None else None
+        except Exception:
+            return None
+
+    def _kv_cache_info(self) -> tuple[Optional[int], Optional[int]]:
+        """Best-effort KV cache (num_gpu_blocks, block_size_tokens)."""
+        # vLLM internals vary across versions; try a few known paths.
+        candidates = []
+        try:
+            candidates.append(getattr(self._engine, "engine_config", None))
+        except Exception:
+            pass
+        try:
+            candidates.append(getattr(self._engine, "_engine_config", None))
+        except Exception:
+            pass
+        try:
+            candidates.append(getattr(self._engine, "engine", None))
+        except Exception:
+            pass
+
+        for root in candidates:
+            if root is None:
+                continue
+            # Try to reach cache_config
+            cache_cfg = None
+            for attr in ("cache_config", "_cache_config"):
+                try:
+                    cache_cfg = getattr(root, attr, None)
+                except Exception:
+                    cache_cfg = None
+                if cache_cfg is not None:
+                    break
+            if cache_cfg is None:
+                # Sometimes nested: root.engine_config.cache_config
+                try:
+                    eng_cfg = getattr(root, "engine_config", None)
+                    cache_cfg = getattr(eng_cfg, "cache_config", None) if eng_cfg is not None else None
+                except Exception:
+                    cache_cfg = None
+
+            if cache_cfg is None:
+                continue
+
+            num_blocks = None
+            block_size = None
+            for name in ("num_gpu_blocks", "gpu_num_blocks", "num_blocks"):
+                try:
+                    val = getattr(cache_cfg, name, None)
+                    if val is not None:
+                        num_blocks = int(val)
+                        break
+                except Exception:
+                    continue
+            for name in ("block_size", "block_size_tokens"):
+                try:
+                    val = getattr(cache_cfg, name, None)
+                    if val is not None:
+                        block_size = int(val)
+                        break
+                except Exception:
+                    continue
+
+            if num_blocks is not None or block_size is not None:
+                return num_blocks, block_size
+
+        return None, None
+
+    def kv_cache_total_tokens(self) -> Optional[int]:
+        num_blocks, block_size = self._kv_cache_info()
+        if num_blocks is None or block_size is None or num_blocks <= 0 or block_size <= 0:
+            return None
+        return num_blocks * block_size
+
+    def kv_cache_est_max_concurrency_at_max_model_len(self) -> Optional[int]:
+        """Estimate KV-cache-limited concurrency at max_model_len.
+
+        This is an *upper bound* assuming each concurrent sequence occupies
+        roughly max_model_len tokens in KV cache.
+        """
+        total = self.kv_cache_total_tokens()
+        max_len = self.effective_max_model_len()
+        if total is None or max_len is None or max_len <= 0:
+            return None
+        return total // max_len
 
     async def generate(
         self,
@@ -807,15 +929,23 @@ async def run_async_server(
     # Export static configuration values as Prometheus gauges so Grafana can
     # put concurrency and latency into context.
     if _METRICS_READY:
-        # Use -1 to indicate "default" / not explicitly set for optional values.
-        CONFIG_MAX_NUM_SEQS.set(float(max_num_seqs) if max_num_seqs is not None else -1.0)
-        CONFIG_MAX_NUM_BATCHED_TOKENS.set(
-            float(max_num_batched_tokens) if max_num_batched_tokens is not None else -1.0
-        )
+        # Export *effective* values (after vLLM defaults are applied).
+        eff_max_num_seqs = _backend.effective_max_num_seqs()
+        eff_max_batched = _backend.effective_max_num_batched_tokens()
+        CONFIG_MAX_NUM_SEQS.set(float(eff_max_num_seqs) if eff_max_num_seqs is not None else -1.0)
+        CONFIG_MAX_NUM_BATCHED_TOKENS.set(float(eff_max_batched) if eff_max_batched is not None else -1.0)
         CONFIG_GPU_MEMORY_UTILIZATION.set(
             float(gpu_memory_utilization) if gpu_memory_utilization is not None else -1.0
         )
         CONFIG_MAX_TOKENS.set(float(LLM_MAX_TOKENS))
+        # Export KV-cache-derived capacity (best-effort).
+        kv_num_blocks, kv_block_size = _backend._kv_cache_info()
+        KV_CACHE_NUM_GPU_BLOCKS.set(float(kv_num_blocks) if kv_num_blocks is not None else -1.0)
+        KV_CACHE_BLOCK_SIZE_TOKENS.set(float(kv_block_size) if kv_block_size is not None else -1.0)
+        kv_total = _backend.kv_cache_total_tokens()
+        KV_CACHE_TOTAL_TOKENS.set(float(kv_total) if kv_total is not None else -1.0)
+        kv_est = _backend.kv_cache_est_max_concurrency_at_max_model_len()
+        KV_CACHE_EST_MAX_CONCURRENCY_AT_MAX_MODEL_LEN.set(float(kv_est) if kv_est is not None else -1.0)
 
     app = create_app()
     runner = web.AppRunner(app)
