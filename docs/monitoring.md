@@ -56,6 +56,64 @@ When `ENABLE_MONITORING=1` in `infra/.env`, deployment will:
   - Results are cached for 10 seconds (configurable via `CACHE_TTL` env var).
   - These mappings are used by Grafana panels via PromQL vector joins (e.g. `* on(interface) group_left(network_name) docker_network_mapping`) to replace raw bridge IDs and cgroup paths with human-readable names.
 
+### Grafana “nicknames” (human‑readable labels)
+
+The dashboard is configured so panels show **Docker network / service names** instead of raw bridge IDs (`br-…`) and systemd cgroup scopes (`/system.slice/docker-….scope`).
+
+#### Quick start
+
+From the repo root:
+
+```bash
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.monitoring.yml down
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.monitoring.yml up -d
+```
+
+#### Verify
+
+- Exporter metrics:
+
+  ```bash
+  curl http://localhost:9101/metrics
+  ```
+
+- Prometheus has the mapping series:
+
+  ```bash
+  curl 'http://localhost:9090/api/v1/query?query=docker_network_mapping'
+  ```
+
+#### Example query (bridge ID → network name)
+
+```promql
+rate(container_network_transmit_bytes_total{id="/",interface=~"br-.*"}[30s])
+  * on(interface) group_left(network_name) docker_network_mapping
+```
+
+Set the panel legend to `{{network_name}} TX` (or `RX`) to display the friendly name.
+
+#### Troubleshooting
+
+- **Nicknames not showing**
+  - Ensure the exporter is running: `docker ps | grep docker-mapping-exporter`
+  - Check logs: `docker logs docker-mapping-exporter` and `docker logs prometheus`
+  - Force Grafana to reload: `docker restart grafana`
+
+#### Performance impact
+
+- **Exporter overhead**: typically tens of milliseconds per scrape (results cached)
+- **Prometheus**: one additional scrape job, small metrics payload
+- **Grafana**: PromQL joins add modest query overhead (usually negligible for this dashboard)
+
+#### Advanced customization
+
+- **Change scrape interval**: update the `docker-mapping` job in `infra/monitoring/prometheus.yml`.
+- **Add nickname support to another bridge-based panel**: join with:
+
+  ```promql
+  <your_metric> * on(interface) group_left(network_name) docker_network_mapping
+  ```
+
 - **TCP Metrics Collector**
   - Script: `scripts/monitoring/tcp_metrics_collector.py`
   - Runs on the **host**, not in Docker.
@@ -396,3 +454,70 @@ This gives every Network Traffic and Resource Usage panel human-readable labels 
   - Service meshes (e.g., Istio/Linkerd) can add HTTP/gRPC metrics with service names and richer routing metadata.
 
 This repo deliberately stays "vanilla" Docker + cAdvisor + Prometheus + Grafana. The Docker Mapping Exporter and TCP collector are structured so you can plug in other technologies that provide first-class service naming.
+
+---
+
+## Correlating Application Logs with TCP Telemetry
+
+`scripts/experiment/correlate_metrics.py` joins the per-call LLM log
+(`logs/llm_calls.jsonl`, written by `MetricsLogger`) with Prometheus TCP
+telemetry to produce a **per-task CSV dataset** — one row per task, with both
+application-level and network-level columns.
+
+### Quick start
+
+```bash
+# After running experiments (so llm_calls.jsonl has data):
+python scripts/experiment/correlate_metrics.py \
+    --call-log   logs/llm_calls.jsonl \
+    --agentverse-dir logs/agentverse \
+    --prometheus http://localhost:9090 \
+    --output     data/correlated.csv
+```
+
+### Output schema
+
+| Column | Source | Description |
+|---|---|---|
+| `task_id` | app log | UUID identifying the task |
+| `scenario` | app log / agentverse | `agentic_simple`, `agentic_multi_hop`, `agentic_parallel` |
+| `task_start` / `task_end` | app log | ISO 8601 timestamps derived from call records |
+| `window_s` | derived | Duration of the Prometheus lookback window (seconds) |
+| `total_llm_calls` | app log | Number of LLM calls across all agents for this task |
+| `agent_a_calls` / `agent_b_calls` | app log | Breakdown by agent |
+| `total_prompt_tokens` / `total_completion_tokens` / `total_tokens` | app log | Summed across all calls |
+| `total_llm_latency_ms` | app log | Sum of per-call LLM latency (not wall-clock) |
+| `cost_estimate_usd` | app log | `prompt_tokens × COST_PER_INPUT_TOKEN_USD + completion_tokens × COST_PER_OUTPUT_TOKEN_USD` |
+| `model_name` | app log | Model serving the calls (`MODEL_NAME` env var) |
+| `tcp_bytes_to_llm` | Prometheus | Total bytes sent from any agent to `llm_backend` over task window |
+| `tcp_bytes_from_llm` | Prometheus | Total bytes sent from `llm_backend` to any agent |
+| `tcp_packets_to_llm` | Prometheus | Packet count: agents → LLM |
+| `tcp_bytes_a_to_b` / `tcp_packets_a_to_b` | Prometheus | Agent A → Agent B fan-out traffic |
+| `tcp_syn_count` | Prometheus | New TCP connections opened ≈ flow count during task |
+| `tcp_flow_duration_p50_s` / `tcp_flow_duration_p95_s` | Prometheus | Flow duration histogram quantiles (agent_a → llm_backend) |
+| `tcp_rtt_p50_s` / `tcp_rtt_p95_s` | Prometheus | SYN/SYN-ACK RTT quantiles (agent_a → llm_backend) |
+
+### Correlation methodology
+
+1. `MetricsLogger` writes one JSONL record per LLM call to `logs/llm_calls.jsonl`,
+   including `task_id`, `timestamp_start`, and `timestamp_end`.
+2. The script groups records by `task_id` and derives the task time window as
+   `[min(timestamp_start), max(timestamp_end)]` across all calls.
+3. Prometheus is queried using `increase()` instant queries at `task_end` with a
+   lookback of `window_s` (minimum 15 s to match the scrape interval). This captures
+   counter increments on the inter-agent bridge during the task.
+4. The `X-Task-ID` header propagated by all agents links application log records
+   to the same `task_id`, ensuring consistent grouping across agents.
+
+### Known limitations
+
+- **Scrape interval resolution**: tasks shorter than ~15 s may have no Prometheus
+  samples within their window. The script prints a warning and still writes the
+  row; TCP columns will be `null`.
+- **Concurrent task overlap**: Prometheus TCP metrics are not per-task-id — they
+  are time-windowed counters. If multiple tasks run concurrently, their TCP
+  windows overlap and attribution becomes ambiguous. Run experiments serially for
+  the cleanest per-task signal.
+- **Histogram precision**: `increase()` on histogram buckets works correctly only
+  when the counter has been scraped at least once during the window. For very
+  short tasks, quantile results may be `null` or inaccurate.
