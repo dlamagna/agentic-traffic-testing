@@ -15,6 +15,7 @@ import httpx
 
 from agents.agent_a.main import AGENT_B_URL, AGENT_B_URLS, LLM_SERVER_URL, call_agent_b, call_llm
 from agents.agent_a.orchestrator import AgentVerseOrchestrator
+from agents.agent_a.rlm_orchestrator import RLMOrchestrator
 from agents.common.metrics_logger import MetricsLogger
 from agents.common.telemetry import TelemetryLogger
 from agents.common.tracing import get_tracer
@@ -326,8 +327,92 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(502, {"error": f"AgentVerse workflow failed: {exc}"})
 
+    def _handle_rlm(self) -> None:
+        """Handle RLM (Recursive Language Models) workflow requests."""
+        with self.tracer.start_as_current_span("agent_a.rlm_workflow") as span:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            try:
+                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+
+            task = data.get("task")
+            if not isinstance(task, str) or not task:
+                self._send_json(400, {"error": "Missing 'task' field"})
+                return
+
+            scenario = data.get("scenario", "rlm_recursive")
+            if scenario not in ("rlm_simple", "rlm_recursive", "rlm_parallel"):
+                scenario = "rlm_recursive"
+
+            max_depth = data.get("max_depth", 1)
+            if not isinstance(max_depth, int) or max_depth < 0:
+                max_depth = 1
+            max_depth = min(max_depth, 3)  # Reasonable safety cap.
+
+            max_iterations = data.get("max_iterations", 30)
+            if not isinstance(max_iterations, int) or max_iterations < 1:
+                max_iterations = 30
+            max_iterations = min(max_iterations, 100)
+
+            max_tokens = data.get("max_tokens")
+            if not isinstance(max_tokens, int) or max_tokens <= 0:
+                max_tokens = None
+
+            max_timeout = data.get("max_timeout")
+            if not isinstance(max_timeout, (int, float)) or max_timeout <= 0:
+                max_timeout = None
+
+            # Build worker list: same shape as /task agent_b_workers.
+            agent_count = data.get("agent_count")
+            agent_b_workers_raw = data.get("agent_b_workers")
+            workers = _normalize_workers(agent_count, agent_b_workers_raw, AGENT_B_URLS)
+
+            span.set_attribute("app.task", task)
+            span.set_attribute("app.scenario", scenario)
+            span.set_attribute("app.max_depth", max_depth)
+            span.set_attribute("app.max_iterations", max_iterations)
+
+            logger = TelemetryLogger(agent_id="AgentA-RLM", scenario=scenario)
+            task_id = logger.new_task_id()
+            span.set_attribute("app.task_id", task_id)
+
+            logger.log(
+                task_id=task_id,
+                event_type="rlm_request_received",
+                message=f"Received /rlm request: {task[:100]}",
+                extra={"scenario": scenario, "max_depth": max_depth, "worker_count": len(workers)},
+            )
+
+            try:
+                orchestrator = RLMOrchestrator(
+                    logger=logger,
+                    metrics_logger=self.metrics_logger,
+                )
+                result = orchestrator.run_workflow(
+                    task=task,
+                    task_id=task_id,
+                    scenario=scenario,
+                    max_depth=max_depth,
+                    max_iterations=max_iterations,
+                    max_tokens=max_tokens,
+                    max_timeout=max_timeout,
+                    agent_b_workers=workers,
+                )
+                self._send_json(200, result)
+            except Exception as exc:
+                logger.log(
+                    task_id=task_id,
+                    event_type="rlm_error",
+                    message=f"RLM workflow failed: {exc}",
+                )
+                self._send_json(502, {"error": f"RLM workflow failed: {exc}"})
+
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path == "/task" or self.path.startswith("/agentverse"):
+        if self.path in ("/task", "/rlm") or self.path.startswith("/agentverse"):
             self.send_response(204)
         else:
             self.send_response(404)
@@ -366,7 +451,11 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         if self.path == "/agentverse":
             self._handle_agentverse()
             return
-        
+
+        if self.path == "/rlm":
+            self._handle_rlm()
+            return
+
         if self.path != "/task":
             self._send_json(404, {"error": "Not found"})
             return
@@ -910,7 +999,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
 
 def run() -> None:
     server = ThreadingHTTPServer((HOST, PORT), AgentARequestHandler)
-    print(f"[*] Agent A HTTP server listening on http://{HOST}:{PORT}/task")
+    print(f"[*] Agent A HTTP server listening on http://{HOST}:{PORT} (/task, /agentverse, /rlm)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
