@@ -214,6 +214,27 @@ One PNG per Grafana row section, with subplots matching the panel layout:
   - In-flight Requests
   - LLM Request Rate
 
+### Interpreting interarrival results
+
+The interarrival plots capture how often LLM requests arrive at the backend during an experiment. Because the agents in this testbed operate in a **closed-loop** (each agent waits for an LLM response before issuing the next request), the interarrival distribution is shaped by both LLM latency *and* agent-side logic — not by an independent external arrival process.
+
+Read the plots together with `05_AI_Performance_(LLM).png` (latency, TTFT, in-flight requests):
+
+| Interarrival distribution | Latency / TTFT | In-flight | What it indicates |
+|---|---|---|---|
+| Narrow, short mean | Short | Low | High, steady request rate with the backend comfortably keeping up. Typical of efficient parallel execution phases (`agentic_parallel`). |
+| Wide or bimodal | Long, rising TTFT | High | **Queueing regime**: arrival bursts exceed serving capacity. The bimodal shape in `interarrival_distribution.png` often separates burst-phase arrivals (short interarrival) from quiet phases (long interarrival). |
+| Wide, long mean | Long | Low | Expensive calls dominate — model is busy per request but overall load is low. Optimise at the prompt/workflow level, not infrastructure. |
+| Narrow, long mean | Short | Low | System is mostly idle; agent logic (not server capacity) controls pacing. Interarrival is close to the agent-side processing time. |
+
+**Reading `interarrival_ecdf.png`:** the gap between the p50 and p95 marker lines is the **interarrival jitter**. A large gap indicates high-variance arrivals (bursty). Agentic scenarios should show wider p50–p95 spread than the non-agentic baseline.
+
+**Reading `interarrival_distribution.png`:** compare the per-task-type KDE curves. Broader, heavier-tailed curves indicate more bursty workflows. An `agentic_parallel` run should show a shorter mean interarrival (more concurrent requests) than `agentic_simple`.
+
+**Sanity check with Little's Law:** in steady state, `L ≈ λW`, where L = mean in-flight requests, λ = 1 / (mean interarrival), W = mean latency. Cross-check the `statistics.txt` values against the in-flight panel to verify the system was operating in a consistent regime during the run.
+
+For the full theory behind these metrics — including the closed-loop derivation, the four interpretation patterns, and the relationship to TCP-level flow metrics — see [docs/monitoring.md § Interarrival Time](../monitoring.md#interarrival-time-theory-and-interpretation).
+
 ---
 
 ## Correlating with Jaeger traces

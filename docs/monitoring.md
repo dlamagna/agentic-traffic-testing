@@ -54,6 +54,7 @@ When `ENABLE_MONITORING=1` in `infra/.env`, deployment will:
     | `docker_ip_mapping` | `ip_address`, `container_name`, `service_name` | Maps container IPs on `infra_inter_agent_network` → container/service name |
 
   - Results are cached for 10 seconds (configurable via `CACHE_TTL` env var).
+  - **Performance**: ~5 ms per Docker query; exporter uses ~30–50 MB memory (Python 3.11 slim + Docker CLI).
   - These mappings are used by Grafana panels via PromQL vector joins (e.g. `* on(interface) group_left(network_name) docker_network_mapping`) to replace raw bridge IDs and cgroup paths with human-readable names.
 
 ### Grafana “nicknames” (human‑readable labels)
@@ -455,6 +456,13 @@ This gives every Network Traffic and Resource Usage panel human-readable labels 
 
 This repo deliberately stays "vanilla" Docker + cAdvisor + Prometheus + Grafana. The Docker Mapping Exporter and TCP collector are structured so you can plug in other technologies that provide first-class service naming.
 
+#### Planned exporter improvements
+
+- [ ] Add more detailed service mapping (src/dst service pairs from `tcp_metrics_collector`)
+- [ ] Cache raw Docker API responses to reduce overhead
+- [ ] Expose container label information as Prometheus labels
+- [ ] Support for Kubernetes/multi-host deployments
+
 ---
 
 ## Correlating Application Logs with TCP Telemetry
@@ -521,3 +529,123 @@ python scripts/experiment/correlate_metrics.py \
 - **Histogram precision**: `increase()` on histogram buckets works correctly only
   when the counter has been scraped at least once during the window. For very
   short tasks, quantile results may be `null` or inaccurate.
+
+---
+
+## Interarrival Time: Theory and Interpretation
+
+### What interarrival time means
+
+At the LLM backend, a stream of HTTP requests arrives from Agent A, Agent B workers, and AgentVerse multi-stage workflows. Each completed request increments `llm_requests_total`. If requests arrive at times T₁, T₂, T₃, …, the **interarrival time** Aₙ is:
+
+```
+Aₙ = Tₙ − Tₙ₋₁
+```
+
+Smaller Aₙ means requests are arriving closer together (higher instantaneous load); larger Aₙ means they are more spaced out (lower load). Because this testbed studies *agentic* workloads with structured dynamic workflows (recruitment → decision → execution → evaluation), the interarrival pattern directly encodes:
+
+- Bursty phases (planning bursts, tool-use bursts, summarisation phases)
+- Differences between **agentic** and **non-agentic** (baseline) scenarios
+- How orchestration choices translate into actual LLM traffic patterns
+
+### Closed-loop arrivals: what interarrival really measures
+
+The agent workloads here are not an open-loop Poisson process where arrivals are independent of system state. They form a **closed-loop** system:
+
+1. An agent issues an LLM request.
+2. The LLM backend processes it and returns a response.
+3. The agent performs local work (reasoning, routing, tool calls).
+4. Only then does it decide whether and when to issue the **next** LLM request.
+
+For a single logical agent, the gap between successive LLM calls decomposes as:
+
+```
+t_interarrival = t_LLM_latency + t_agent_processing + t_tool_calls
+```
+
+- `t_LLM_latency` is exposed as `llm_request_latency_seconds`.
+- `t_agent_processing + t_tool_calls` is the **agent-side gap** — not yet separately instrumented (see "Missing metrics" below).
+
+This means the observed interarrival time is **partly determined by the backend itself** (via LLM latency and batching config) and partly by agent behaviour. It is therefore a valid traffic characterisation metric for a *specific system configuration*, not an intrinsic property of the abstract workflow. For comparing agentic vs non-agentic traffic under controlled server settings, this is both acceptable and desirable — it makes the feedback loop between LLM capacity and agent traffic explicitly visible.
+
+### Deriving interarrival time from existing metrics
+
+No separate Prometheus metric is needed. From queueing theory, the mean interarrival time over a window is approximately `1/λ(t)`, where λ is the instantaneous arrival rate. The testbed derives this in PromQL as:
+
+```promql
+-- arrival rate
+sum(rate(llm_requests_total[30s]))
+
+-- mean interarrival time (seconds)
+1 / sum(rate(llm_requests_total[30s]))
+```
+
+This is the quantity shown in the **"LLM Interarrival Time (avg)"** panel (row 6 of the dashboard, "Interarrival Interpretation"). The 30-second window balances noise and responsiveness.
+
+If the full **distribution** of interarrival times is ever needed (e.g. to test for Poisson vs bursty arrivals), a histogram can be added to `llm/serve_llm.py`: track a global `last_arrival_ts`; on each accepted request, compute `now − last_arrival_ts` and observe it into `llm_interarrival_seconds_bucket`. For now, the derived mean via PromQL is sufficient for scenario comparisons.
+
+### Interpreting interarrival alongside request duration
+
+Because the system is closed-loop, interarrival time must always be read together with:
+
+- **End-to-end latency**: `llm_request_latency_seconds_bucket`
+- **Queue wait / TTFT**: `llm_queue_wait_seconds_bucket`
+- **In-flight requests**: `llm_inflight_requests`
+
+Common patterns:
+
+| Interarrival | Latency | Queue wait | What it means |
+|---|---|---|---|
+| Short | Short | Low | High rate, backend keeping up. vLLM batching effective; little queueing. Typical of efficient parallel execution phases. |
+| Short | Long | High | **Queueing regime**: requests arrive faster than served. `llm_inflight_requests` rises in parallel. Most informative for agentic vs non-agentic comparisons. |
+| Long | Long | Low | Low rate but expensive calls. Latency is model-driven (long generations, heavy tool chains), not load-driven. Optimise at the workflow/prompt level. |
+| Long | Short | Low | System mostly idle from the LLM's perspective. Burstiness is agent-logic-driven, not resource-driven. |
+
+**Little's Law** provides a sanity check: in steady state, `L ≈ λW`, where L = in-flight requests (`llm_inflight_requests`), λ = arrival rate, W = latency. Watching all three together shows when the backend is being pushed into high-load or overloaded regimes and how orchestration decisions drive those regimes.
+
+### Relationship to TCP-level metrics
+
+The TCP metrics collector exposes:
+
+- `tcp_packets_total{src_service, dst_service}`
+- `tcp_bytes_total{src_service, dst_service}`
+- `tcp_flow_duration_seconds_bucket{src_service, dst_service, le}`
+- `tcp_rtt_handshake_seconds_bucket{src_service, dst_service, le}`
+
+TCP connection events are **not always 1:1 with LLM RPCs** (due to connection reuse / keep-alive). Use:
+
+- **LLM interarrival time** (from `llm_requests_total`) as the primary signal for **application-level arrivals**.
+- **TCP-level metrics** as a complementary view for **network-layer behaviour** (RTT distributions, flow durations, retransmissions) associated with those same agentic workloads.
+
+Together these metrics characterise how semantic workflows (AgentID, TaskID, ToolCallID) translate into both application-level load and network-level behaviour between agents, tools, and the LLM.
+
+### Missing metrics / future instrumentation
+
+The following would make the interarrival picture more complete. None are currently implemented.
+
+#### Agent-side gap
+
+**Goal:** separate `t_LLM_latency` (already measured) from `t_agent_gap = t_agent_processing + t_tool_calls`.
+
+**What to add:**
+- `agent_llm_gap_seconds_bucket{agent_id, scenario}` — histogram of time from "LLM response received" to "next LLM request sent", tracked per agent.
+- Dashboard location: new panel "Agent-side Gap (p50/p95)" in a **"Agent Workflow Metrics"** row, alongside LLM latency and TTFT.
+
+#### Task-level workflow metrics
+
+**What to add:**
+- `agent_task_total{scenario, status}` — completed tasks.
+- `agent_task_latency_seconds_bucket{scenario}` — end-to-end task latency.
+- `agent_llm_calls_total{scenario, role}` — LLM calls per scenario and agent role.
+
+**Derived PromQL once metrics exist:**
+```promql
+-- LLM calls per task
+sum(rate(agent_llm_calls_total[window])) / sum(rate(agent_task_total[window]))
+
+-- Fan-out ratio (orchestrator vs worker)
+rate(agent_llm_calls_total{role="orchestrator"}[window])
+  / rate(agent_llm_calls_total{role!="orchestrator"}[window])
+```
+
+**Dashboard location:** new **"Agent Workflow Metrics"** row with panels: Tasks Completed/s, Task Latency (p50/p95), LLM Calls per Task, LLM Calls by Role (stacked).

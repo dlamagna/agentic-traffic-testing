@@ -17,7 +17,7 @@ Runs entirely on a **single GPU server** using **Docker containers** to simulate
 - [5. Agent config and roles](#5-agent-config-and-roles)
 - [6. Monitoring](#6-monitoring)
 - [7. Experiment runner](#7-experiment-runner)
-- [8. MCP-Universe benchmark integration](#8-mcp-universe-benchmark-integration)
+- [8. Benchmark integrations](#8-benchmark-integrations)
 - [9. Shared GPU usage](#9-shared-gpu-usage)
 
 ---
@@ -28,7 +28,7 @@ Runs entirely on a **single GPU server** using **Docker containers** to simulate
 flowchart TB
 
 %% LAYERS
-L8["L8 Workflow (AgentVerse)"]
+L8["L8 Workflow (AgentVerse / RLM)"]
 L7["L7 Agents + MCP (python)"]
 L6["L6 Docker Containers"]
 L5["L5 LLM Backend (vLLM + Llama)"]
@@ -145,9 +145,14 @@ See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md)
 ├── docs/
 │   ├── monitoring.md
 │   ├── networking.md
-│   ├── interarrival_metrics.md
-│   ├── experiment_runner.md
-│   ├── mcp_universe_integration.md
+│   ├── agentverse/
+│   │   ├── implementation.md     # AgentVerse 4-stage workflow design and API
+│   │   └── experiment_runner.md  # Bulk experiment pipeline, plots, interpretation
+│   ├── benchmarks/
+│   │   ├── README.md             # Cross-benchmark comparison and integration pattern
+│   │   ├── agentbench.md
+│   │   ├── oolong.md
+│   │   └── mcp_universe.md
 │   └── architecture_diagrams/
 └── logs/
 ```
@@ -159,8 +164,9 @@ See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md)
 ```bash
 # 1. Configure environment
 cd infra
-cp .env.example .env
-# Edit .env: set MODEL_NAME, ENABLE_MONITORING=1, etc.
+cp .env.example .env                                 # Docker / infra settings (HF_TOKEN, model, etc.)
+cp .env.experiment.example .env.experiment           # Benchmark / experiment settings (paths, scenarios)
+# Edit both files to match your machine (HF_TOKEN, RLM_REPO_PATH, OOLONG_ROOT, etc.)
 
 # 2. Deploy (distributed mode with monitoring)
 cd ..
@@ -185,7 +191,8 @@ See [`infra/README.md`](infra/README.md) for full deployment options, LLM config
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/task` | POST | Main task endpoint. Scenario controls whether Agent A calls Agent B and/or LLM. |
-| `/agentverse` | POST | Full AgentVerse 4-stage workflow (recruitment → decision → execution → evaluation). |
+| `/agentverse` | POST | AgentVerse 4-stage workflow (recruitment → decision → execution → evaluation). |
+| `/rlm` | POST | RLM workflow: LLM operates in a Python REPL loop, calling Agent B as tools and recursively calling itself. |
 
 **Agent B** (ports 8102–8106):
 
@@ -212,11 +219,30 @@ curl -X POST http://localhost:8101/agentverse \
   -H "Content-Type: application/json" \
   -d '{"task":"Design a traffic analysis experiment."}'
 
+# Agent A — RLM workflow (REPL loop, plain baseline)
+curl -s -X POST http://localhost:8101/rlm \
+  -H "Content-Type: application/json" \
+  -d '{"task":"What is the capital of France?","scenario":"rlm_simple"}' \
+  | python3 -m json.tool
+
+# Agent A — RLM workflow (recursive REPL, Agent B as tool)
+curl -s -X POST http://localhost:8101/rlm \
+  -H "Content-Type: application/json" \
+  -d '{"task":"List the 3 longest rivers in Europe and their lengths.","scenario":"rlm_recursive","max_depth":1,"agent_count":2}' \
+  | python3 -m json.tool
+
 # Agent B directly
 curl -X POST http://localhost:8102/subtask \
   -H "Content-Type: application/json" \
   -d '{"subtask":"List two example MCP tool calls."}'
 ```
+
+Logs for every request are written to `logs/`:
+- `logs/llm_calls.jsonl` — per-call token counts, latency, agent ID, task ID
+- `logs/node1_agentA_AgentA-RLM.log` — RLM event stream (iteration/subcall events)
+- `logs/benchmarks/` — benchmark runner JSONL output
+
+Traces are available in Jaeger at `http://localhost:16686` (service `agent-a`, operation `agent_a.rlm_workflow`).
 
 ---
 
@@ -233,6 +259,16 @@ curl -X POST http://localhost:8102/subtask \
 
 **`/agentverse`** (Agent A):
 - `task` (required): Triggers full 4-stage workflow.
+
+**`/rlm`** (Agent A):
+- `task` (required): Task text fed into the RLM REPL.
+- `scenario`: `rlm_simple` (no REPL, plain LLM baseline), `rlm_recursive` (default), or `rlm_parallel`.
+- `max_depth`: REPL recursion depth (default 1; capped at 3). Ignored for `rlm_simple`.
+- `max_iterations`: Max REPL loop turns (default 30, cap 100).
+- `max_tokens`: Optional cumulative token budget (0 = unlimited).
+- `max_timeout`: Optional wall-clock timeout in seconds (0 = unlimited).
+- `agent_count`: Number of Agent B workers to expose as tools (0 = none).
+- `agent_b_workers`: Explicit list of `{endpoint, role, contract}` worker specs (overrides `agent_count`).
 
 **`/subtask`** and **`/discuss`** (Agent B):
 - `subtask` (required): Subtask text.
@@ -289,7 +325,7 @@ The **Agentic Traffic Testbed** dashboard (`http://localhost:3001`) is auto-prov
 
 See [docs/monitoring.md](docs/monitoring.md) for the full PromQL reference, how to start the TCP collector manually, and tips on enabling per-container cAdvisor metrics.
 
-See [docs/interarrival_metrics.md](docs/interarrival_metrics.md) for how interarrival time is derived and interpreted alongside latency and queue metrics.
+See [docs/monitoring.md](docs/monitoring.md) for how interarrival time is derived and interpreted alongside latency and queue metrics.
 
 ---
 
@@ -304,15 +340,22 @@ Repeatable bulk-collection pipeline for interarrival time and related metrics.
 
 Each run saves the AgentVerse JSON response, scrapes all Prometheus metrics, and generates matplotlib plots and an interarrival time distribution analysis.
 
-See [docs/experiment_runner.md](docs/experiment_runner.md) for full usage, output layout, CSV schema, and how to extend tasks or metrics.
+See [docs/agentverse/experiment_runner.md](docs/agentverse/experiment_runner.md) for full usage, output layout, CSV schema, and how to extend tasks or metrics.
 
 ---
 
-## 8. MCP-Universe benchmark integration
+## 8. Benchmark integrations
 
-Integrates the [MCP-Universe](https://github.com/SalesforceAIResearch/MCP-Universe) benchmark framework for execution-based MCP tool evaluation across 6 domains. Runs against the local LLM backend via an OpenAI-compatible proxy.
+The testbed integrates multiple industry-standard agentic benchmarks so that the network-level telemetry it collects corresponds to real cognitive workloads. All benchmarks route through the local LLM backend and the testbed's instrumented agent pipeline.
 
-See [docs/mcp_universe_integration.md](docs/mcp_universe_integration.md) for setup and usage.
+| Benchmark | Task type | Interaction | Metric | Doc |
+|-----------|-----------|-------------|--------|-----|
+| **AgentBench** | OS / SQL / KG / Embodied | Multi-turn tool-use (function calling) | SR, F1 | [docs/benchmarks/agentbench.md](docs/benchmarks/agentbench.md) |
+| **OOLONG** | Long-context aggregation | Single-shot (or parallel fan-out) | Exponential decay, exact match | [docs/benchmarks/oolong.md](docs/benchmarks/oolong.md) |
+| **MCP-Universe** | Real-world MCP tool execution (6 domains) | Multi-turn ReAct via MCP | SR, AE, AS | [docs/benchmarks/mcp_universe.md](docs/benchmarks/mcp_universe.md) |
+| **MARBLE** *(planned)* | Multi-agent collaboration + competition | Multi-agent (star / chain / graph) | Milestone KPIs | — |
+
+See [docs/benchmarks/README.md](docs/benchmarks/README.md) for a full comparison: how each benchmark differs in traffic pattern, when to use each, and how to compare outputs across benchmarks.
 
 ---
 

@@ -2,89 +2,105 @@
 
 This document describes how the OOLONG benchmark is wired into the Agentic Traffic Testbed and how to run it end-to-end.
 
+Upstream repo: **https://github.com/abertsch72/oolong**
+
 ---
 
 ### 1. Data source and layout
 
-- **Upstream repo**: `https://github.com/yale-nlp/OOLONG`
-- **Split used**: `trec_coarse` (as in the RLM paper)
+OOLONG-synth is published on the HuggingFace Hub:
 
-By default the testbed expects a local clone of the OOLONG repo alongside this project:
+```
+oolongbench/oolong-synth  (test split, 5200 examples across 10 datasets)
+```
 
-- `<parent>/agentic-traffic-testing`
-- `<parent>/OOLONG`
+The `datasets` library downloads and caches it automatically — no manual data download or local JSONL files required.
 
-The root can be overridden with the `OOLONG_ROOT` environment variable.
-
-Within the OOLONG checkout the runner looks for:
-
-- `data/oolong/trec_coarse.jsonl` (preferred)
-- or `data/trec_coarse.jsonl`
+The benchmark runner filters to a single dataset within the synth split.  The default is `trec_coarse` (as used in the RLM paper).  Other available datasets: `metaphors`, `multinli`, `negation`, `yahoo`, `imdb`, `formality`, `agnews`, `spam`, `app_reviews`.
 
 ---
 
-### 2. Loader implementation
+### 2. OOLONG repo dependency (for scoring)
+
+Scoring delegates to the official `eval_helpers.py` from the OOLONG repo.  You need a local clone:
+
+```bash
+# Default expected path (sibling of this project):
+git clone https://github.com/abertsch72/oolong.git ../oolong
+```
+
+Or set `OOLONG_ROOT` to point at an existing clone:
+
+```bash
+export OOLONG_ROOT=/home/dlamagna/projects/oolong
+```
+
+The scorer adds `${OOLONG_ROOT}/src/eval` to `sys.path` and imports `synth_process_response` from `eval_helpers.py`.
+
+Install the OOLONG dependencies (in addition to the testbed's own deps):
+
+```bash
+pip install datasets python-dateutil
+# Full OOLONG deps if needed:
+# pip install -r /path/to/oolong/requirements.txt
+```
+
+---
+
+### 3. Loader implementation
 
 File: `benchmarks/oolong/loader.py`
 
 - **`OolongExample`**: dataclass with fields:
-  - `task_id: str`
-  - `input_context: str`
-  - `query: str`
-  - `ground_truth: str`
-- **`load_trec_coarse(oolong_root: Path | None = None)`**:
-  - Resolves the OOLONG root (using `OOLONG_ROOT` or the default sibling checkout).
-  - Locates `trec_coarse.jsonl`.
-  - Yields `OolongExample` instances for each record.
-- **`iter_trec_coarse_tuples(oolong_root: Path | None = None)`**:
-  - Convenience wrapper that yields:
-    - `(task_id, input_context, query, ground_truth)`
-  - This matches the interface described in `docs/to_do.md` Phase 1.1.
-
-The loader is tolerant to minor schema differences in the upstream JSONL. It tries common field names such as:
-
-- Context: `context`, `input_context`, `input`
-- Query: `question`, `query`
-- Ground truth: `answer`, `ground_truth`, `label`
+  - `task_id: str` — `str(record["id"])` from HF
+  - `input_context: str` — `record["context_window_text"]`
+  - `query: str` — `record["question"]`
+  - `ground_truth: str` — `str(record["answer"])`, e.g. `"['entity']"` or `"[3]"`
+  - `raw: dict` — full HF record (passed unchanged to the scorer)
+- **`load_oolong_synth(dataset_filter, split)`**:
+  - Loads `oolongbench/oolong-synth` from HuggingFace.
+  - Filters by `dataset` field if `dataset_filter` is set.
+  - Normalises the `answer` field to a string (handles HF schema variants).
+  - Yields `OolongExample` instances.
+- **`load_trec_coarse()` / `iter_trec_coarse_tuples()`**:
+  - Thin wrappers kept for backwards compatibility.
 
 ---
 
-### 3. Scoring implementation
+### 4. Scoring implementation
 
 File: `benchmarks/oolong/scorer.py`
 
-- **Scoring rule**:
-  - For numerical answers:
-    - `score(ŷ) = 0.75 ** |y - ŷ|`
-  - For non-numerical answers:
-    - Exact match on case-folded, trimmed strings.
-- **Helpers**:
-  - `_try_parse_number(text: str) -> Optional[Number]`
-    - Attempts to parse int/float, handling common prefixes like `"Answer:"`.
-- **Public API**:
-  - `oolong_score(y_true: str, y_pred: str) -> ScoreResult`
-    - Returns:
-      - `score: float` in `[0, 1]`
-      - `is_numeric: bool`
-      - `abs_error: Optional[float]` for numeric cases
-  - `oolong_score_scalar(y_true: str, y_pred: str) -> float`
-    - Convenience wrapper returning just the scalar score.
+Scoring uses the official OOLONG `synth_process_response` function from the upstream repo (`src/eval/eval_helpers.py`).
+
+- **`oolong_score(datapoint, y_pred, model) -> ScoreResult`**:
+  - Calls `synth_process_response(datapoint, y_pred, model)` from `eval_helpers.py`.
+  - Returns a `ScoreResult` with fields:
+    - `score: float` in `[0, 1]`
+    - `is_numeric: bool` — True for `ANSWER_TYPE.NUMERIC`
+    - `abs_error: Optional[float]` — integer distance for numeric answers
+    - `parse_confidence: str` — from the OOLONG answer parser (`"vhigh"`, `"high"`, `"med"`, `"low"`)
+    - `attempted_parse: Optional[str]` — the extracted answer string before comparison
+- **`oolong_score_scalar(datapoint, y_pred, model) -> float`**:
+  - Convenience wrapper returning just the scalar score.
+
+The OOLONG scoring rules (from `eval_helpers.py`):
+- **Numeric** (`ANSWER_TYPE.NUMERIC`): `score = 0.75 ** |gold - pred|`
+- **Label/string**: exact match after normalisation
+- **Date** (`ANSWER_TYPE.DATE`): parsed date equality via `python-dateutil`
 
 ---
 
-### 4. Runner implementation
+### 5. Runner implementation
 
 File: `benchmarks/oolong/runner.py`
 
-The runner connects the OOLONG dataset to Agent A’s `/task` endpoint and writes per-task results.
-
-#### 4.1. CLI
-
-Run via:
+#### 5.1. CLI
 
 ```bash
 python -m benchmarks.oolong.runner \
   --scenario agentic_simple \
+  --dataset trec_coarse \
   --max-tasks 50 \
   --context-size 20000 \
   --output logs/benchmarks/oolong_trec_coarse.jsonl
@@ -92,102 +108,73 @@ python -m benchmarks.oolong.runner \
 
 Arguments:
 
-- `--agent-url`:
-  - Agent A `/task` endpoint.
-  - Default: `http://localhost:8101/task` (or `AGENT_A_URL` env var if set).
-- `--scenario`:
-  - One of: `agentic_simple`, `agentic_multi_hop`, `agentic_parallel`.
-- `--max-tasks`:
-  - Maximum number of OOLONG items to run (default: all).
-- `--context-size`:
-  - Approximate maximum **context size in characters**.
-  - If set, `input_context` is truncated to this many characters before being sent.
-  - This is a character-level proxy for the token-based context sizes mentioned in the roadmap.
-- `--output`:
-  - Path to the JSONL file for per-task results.
-  - Default: `logs/benchmarks/oolong_trec_coarse.jsonl`.
-- `--timeout`:
-  - Per-request timeout in seconds for calls to Agent A (default: `300`).
+- `--agent-url`: Agent A `/task` endpoint (default: `http://localhost:8101/task` or `AGENT_A_URL` env var).
+- `--scenario`: `agentic_simple`, `agentic_multi_hop`, or `agentic_parallel`.
+- `--dataset`: OOLONG-synth dataset filter (default: `trec_coarse`). Pass empty string for all datasets.
+- `--max-tasks`: Maximum number of items to run (default: all).
+- `--context-size`: Truncate `context_window_text` to this many characters (tail kept).
+  Intended for scaling experiments (Phase 6.2) only — omit for standard runs.
+- `--output`: Output JSONL path (default: `logs/benchmarks/oolong_trec_coarse.jsonl`).
+- `--timeout`: Per-request timeout in seconds (default: `300`).
 
-#### 4.2. Request construction
+#### 5.2. Request construction
 
-For each OOLONG item `(task_id, input_context, query, ground_truth)`:
+For each example:
 
-1. Optionally truncate `input_context` based on `--context-size` (keep the tail).
-2. Build the task text as:
-   - `"{truncated_context}\n\nQuestion: {query}"`
-3. Send a POST to Agent A:
+1. Optionally truncate `input_context` based on `--context-size` (tail kept).
+2. Build the task text as `"{truncated_context}\n\nQuestion: {query}"`.
+3. POST to Agent A with payload `{task, scenario, benchmark_source: "oolong"}`.
 
-   - URL: `--agent-url` (default `http://localhost:8101/task`)
-   - JSON payload:
-     - `task`: combined context + question
-     - `scenario`: selected scenario
-     - `benchmark_source`: `"oolong"` (tag for downstream metrics)
+#### 5.3. Scoring and output schema
 
-4. Expect a JSON response with at least:
-   - `output`: final answer text
-   - `task_id`: the internal task identifier (if present).
+Each output line contains:
 
-If `output` is missing, the entire response is serialised as the model answer so the scoring step can still run.
+| Field | Description |
+|-------|-------------|
+| `benchmark_source` | `"oolong"` |
+| `benchmark_split` | dataset filter used (e.g. `"trec_coarse"`) |
+| `oolong_task_id` | original HF `id` |
+| `task_id` | Agent A task ID (if present) |
+| `scenario` | chosen scenario |
+| `context_size_chars` | `--context-size` value or `null` |
+| `ground_truth` | raw answer string, e.g. `"['entity']"` |
+| `model_answer` | model's full text output |
+| `score` | numeric score in `[0, 1]` |
+| `is_numeric` | whether numeric scoring was used |
+| `abs_error` | integer error for numeric answers |
+| `parse_confidence` | OOLONG parser confidence (`vhigh`/`high`/`med`/`low`/`error`) |
+| `attempted_parse` | extracted answer token |
+| `error` | error string (only on failed calls) |
+| `agent_response` | full Agent A JSON response |
 
-#### 4.3. Scoring and output schema
+**Failed calls** (network errors, Agent A errors) are recorded with `score=0.0`,
+`parse_confidence="error"`, and counted toward the aggregate mean — not excluded.
 
-The runner:
+At the end the runner prints a summary to stderr:
 
-1. Scores each `(ground_truth, model_answer)` pair via `oolong_score`.
-2. Writes one JSON object per line to the output file with fields:
-   - `benchmark_source`: `"oolong"`
-   - `benchmark_split`: `"trec_coarse"`
-   - `oolong_task_id`: the original dataset ID
-   - `task_id`: Agent A task ID (if present)
-   - `scenario`: chosen scenario
-   - `context_size_chars`: effective context-size parameter (or `null`)
-   - `ground_truth`: ground-truth answer
-   - `model_answer`: model’s answer text
-   - `score`: numeric score in `[0, 1]`
-   - `is_numeric`: whether the score used the numeric formula
-   - `abs_error`: absolute numeric error (if applicable)
-   - `agent_response`: full Agent A JSON response for debugging
-
-If the call to Agent A fails, the runner writes a record with:
-
-- `error`: stringified exception
-- `score = 0.0`
-- `model_answer = null`
-- `agent_response = null`
-
-and continues to the next task.
-
-At the end of the run it prints a brief summary to stderr:
-
-- Number of tasks processed
-- Mean score
-- Count of numeric items
+```
+OOLONG trec_coarse run complete: 50 tasks (errors=1), mean score=0.3412, numeric_items=12
+```
 
 ---
 
-### 5. End-to-end script
+### 6. End-to-end script
 
 File: `scripts/experiment/run_oolong_benchmark.sh`
-
-This script automates cloning the OOLONG repo (if needed) and running the Python runner:
 
 ```bash
 ./scripts/experiment/run_oolong_benchmark.sh \
   --scenario agentic_simple \
-  --max-tasks 50 \
-  --context-size 20000
+  --dataset trec_coarse \
+  --max-tasks 50
 ```
 
 Behaviour:
 
-- Resolves the repository root.
-- Sets `OOLONG_ROOT` to:
-  - `${REPO_ROOT}/../OOLONG` by default (overridable via env).
-- Clones `https://github.com/yale-nlp/OOLONG.git` into `OOLONG_ROOT` if the directory does not exist.
-- Exports `OOLONG_ROOT` for the loader.
-- Invokes:
-  - `python -m benchmarks.oolong.runner "$@"`
+- Resolves repo root.
+- Sets `OOLONG_ROOT` to `${REPO_ROOT}/../oolong` (overridable via env).
+- Clones `https://github.com/abertsch72/oolong.git` into `OOLONG_ROOT` if not present.
+- Exports `OOLONG_ROOT` so the scorer can find `eval_helpers.py`.
+- Invokes `python -m benchmarks.oolong.runner "$@"`.
 
-You can pass any of the runner flags through the shell script.
-
+Any `runner.py` flag can be passed through the shell script.

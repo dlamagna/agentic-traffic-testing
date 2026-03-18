@@ -196,6 +196,19 @@ The main chat UI at `/chat/` is unchanged; AgentVerse is a separate flow.
 
 ---
 
+## Running bulk experiments
+
+The **experiment runner** (`scripts/experiment/run_experiment.sh`) is purpose-built for AgentVerse: it orchestrates repeated `/agentverse` calls across all example tasks, scrapes the full Prometheus metric set after each run, and produces matching matplotlib plots.
+
+```bash
+# 5 iterations of every example task
+./scripts/experiment/run_experiment.sh -n 5
+```
+
+See [experiment_runner.md](experiment_runner.md) for the full reference: CLI flags, output directory layout, metrics CSV schema, interarrival plot interpretation, and how to extend tasks or metrics.
+
+---
+
 ## Configuration
 
 ### Environment Variables (Agent A)
