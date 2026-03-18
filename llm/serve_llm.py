@@ -942,6 +942,131 @@ async def handle_chat(request: web.Request) -> web.Response:
         return web.json_response({"output": text, "meta": meta})
 
 
+async def handle_openai_models(request: web.Request) -> web.Response:
+    """OpenAI-compatible GET /v1/models endpoint.
+
+    Returns a minimal models list so clients like the RLM OpenAI backend can
+    confirm connectivity without hitting an unknown route.
+    """
+    return web.json_response({
+        "object": "list",
+        "data": [
+            {
+                "id": DEFAULT_MODEL_NAME,
+                "object": "model",
+                "created": 0,
+                "owned_by": "local",
+            }
+        ],
+    })
+
+
+async def handle_openai_chat(request: web.Request) -> web.Response:
+    """OpenAI-compatible POST /v1/chat/completions endpoint.
+
+    Translates an OpenAI-format chat request into the internal vLLM generation
+    call so that RLM (and any other OpenAI-SDK client) can talk directly to the
+    local LLM backend without routing outside the testbed.
+
+    Request body::
+
+        {
+            "model": "meta-llama/...",
+            "messages": [{"role": "user", "content": "..."}],
+            "max_tokens": 512   # optional
+        }
+
+    Response body (OpenAI Chat Completion object)::
+
+        {
+            "id": "chatcmpl-<uuid>",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "..."}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N}
+        }
+    """
+    global _backend
+
+    if _backend is None:
+        return web.json_response({"error": "Backend not initialized"}, status=503)
+
+    try:
+        data: Dict[str, Any] = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    messages: List[Dict[str, Any]] = data.get("messages") or []
+    if not messages:
+        return web.json_response({"error": "Missing 'messages' field"}, status=400)
+
+    max_tokens = data.get("max_tokens")
+    if max_tokens is not None:
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            max_tokens = None
+
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())[:8]
+
+    # Convert OpenAI messages array → a single formatted string using the
+    # tokenizer's built-in chat template (same model-aware path as /chat).
+    _backend._resolve_tokenizer()
+    if _backend._tokenizer is not None and hasattr(_backend._tokenizer, "apply_chat_template"):
+        try:
+            formatted_prompt = _backend._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception as tmpl_exc:
+            print(f"[llm/v1] req={request_id} chat_template failed: {tmpl_exc}, using fallback")
+            formatted_prompt = _messages_to_llama3(messages)
+    else:
+        formatted_prompt = _messages_to_llama3(messages)
+
+    try:
+        text, _ = await _backend.generate(
+            formatted_prompt,
+            request_id=request_id,
+            log_progress=False,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        return web.json_response({"error": f"Generation failed: {exc}"}, status=500)
+
+    prompt_tokens = _backend.count_tokens(formatted_prompt)
+    completion_tokens = _backend.count_tokens(text)
+
+    return web.json_response({
+        "id": f"chatcmpl-{request_id}",
+        "object": "chat.completion",
+        "model": DEFAULT_MODEL_NAME,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens or 0,
+            "completion_tokens": completion_tokens or 0,
+            "total_tokens": (prompt_tokens or 0) + (completion_tokens or 0),
+        },
+    })
+
+
+def _messages_to_llama3(messages: List[Dict[str, Any]]) -> str:
+    """Fallback: manually render an OpenAI messages list into Llama 3 format."""
+    parts = ["<|begin_of_text|>"]
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>")
+    parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    return "".join(parts)
+
+
 def create_app() -> web.Application:
     """Create the aiohttp application with routes."""
     app = web.Application()
@@ -952,6 +1077,10 @@ def create_app() -> web.Application:
     app.router.add_post("/chat", handle_chat)
     app.router.add_post("/completion", handle_chat)
     app.router.add_post("/generate", handle_chat)
+    # OpenAI-compatible shim so RLM (and other OpenAI-SDK clients) can talk to
+    # the local backend without routing to external APIs.
+    app.router.add_get("/v1/models", handle_openai_models)
+    app.router.add_post("/v1/chat/completions", handle_openai_chat)
     return app
 
 
