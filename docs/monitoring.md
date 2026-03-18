@@ -465,6 +465,83 @@ This repo deliberately stays "vanilla" Docker + cAdvisor + Prometheus + Grafana.
 
 ---
 
+## Correlating Discussion Structure with Network Metrics
+
+`scripts/experiment/correlate_structure_metrics.py` correlates the AgentVerse
+discussion structure label (`horizontal` / `vertical`, from
+`stages.recruitment.communication_structure` in each `response.json`) with
+lower-level network and LLM metrics stored in the per-run `metrics.csv` files.
+No live Prometheus instance is needed — all data is read from the experiment
+output directories on disk.
+
+### What it does
+
+For each run directory the script extracts:
+
+| Source | Fields extracted |
+|---|---|
+| `response.json` (Stage-2 discussion requests only) | Request count, discussion duration, total tokens, mean per-request LLM latency, mean IAT |
+| `metrics.csv` (Prometheus time-series aggregated to per-run scalars) | LLM latency p50/p95, TTFT p50/p95, in-flight mean/peak, queue wait p50/p95, IAT mean, burstiness mean/max, IAT jitter p50/p95, TCP RTT p50/p95, TCP flow duration p50/p95, TCP bytes/s from LLM (mean/peak), TCP bytes/s A→LLM, B→LLM, A→B |
+
+Aggregation per run: each panel's ~50 time-series data points are reduced to
+a single scalar (`mean` or `max` depending on the metric).
+
+### Outputs
+
+All files are written to `<experiment-dir>/plots/` by default.
+
+| File | Description |
+|---|---|
+| `structure_metrics_llm_performance.png` | Violin / box plots: LLM latency, TTFT, in-flight requests, queue wait — split by structure |
+| `structure_metrics_traffic_characterisation.png` | IAT mean, burstiness coefficient (mean/max), IAT jitter — split by structure |
+| `structure_metrics_tcp_service-level.png` | TCP RTT, flow duration, bytes/s from LLM, bytes A→LLM / B→LLM / A→B — split by structure |
+| `structure_metrics_application_(discussion_stage).png` | Discussion request count, duration, total tokens, mean LLM latency, mean IAT — Stage 2 only |
+| `correlation_heatmap.png` | Spearman ρ heatmap across all per-run numeric metrics |
+| `per_run_metrics.csv` | Raw dataframe (one row per run) for further analysis |
+
+Each violin/box panel shows the **Mann-Whitney U p-value** for the horizontal
+vs vertical comparison (requires `scipy`).
+
+### Quick start
+
+```bash
+# Against the most recent 100_RUNS_* dataset (auto-detected)
+.venv/bin/python scripts/experiment/correlate_structure_metrics.py
+
+# Explicit directory + custom output
+.venv/bin/python scripts/experiment/correlate_structure_metrics.py \
+    data/runs/100_RUNS_experiment_2026-03-14_11-32-14 \
+    --output-dir data/runs/100_RUNS_experiment_2026-03-14_11-32-14/plots/
+```
+
+### Key findings from 100-run dataset
+
+From 388 runs (17 horizontal, 371 vertical):
+
+| Metric | Horizontal median | Vertical median | p-value | Interpretation |
+|---|---|---|---|---|
+| **IAT Jitter p50** | 3.33 s | 0.04 s | <0.001 | Vertical's parallel reviewer calls arrive near-simultaneously → near-zero jitter |
+| **Discussion Duration** | 117 s | 69.5 s | <0.001 | Horizontal sequential rounds take ~70% longer than vertical parallel critique |
+| **Discussion Tokens** | 57,300 | 35,800 | <0.001 | Horizontal accumulates more tokens across multiple rounds |
+| **In-flight LLM Req (mean)** | 0.93 | 1.38 | <0.001 | Vertical keeps more concurrent requests in-flight |
+| **TCP Bytes/s from LLM (mean)** | 539 B/s | 751 B/s | <0.001 | Vertical drives ~40% more LLM throughput |
+| **Burstiness (max)** | 6.9 | 5.66 | 0.005 | Horizontal has higher peak bursts (large round-robin prompts) |
+| **TCP Flow Duration p95** | 232 s | 260 s | 0.02 | Vertical's longer aggregate flows due to parallel fan-out |
+| **Discussion IAT Mean** | 7.83 s | 5.15 s | <0.001 | Vertical requests arrive closer together on average |
+
+### Limitations
+
+- Metrics are aggregated over the **full run window** (all four AgentVerse stages),
+  not the discussion stage alone. LLM and TCP metrics therefore include contributions
+  from recruitment, execution, and evaluation phases. Per-stage isolation would
+  require querying Prometheus with the discussion-stage timestamp window derived
+  from `response.json` (not yet implemented).
+- With only 17 horizontal runs vs 371 vertical, the horizontal group is small.
+  Statistical results should be treated as exploratory.
+- Concurrent runs (if any) cause TCP metric overlap between tasks.
+
+---
+
 ## Correlating Application Logs with TCP Telemetry
 
 `scripts/experiment/correlate_metrics.py` joins the per-call LLM log
