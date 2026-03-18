@@ -26,9 +26,6 @@ if [[ -f "${COMPOSE_DIR}/.env" ]]; then
 fi
 DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-single}"
 
-NODE1_HOST="${NODE1_HOST:-}"
-NODE2_HOST="${NODE2_HOST:-}"
-NODE3_HOST="${NODE3_HOST:-}"
 VERBOSE=0
 
 for arg in "$@"; do
@@ -287,52 +284,24 @@ collect_ports_csv() {
 }
 
 ###############################################################################
-# Single-host vs multi-VM logic (mirrors deploy.sh)
+# Single-host / distributed mode: query ports from local docker compose.
 ###############################################################################
+# For browser access from your laptop, you'd typically want the server's
+# actual DNS name instead of "localhost". You can override this by setting
+# PUBLIC_HOST before running deploy.sh/fetch_endpoints.sh.
+# host_display="${PUBLIC_HOST:-$(hostname -f 2>/dev/null || hostname || echo localhost)}"
+host_display="${PUBLIC_HOST:-localhost}"
+endpoints_local="$(collect_endpoints_local "${host_display}")"
+endpoints_local="$(printf "%s" "${endpoints_local}" | sed '/^$/d')"
+print_endpoint_summary "single-host" "${endpoints_local}"
 
-if [[ "${DEPLOYMENT_MODE}" == "multi-vm" && -n "${NODE1_HOST}" && -n "${NODE2_HOST}" && -n "${NODE3_HOST}" ]]; then
-  ###########################################################################
-  # Multi-VM mode: query ports on each remote host via SSH.
-  ###########################################################################
-  REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}"
-  REMOTE_COMPOSE_DIR="${REMOTE_REPO_DIR}/infra"
-
-  endpoints_all=""
-  endpoints_node1="$(collect_endpoints_remote "${NODE1_HOST}" "${REMOTE_COMPOSE_DIR}")"
-  endpoints_node2="$(collect_endpoints_remote "${NODE2_HOST}" "${REMOTE_COMPOSE_DIR}")"
-  endpoints_node3="$(collect_endpoints_remote "${NODE3_HOST}" "${REMOTE_COMPOSE_DIR}")"
-  if [[ -n "${endpoints_node1}" ]]; then
-    endpoints_all+="${endpoints_node1}"$'\n'
-  fi
-  if [[ -n "${endpoints_node2}" ]]; then
-    endpoints_all+="${endpoints_node2}"$'\n'
-  fi
-  if [[ -n "${endpoints_node3}" ]]; then
-    endpoints_all+="${endpoints_node3}"$'\n'
-  fi
-  endpoints_all="$(printf "%s" "${endpoints_all}" | sed '/^$/d')"
-  print_endpoint_summary "multi-vm" "${endpoints_all}"
-else
-  ###########################################################################
-  # Single-host / distributed mode: query ports from local docker compose.
-  ###########################################################################
-  # For browser access from your laptop, you'd typically want the server's
-  # actual DNS name instead of "localhost". You can override this by setting
-  # PUBLIC_HOST before running deploy.sh/fetch_endpoints.sh.
-  # host_display="${PUBLIC_HOST:-$(hostname -f 2>/dev/null || hostname || echo localhost)}"
-  host_display="${PUBLIC_HOST:-localhost}"
-  endpoints_local="$(collect_endpoints_local "${host_display}")"
-  endpoints_local="$(printf "%s" "${endpoints_local}" | sed '/^$/d')"
-  print_endpoint_summary "single-host" "${endpoints_local}"
-
-  # Suggest a convenient SSH command to forward all relevant ports in one go.
-  # You can override SSH_TARGET on your laptop if you don't use "saturn"
-  # as the SSH host alias.
-  ssh_target="${SSH_TARGET:-saturn}"
-  ports_csv="$(collect_ports_csv "${endpoints_local}")"
-  if [[ -n "${ports_csv}" ]]; then
-    echo
-    echo "[*] Suggested SSH port-forward command (run on your laptop):"
-    echo "    ./forward_clean_ssh.sh --ports \"${ports_csv}\" --host ${ssh_target}"
-  fi
+# Suggest a convenient SSH command to forward all relevant ports in one go.
+# You can override SSH_TARGET on your laptop if you don't use "saturn"
+# as the SSH host alias.
+ssh_target="${SSH_TARGET:-saturn}"
+ports_csv="$(collect_ports_csv "${endpoints_local}")"
+if [[ -n "${ports_csv}" ]]; then
+  echo
+  echo "[*] Suggested SSH port-forward command (run on your laptop):"
+  echo "    ./forward_clean_ssh.sh --ports \"${ports_csv}\" --host ${ssh_target}"
 fi

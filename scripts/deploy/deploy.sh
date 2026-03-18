@@ -9,7 +9,6 @@ set -euo pipefail
 # Deployment modes (set DEPLOYMENT_MODE in infra/.env):
 #   1) single (default): All containers on one Docker bridge network.
 #   2) distributed: Separate Docker networks per logical node (Agent A, Agent B, LLM).
-#   3) multi-vm: Services deployed to separate VMs via SSH (NODE1_HOST, NODE2_HOST, NODE3_HOST).
 #
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -37,13 +36,9 @@ get_compose_file() {
     distributed)
       echo "${COMPOSE_DIR}/docker-compose.distributed.yml"
       ;;
-    multi-vm)
-      # multi-vm uses SSH, but falls back to single compose for reference
-      echo "${COMPOSE_DIR}/docker-compose.yml"
-      ;;
     *)
       echo "[!] Unknown DEPLOYMENT_MODE: ${DEPLOYMENT_MODE}" >&2
-      echo "[!] Valid options: single, distributed, multi-vm" >&2
+      echo "[!] Valid options: single, distributed" >&2
       exit 1
       ;;
   esac
@@ -107,11 +102,6 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-NODE1_HOST="${NODE1_HOST:-}"
-NODE2_HOST="${NODE2_HOST:-}"
-NODE3_HOST="${NODE3_HOST:-}"
-NODE4_HOST="${NODE4_HOST:-}"
-
 echo "============================================================"
 echo "Agentic Traffic Testbed - Deployment"
 echo "============================================================"
@@ -120,65 +110,7 @@ echo "Compose file: ${COMPOSE_FILE}"
 echo "============================================================"
 echo
 
-if [[ "${DEPLOYMENT_MODE}" == "multi-vm" ]]; then
-  #########################################################################
-  # Multi-VM mode: deploy to three different VMs via SSH.
-  #
-  # Expected:
-  #   - The repo is cloned on each VM at REMOTE_REPO_DIR (same layout).
-  #   - Passwordless SSH (or suitable auth) to NODE{1,2,3}_HOST.
-  #########################################################################
-  if [[ -z "${NODE1_HOST}" || -z "${NODE2_HOST}" || -z "${NODE3_HOST}" || -z "${NODE4_HOST}" ]]; then
-    echo "[!] DEPLOYMENT_MODE=multi-vm requires NODE1_HOST, NODE2_HOST, NODE3_HOST, NODE4_HOST to be set."
-    echo "[!] Set these in infra/.env or as environment variables."
-    exit 1
-  fi
-
-  REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}"
-  REMOTE_COMPOSE_DIR="${REMOTE_REPO_DIR}/infra"
-
-  echo "[*] Multi-VM deployment detected."
-  echo "    NODE1_HOST=${NODE1_HOST} (Agent A + Jaeger + Chat UI)"
-  echo "    NODE2_HOST=${NODE2_HOST} (Agent B instances)"
-  echo "    NODE3_HOST=${NODE3_HOST} (LLM backend - GPU node)"
-  echo "    NODE4_HOST=${NODE4_HOST} (MCP tool servers)"
-  echo "    REMOTE_REPO_DIR=${REMOTE_REPO_DIR}"
-
-  # Compute cross-VM service URLs for containers
-  # These are passed as environment variables into docker compose on each node.
-  # Containers pick them up via docker-compose.yml defaults/overrides.
-  AGENT_LLM_URL_MULTI_VM="http://${NODE3_HOST}:8000/chat"
-  AGENT_B_URLS_MULTI_VM="http://${NODE2_HOST}:8102/subtask,http://${NODE2_HOST}:8103/subtask,http://${NODE2_HOST}:8104/subtask,http://${NODE2_HOST}:8105/subtask,http://${NODE2_HOST}:8106/subtask"
-  OTEL_ENDPOINT_NODE1="http://jaeger:4318/v1/traces"
-  OTEL_ENDPOINT_NODE2="http://${NODE1_HOST}:4318/v1/traces"
-
-  echo "[*] Deploying LLM backend on NODE3_HOST..."
-  ssh "${NODE3_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d llm-backend"
-
-  echo "[*] Deploying Agent B instances on NODE2_HOST..."
-  ssh "${NODE2_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && LLM_SERVER_URL='${AGENT_LLM_URL_MULTI_VM}' OTEL_EXPORTER_OTLP_ENDPOINT='${OTEL_ENDPOINT_NODE2}' docker compose up --build -d agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5"
-
-  echo "[*] Deploying MCP tool DB on NODE4_HOST..."
-  ssh "${NODE4_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && docker compose up --build -d mcp-tool-db"
-
-  echo "[*] Deploying Agent A and Jaeger on NODE1_HOST..."
-  ssh "${NODE1_HOST}" "cd '${REMOTE_COMPOSE_DIR}' && LLM_SERVER_URL='${AGENT_LLM_URL_MULTI_VM}' AGENT_B_URLS='${AGENT_B_URLS_MULTI_VM}' OTEL_EXPORTER_OTLP_ENDPOINT='${OTEL_ENDPOINT_NODE1}' docker compose up --build -d agent-a jaeger"
-  deploy_ui_multi_host "${NODE1_HOST}" "${REMOTE_COMPOSE_DIR}"
-
-  echo "[*] Multi-VM deployment complete."
-  echo "    - NODE1_HOST (Agent A + Jaeger): ${NODE1_HOST}"
-  echo "    - NODE2_HOST (Agent B)         : ${NODE2_HOST}"
-  echo "    - NODE3_HOST (LLM backend)     : ${NODE3_HOST}"
-  echo "    - NODE4_HOST (MCP tools)       : ${NODE4_HOST}"
-  echo "    Jaeger UI: http://${NODE1_HOST}:16686"
-  echo "    Chat UI:   http://${NODE1_HOST}:3000"
-  echo
-  echo "[*] Final endpoint summary (via fetch_endpoints.sh):"
-  bash "${ROOT_DIR}/scripts/fetch_endpoints.sh"
-  wait_for_llm "http://${NODE3_HOST}:8000/health" || true
-  run_health_check
-
-elif [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
+if [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   #########################################################################
   # Distributed mode: separate Docker networks on local machine.
   #########################################################################

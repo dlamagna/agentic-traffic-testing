@@ -24,7 +24,6 @@ The testbed supports three deployment modes, controlled by `DEPLOYMENT_MODE` in 
 |------|-------------|----------|
 | `single` | All containers on one Docker bridge network | Development, quick testing |
 | `distributed` | Separate Docker networks per logical node | Traffic pattern analysis |
-| `multi-vm` | Services deployed to separate VMs via SSH | Production-like experiments |
 
 ### Single Mode (Default)
 
@@ -111,39 +110,6 @@ Or apply manually:
 
 ---
 
-### Multi-VM Mode
-
-```
-DEPLOYMENT_MODE=multi-vm
-NODE1_HOST=192.168.56.10    # Agent A + Jaeger + Chat UI
-NODE2_HOST=192.168.56.11    # Agent B instances
-NODE3_HOST=192.168.56.12    # LLM backend (GPU node)
-NODE4_HOST=192.168.56.13    # MCP Tool Servers (future)
-REMOTE_REPO_DIR=/home/user/projects/agentic-traffic-testing
-```
-
-Services are deployed to separate VMs via SSH. This provides true network isolation with realistic latency and the ability to run eBPF tools on each node.
-
-**Node Layout:**
-
-| Node | Services | Notes |
-|------|----------|-------|
-| NODE1 | Agent A, Jaeger, Chat UI | Orchestrator agent |
-| NODE2 | Agent B instances | Worker agents |
-| NODE3 | LLM backend | GPU required |
-| NODE4 | MCP Tool Servers | Future - isolated tools |
-
-**Prerequisites:**
-- Passwordless SSH access to all hosts
-- This repository cloned at `REMOTE_REPO_DIR` on each host
-- Docker installed on each host
-- GPU drivers on NODE3_HOST for LLM backend
-
-**Pros:** Realistic network measurements, eBPF compatible  
-**Cons:** More setup, requires multiple VMs
-
----
-
 ## Files
 
 | File | Description |
@@ -167,12 +133,7 @@ Services are deployed to separate VMs via SSH. This provides true network isolat
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEPLOYMENT_MODE` | `single` | `single`, `distributed`, or `multi-vm` |
-| `NODE1_HOST` | - | (multi-vm) SSH host for Agent A |
-| `NODE2_HOST` | - | (multi-vm) SSH host for Agent B |
-| `NODE3_HOST` | - | (multi-vm) SSH host for LLM backend |
-| `NODE4_HOST` | - | (multi-vm) SSH host for MCP Tools (future) |
-| `REMOTE_REPO_DIR` | `/home/$USER/projects/testbed` | (multi-vm) Repo path on remote hosts |
+| `DEPLOYMENT_MODE` | `single` | `single` or `distributed` |
 
 ### Network (Distributed Mode)
 

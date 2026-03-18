@@ -11,7 +11,7 @@ set -euo pipefail
 #   - GPU cache artifacts
 #
 # This script uses stop.sh for the Docker teardown to ensure it handles
-# all deployment modes correctly (single, distributed, multi-vm).
+# all deployment modes correctly (single, distributed).
 #
 # USAGE:
 #   ./scripts/deploy/uninstall_testbed.sh [OPTIONS]

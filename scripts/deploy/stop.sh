@@ -53,7 +53,6 @@ set -euo pipefail
 #
 #   single      - Runs: docker compose down
 #   distributed - Runs: docker compose -f docker-compose.distributed.yml down
-#   multi-vm    - SSHs to NODE1/2/3_HOST and runs docker compose down on each
 #
 # FOR COMPLETE UNINSTALL:
 #   To fully remove everything including cached images:
@@ -140,33 +139,6 @@ case "${DEPLOYMENT_MODE}" in
       docker network rm infra_llm_network 2>/dev/null || true
       docker network rm infra_inter_agent_network 2>/dev/null || true
       docker network rm infra_tools_network 2>/dev/null || true
-    fi
-    ;;
-    
-  multi-vm)
-    echo "[*] Stopping multi-VM deployment..."
-    echo "[!] Note: This only stops local containers. To stop remote VMs, SSH manually."
-    
-    # Stop any local containers that might be running
-    docker compose down 2>/dev/null || true
-    docker compose -f docker-compose.distributed.yml down 2>/dev/null || true
-    
-    # If NODE hosts are set, try to stop them
-    if [[ -n "${NODE1_HOST:-}" ]]; then
-      echo "[*] Stopping services on NODE1_HOST (${NODE1_HOST})..."
-      ssh "${NODE1_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE1_HOST"
-    fi
-    if [[ -n "${NODE2_HOST:-}" ]]; then
-      echo "[*] Stopping services on NODE2_HOST (${NODE2_HOST})..."
-      ssh "${NODE2_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE2_HOST"
-    fi
-    if [[ -n "${NODE3_HOST:-}" ]]; then
-      echo "[*] Stopping services on NODE3_HOST (${NODE3_HOST})..."
-      ssh "${NODE3_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE3_HOST"
-    fi
-    if [[ -n "${NODE4_HOST:-}" ]]; then
-      echo "[*] Stopping services on NODE4_HOST (${NODE4_HOST})..."
-      ssh "${NODE4_HOST}" "cd '${REMOTE_REPO_DIR:-/home/${USER}/projects/testbed}/infra' && docker compose down" 2>/dev/null || echo "    [!] Could not reach NODE4_HOST"
     fi
     ;;
     
