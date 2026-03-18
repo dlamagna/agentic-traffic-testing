@@ -38,6 +38,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DASHBOARD_JSON="$REPO_ROOT/infra/monitoring/grafana/provisioning/dashboards/agentic-traffic.json"
 SCRAPE_SCRIPT="$SCRIPT_DIR/scrape_metrics.py"
 PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
+STRUCTURE_COMPARE_SCRIPT="$SCRIPT_DIR/compare_discussion_structures.py"
 WORKFLOW_TEMPLATE="$REPO_ROOT/agents/templates/agentverse_workflow.json"
 
 # Use the repo's .venv python if available (has matplotlib/pandas/etc.)
@@ -187,6 +188,16 @@ finalize_experiment() {
         echo "  Plots saved → $EXPERIMENT_DIR/plots/"
     else
         echo "  WARNING: Plotting failed (check dependencies: pip install matplotlib pandas)"
+    fi
+
+    echo ""
+    echo "Generating discussion structure comparison plots..."
+    if "$PYTHON" "$STRUCTURE_COMPARE_SCRIPT" \
+        "$EXPERIMENT_DIR" \
+        --output-dir "$EXPERIMENT_DIR/plots/" 2>&1; then
+        echo "  Structure plots saved → $EXPERIMENT_DIR/plots/"
+    else
+        echo "  WARNING: Discussion structure comparison plotting failed"
     fi
 
     echo ""
