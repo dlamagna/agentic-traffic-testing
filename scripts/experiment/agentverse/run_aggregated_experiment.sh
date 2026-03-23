@@ -28,6 +28,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# Activate the repo's virtualenv so all Python packages are available
+if [[ -f "$REPO_ROOT/.venv/bin/activate" ]]; then
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/.venv/bin/activate"
+fi
+
 RUN_SCRIPT="$SCRIPT_DIR/run_experiment.sh"
 MONITOR_SCRIPT="$SCRIPT_DIR/monitor_experiment.sh"
 STATE_FILE="$SCRIPT_DIR/.experiment_state"

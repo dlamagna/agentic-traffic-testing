@@ -40,6 +40,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# Activate the repo's virtualenv so all Python packages are available
+if [[ -f "$REPO_ROOT/.venv/bin/activate" ]]; then
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/.venv/bin/activate"
+fi
+
 UNINSTALL_SCRIPT="$REPO_ROOT/scripts/deploy/uninstall_testbed.sh"
 DEPLOY_SCRIPT="$REPO_ROOT/scripts/deploy/deploy.sh"
 
