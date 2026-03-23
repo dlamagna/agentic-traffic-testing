@@ -30,21 +30,21 @@ flowchart LR
             Tool3["MCP Tool Server N (additional tools)"]
         end
 
-        %% eBPF observability on each node
-        subgraph Obs1["Node 1 eBPF"]
-            BCC1["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
+        %% TCP observability on each node
+        subgraph Obs1["Node 1 Observability"]
+            BCC1["TCP tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        subgraph Obs2["Node 2 eBPF"]
-            BCC2["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
+        subgraph Obs2["Node 2 Observability"]
+            BCC2["TCP tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        subgraph Obs3["Node 3 eBPF"]
-            BCC3["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
+        subgraph Obs3["Node 3 Observability"]
+            BCC3["TCP tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
-        subgraph Obs4["Node 4 eBPF"]
-            BCC4["BCC / bpftrace tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
+        subgraph Obs4["Node 4 Observability"]
+            BCC4["TCP tools (tcplife, tcpconnect, tcprtt, tcpretrans)"]
         end
 
         %% Monitoring stack on host
@@ -69,7 +69,7 @@ flowchart LR
     AgentA -->|LLM queries| LLM
     AgentB -->|LLM queries| LLM
 
-    %% eBPF data flow feeding TCP-level metrics
+    %% TCP observability data flow feeding TCP-level metrics
     AgentA --- BCC1
     AgentB --- BCC2
     BaselineSvc --- BCC2
@@ -119,17 +119,17 @@ flowchart LR
             Tool3["MCP Tool Server N additional tools"]
         end
 
-        %% eBPF observability on each node
-        subgraph Obs1["Node 1 eBPF"]
-            BCC1["BCC / bpftrace tools tcplife, tcpconnect, tcprtt, tcpretrans"]
+        %% TCP observability on each node
+        subgraph Obs1["Node 1 Observability"]
+            BCC1["TCP tools tcplife, tcpconnect, tcprtt, tcpretrans"]
         end
 
-        subgraph Obs2["Node 2 eBPF"]
-            BCC2["BCC / bpftrace tools tcplife, tcpconnect, tcprtt, tcpretrans"]
+        subgraph Obs2["Node 2 Observability"]
+            BCC2["TCP tools tcplife, tcpconnect, tcprtt, tcpretrans"]
         end
 
-        subgraph Obs3["Node 3 eBPF"]
-            BCC3["BCC / bpftrace tools tcplife, tcpconnect, tcprtt, tcpretrans"]
+        subgraph Obs3["Node 3 Observability"]
+            BCC3["TCP tools tcplife, tcpconnect, tcprtt, tcpretrans"]
         end
 
         %% Monitoring stack on host
@@ -153,7 +153,7 @@ flowchart LR
     AgentA -->|LLM queries| LLM1
     AgentB -->|LLM queries| LLM2
 
-    %% eBPF data flow feeding TCP-level metrics
+    %% TCP observability data flow feeding TCP-level metrics
     AgentA --- BCC1
     LLM1 --- BCC1
 

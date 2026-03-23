@@ -1,25 +1,25 @@
-# Layer architecture
+# Architecture
 
 ```mermaid
 flowchart TB
 
-%% LAYERS
-L8["L8 Workflow (AgentVerse)"]
-L7["L7 Agents + MCP (python)"]
-L6["L6 Docker Containers"]
-L5["L5 LLM Backend (vLLM + Llama)"]
-L34["L3/4 Docker Networks"]
-L2["L2 Traffic Capture (tcpdump)"]
+%% STACK
+WORKFLOW["Workflow (AgentVerse)"]
+AGENTS["Agents + MCP (python)"]
+CONTAINERS["Docker Containers"]
+LLM_BACKEND["LLM Backend (vLLM + Llama)"]
+NETWORK["Docker Networks"]
+CAPTURE["Traffic Capture (tcpdump)"]
 
 %% MAIN STACK
-L8 --> L7
-L7 --> L6
-L6 --> L5
-L34 --> L2
+WORKFLOW --> AGENTS
+AGENTS --> CONTAINERS
+CONTAINERS --> LLM_BACKEND
+NETWORK --> CAPTURE
 
 %% NETWORK PATHS
-L6 --> L34
-L5 --> L34
+CONTAINERS --> NETWORK
+LLM_BACKEND --> NETWORK
 
 %% MONITORING
 PROM["Prometheus"]
@@ -28,20 +28,20 @@ GRAF["Grafana"]
 PROM --> GRAF
 
 %% METRICS
-L8 -. workflow latency .-> PROM
-L7 -. token usage .-> PROM
-L6 -. cpu / memory .-> PROM
-L5 -. model latency / TTFT .-> PROM
-L34 -. connection rates .-> PROM
-L2 -. packet timing .-> PROM
+WORKFLOW -. workflow latency .-> PROM
+AGENTS -. token usage .-> PROM
+CONTAINERS -. cpu / memory .-> PROM
+LLM_BACKEND -. model latency / TTFT .-> PROM
+NETWORK -. connection rates .-> PROM
+CAPTURE -. packet timing .-> PROM
 
 %% STYLING
-style L8 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-style L7 fill:#e8f5e9,stroke:#43a047,stroke-width:2px
-style L6 fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-style L5 fill:#fce4ec,stroke:#d81b60,stroke-width:2px
-style L34 fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
-style L2 fill:#eceff1,stroke:#546e7a,stroke-width:2px
+style WORKFLOW fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+style AGENTS fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+style CONTAINERS fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+style LLM_BACKEND fill:#fce4ec,stroke:#d81b60,stroke-width:2px
+style NETWORK fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
+style CAPTURE fill:#eceff1,stroke:#546e7a,stroke-width:2px
 
 ```
 
@@ -224,24 +224,24 @@ All IPs are overridable via environment variables in `infra/.env`
 
 # Metrics
 
-| Layer                    | Metric                              | Description / Meaning                                  |
-| ------------------------ | ----------------------------------- | ------------------------------------------------------ |
-| **L8 — Workflow**        | Workflow latency                    | Time between workflow steps or agent interactions      |
-|                          | Inter-agent timing                  | Delays between agents sending/receiving messages       |
-| **L7 — Agents + MCP**    | Token usage                         | Number of tokens consumed per agent action             |
-|                          | Request latency                     | Time taken to execute agent request or tool invocation |
-|                          | Agent actions                       | Count / type of agent operations executed              |
-|                          | Tool invocation rate (MCP)          | How frequently MCP tools are called by agents          |
-| **L6 — Containers**      | CPU usage                           | Container CPU consumption                              |
-|                          | Memory usage                        | Container memory footprint                             |
-|                          | Network I/O                         | Bytes sent/received by container                       |
-| **L5 — LLM Backend**     | Token throughput                    | Tokens processed per second by model                   |
-|                          | Model latency                       | Time to generate responses from LLM                    |
-|                          | Request rate                        | Number of requests handled per second                  |
-|                          | API latency / errors (external LLM) | Response time and failure count for external servers   |
-| **L3/4 — Networking**    | Connection counts                   | Number of active TCP/UDP connections                   |
-|                          | Packet rates                        | Packets per second transmitted on docker networks      |
-|                          | Interarrival time                   | Time between consecutive packets                       |
-| **L2 — Traffic Capture** | Packet timestamps                   | Raw timestamps of captured packets                     |
-|                          | Flow distribution                   | Packet flows between agents / containers               |
-|                          | Traffic burstiness                  | Measure of traffic clustering / variability            |
+| Component             | Metric                              | Description / Meaning                                  |
+| --------------------- | ----------------------------------- | ------------------------------------------------------ |
+| **Workflow**          | Workflow latency                    | Time between workflow steps or agent interactions      |
+|                       | Inter-agent timing                  | Delays between agents sending/receiving messages       |
+| **Agents + MCP**      | Token usage                         | Number of tokens consumed per agent action             |
+|                       | Request latency                     | Time taken to execute agent request or tool invocation |
+|                       | Agent actions                       | Count / type of agent operations executed              |
+|                       | Tool invocation rate (MCP)          | How frequently MCP tools are called by agents          |
+| **Containers**        | CPU usage                           | Container CPU consumption                              |
+|                       | Memory usage                        | Container memory footprint                             |
+|                       | Network I/O                         | Bytes sent/received by container                       |
+| **LLM Backend**       | Token throughput                    | Tokens processed per second by model                   |
+|                       | Model latency                       | Time to generate responses from LLM                    |
+|                       | Request rate                        | Number of requests handled per second                  |
+|                       | API latency / errors (external LLM) | Response time and failure count for external servers   |
+| **Networking**        | Connection counts                   | Number of active TCP/UDP connections                   |
+|                       | Packet rates                        | Packets per second transmitted on docker networks      |
+|                       | Interarrival time                   | Time between consecutive packets                       |
+| **Traffic Capture**   | Packet timestamps                   | Raw timestamps of captured packets                     |
+|                       | Flow distribution                   | Packet flows between agents / containers               |
+|                       | Traffic burstiness                  | Measure of traffic clustering / variability            |

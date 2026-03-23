@@ -121,7 +121,6 @@ docker network inspect infra_inter_agent_network | grep -i "bridge.name\|com.doc
 
 # Then capture on that interface (e.g. br-<id>)
 sudo tcpdump -i br-<id> -n
-# or with eBPF tools
 sudo tcplife -i br-<id>
 ```
 

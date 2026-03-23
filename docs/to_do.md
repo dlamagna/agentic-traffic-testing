@@ -73,7 +73,7 @@ to the same `task_id`.
 
 ### 0.3 — Network Telemetry Correlation Metadata
 
-The testbed uses **tcpdump-based TCP metrics** (not eBPF): `scripts/monitoring/tcp_metrics_collector.py`
+The testbed uses **tcpdump-based TCP metrics**: `scripts/monitoring/tcp_metrics_collector.py`
 captures traffic on the inter-agent bridge and exposes Prometheus metrics labelled by service pair.
 To correlate these network metrics with task-level application behavior:
 

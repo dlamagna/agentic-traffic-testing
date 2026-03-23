@@ -6,7 +6,7 @@ This document describes the **concrete MCP implementation** in this repository:
 - which **local MCP servers** exist and what tools they expose
 - how the **Python MCP client** is wired
 - how to **run and test** the MCP setup
-- how this ties back to **traffic analysis (eBPF, L3/L4)**.
+- how this ties back to **traffic analysis (L3/L4)**.
 
 It intentionally focuses on **local servers** and **simple, deterministic tools**, so you can
 observe traffic patterns without depending on external SaaS MCP providers.
@@ -336,7 +336,7 @@ This will:
 - perform a small sequence of tool calls
 - print the results to stdout
 
-You can run your usual **eBPF tools** in parallel (e.g., `tcpconnect`, `tcplife`)
+You can run tools like `tcpconnect` and `tcplife` in parallel
 to observe any additional network or process activity caused by MCP usage.
 
 ---
@@ -388,7 +388,7 @@ With MCP enabled, you have three main traffic classes to compare:
 For network-level analysis:
 
 - The `mcp-tool-db` container already runs on `tools_network` +
-  `inter_agent_network`, so L3/L4 metrics can be collected via eBPF on Node 4.
+  `inter_agent_network`, so L3/L4 metrics can be collected on Node 4.
 - If you later containerize the FastMCP servers, you can place them on the same
   `tools_network` to make their traffic **topologically similar** to the DB tool.
 
@@ -424,6 +424,5 @@ This will let you map:
 - Agents remain **HTTP-based clients** and can optionally act as **MCP clients**
   via `MCPClientManager`.
 - You can exercise the MCP servers using `scripts/experiment/test_mcp_servers.py`
-  and your usual eBPF toolchain to study how **agentic + tools** workloads
-  behave at the network and systems level.
+  to study how **agentic + tools** workloads behave at the network and systems level.
 
