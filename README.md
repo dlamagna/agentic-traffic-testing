@@ -2,7 +2,7 @@
 
 A testbed to study how **agentic software** (LLM-powered agents with tools) generates traffic patterns that differ from non-agentic workloads.
 
-The goal is to characterise, across multiple layers (L2–L8), how agentic workflows behave: request interarrival distributions, burstiness, RTT, flow durations, and the relationship between semantic workflow decisions (orchestration mode, tool use, agent fan-out) and packet/flow-level network behaviour.
+The goal is to characterise how agentic workflows behave across the stack: request interarrival distributions, burstiness, RTT, flow durations, and the relationship between semantic workflow decisions (orchestration mode, tool use, agent fan-out) and packet/flow-level network behaviour.
 
 Runs entirely on a **single GPU server** using **Docker containers** to simulate a multi-node setup.
 
@@ -27,23 +27,23 @@ Runs entirely on a **single GPU server** using **Docker containers** to simulate
 ```mermaid
 flowchart TB
 
-%% LAYERS
-L8["L8 Workflow (AgentVerse / RLM)"]
-L7["L7 Agents + MCP (python)"]
-L6["L6 Docker Containers"]
-L5["L5 LLM Backend (vLLM + Llama)"]
-L34["L3/4 Docker Networks"]
-L2["L2 Traffic Capture (tcpdump)"]
+%% STACK
+WORKFLOW["Workflow (AgentVerse / RLM)"]
+AGENTS["Agents + MCP (python)"]
+CONTAINERS["Docker Containers"]
+LLM_BACKEND["LLM Backend (vLLM + Llama)"]
+NETWORK["Docker Networks"]
+CAPTURE["Traffic Capture (tcpdump)"]
 
 %% MAIN STACK
-L8 --> L7
-L7 --> L6
-L6 --> L5
-L34 --> L2
+WORKFLOW --> AGENTS
+AGENTS --> CONTAINERS
+CONTAINERS --> LLM_BACKEND
+NETWORK --> CAPTURE
 
 %% NETWORK PATHS
-L6 --> L34
-L5 --> L34
+CONTAINERS --> NETWORK
+LLM_BACKEND --> NETWORK
 
 %% MONITORING
 PROM["Prometheus"]
@@ -52,20 +52,20 @@ GRAF["Grafana"]
 PROM --> GRAF
 
 %% METRICS
-L8 -. workflow latency .-> PROM
-L7 -. token usage .-> PROM
-L6 -. cpu / memory .-> PROM
-L5 -. model latency / TTFT .-> PROM
-L34 -. connection rates .-> PROM
-L2 -. packet timing .-> PROM
+WORKFLOW -. workflow latency .-> PROM
+AGENTS -. token usage .-> PROM
+CONTAINERS -. cpu / memory .-> PROM
+LLM_BACKEND -. model latency / TTFT .-> PROM
+NETWORK -. connection rates .-> PROM
+CAPTURE -. packet timing .-> PROM
 
 %% STYLING
-style L8 fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
-style L7 fill:#e8f5e9,stroke:#43a047,stroke-width:2px
-style L6 fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-style L5 fill:#fce4ec,stroke:#d81b60,stroke-width:2px
-style L34 fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
-style L2 fill:#eceff1,stroke:#546e7a,stroke-width:2px
+style WORKFLOW fill:#e3f2fd,stroke:#1e88e5,stroke-width:2px
+style AGENTS fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+style CONTAINERS fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+style LLM_BACKEND fill:#fce4ec,stroke:#d81b60,stroke-width:2px
+style NETWORK fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
+style CAPTURE fill:#eceff1,stroke:#546e7a,stroke-width:2px
 ```
 
 The testbed runs in **distributed mode** (default): each logical service gets an isolated Docker network plus every service joins a shared `inter_agent_network` (`172.23.0.0/24`) that carries all cross-service traffic.
@@ -98,16 +98,16 @@ All IPs are overridable via environment variables in `infra/.env`. The condition
 | **prometheus / grafana / cadvisor** | Metrics collection and visualisation |
 | **docker-mapping-exporter** | Translates raw bridge/cgroup IDs → human-readable service names |
 
-### Metrics layers
+### Metrics
 
-| Layer | What is measured |
-|-------|-----------------|
-| **L8 — Workflow** | Workflow latency, inter-agent timing |
-| **L7 — Agents + MCP** | Token usage, request latency, tool invocation rate |
-| **L6 — Containers** | CPU, memory, network I/O (cAdvisor) |
-| **L5 — LLM Backend** | Token throughput, model latency, TTFT, in-flight requests |
-| **L3/4 — Networking** | TCP bytes/packets, flow durations, SYN RTTs by service pair |
-| **L2 — Traffic Capture** | Raw packet timestamps via `tcpdump` on the inter-agent bridge |
+| Component | What is measured |
+|-----------|-----------------|
+| **Workflow** | Workflow latency, inter-agent timing |
+| **Agents + MCP** | Token usage, request latency, tool invocation rate |
+| **Containers** | CPU, memory, network I/O (cAdvisor) |
+| **LLM Backend** | Token throughput, model latency, TTFT, in-flight requests |
+| **Networking** | TCP bytes/packets, flow durations, SYN RTTs by service pair |
+| **Traffic Capture** | Raw packet timestamps via `tcpdump` on the inter-agent bridge |
 
 See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md) and [docs/networking.md](docs/networking.md) for full details.
 
