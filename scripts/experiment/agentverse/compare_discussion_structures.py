@@ -15,7 +15,7 @@ Three output files are produced:
 
 Usage:
     python compare_discussion_structures.py [DATA_DIR ...] \
-        [--output-dir DIR] [--max-iat 180]
+        [--output-dir DIR] [--max-iat 100]
 
     DATA_DIR: one or more experiment root directories containing per-run
               subdirectories with response.json + meta.json.
@@ -55,7 +55,7 @@ PANEL_BG = "#f7f7f7"
 GRID_COL = "#cccccc"
 TEXT_COL = "#222222"
 
-IAT_MAX_S = 180   # hard cap on x-axis, matches plot_results.py
+IAT_MAX_S = 100   # hard cap on x-axis, matches plot_results.py
 
 PALETTE = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
@@ -66,6 +66,7 @@ PALETTE = [
 # Fixed colours for the two structures in comparison plots
 H_COLOR = "#1f77b4"   # blue   → horizontal
 V_COLOR = "#ff7f0e"   # orange → vertical
+VA_COLOR = "#2ca02c"  # green  → vertical (aggregated)
 
 # Label prefixes that belong to the Stage-2 collaborative discussion.
 # All other stages (recruitment, execution, evaluation, synthesis, final output)
@@ -142,6 +143,45 @@ class StructureData:
 
 
 # ---------------------------------------------------------------------------
+# Aggregation helpers
+# ---------------------------------------------------------------------------
+
+def _aggregate_vertical_run_timestamps(
+    timestamps: list[float],
+    requests: list[dict],
+) -> list[float]:
+    """Collapse simultaneous reviewer requests in one vertical run.
+
+    In vertical discussion, the solver fires alone and then *all* reviewers in
+    the same round are dispatched concurrently (sub-millisecond timestamps).
+    This function groups requests by (round, role_category) and keeps only the
+    minimum timestamp per group, producing a "what if each round were a single
+    request" view that should remove the near-zero IAT spike.
+
+    Groups:
+      - ("solver",    round_N)  → vertical_solver_iterN         (already solo)
+      - ("reviewers", round_N)  → all vertical_reviewer_*_iterN (collapsed)
+      - ("other",     seq)      → anything else (kept individually)
+    """
+    from collections import defaultdict as _dd
+
+    groups: dict[tuple, list[float]] = _dd(list)
+    for ts, req in zip(timestamps, requests):
+        label    = req.get("label", "")
+        round_n  = req.get("round")
+        seq      = req.get("seq", ts)
+        if label.startswith("vertical_reviewer"):
+            key: tuple = ("reviewers", round_n)
+        elif label.startswith("vertical_solver"):
+            key = ("solver", round_n)
+        else:
+            key = ("other", seq)
+        groups[key].append(ts)
+
+    return sorted(min(ts_list) for ts_list in groups.values())
+
+
+# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
@@ -152,7 +192,7 @@ def _resolve_data_dirs(cli_dirs: list[str]) -> list[Path]:
             if not p.is_dir():
                 sys.exit(f"ERROR: directory not found: {p}")
         return paths
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     runs_root = repo_root / "data" / "runs"
     candidates = sorted(runs_root.glob("100_RUNS_*"), reverse=True)
     if not candidates:
@@ -164,16 +204,59 @@ def _resolve_data_dirs(cli_dirs: list[str]) -> list[Path]:
     return [chosen]
 
 
+def _infer_structure(data: dict) -> tuple[str, bool]:
+    """Infer the actual discussion structure from request labels.
+
+    Returns (structure, mislabeled) where mislabeled=True means the metadata
+    disagrees with the labels actually present in llm_requests.
+
+    Label-based inference takes precedence over metadata because two runs were
+    found with communication_structure='horizontal' in stages.recruitment but
+    with vertical_solver_* / vertical_reviewer_* labels in llm_requests — the
+    metadata was wrong.
+    """
+    labels = {req.get("label", "") for req in data.get("llm_requests", [])}
+    has_horiz = any(l.startswith("horizontal_discussion") for l in labels)
+    has_vert  = any(l.startswith(("vertical_solver", "vertical_reviewer")) for l in labels)
+
+    if has_horiz and not has_vert:
+        inferred = "horizontal"
+    elif has_vert and not has_horiz:
+        inferred = "vertical"
+    elif has_horiz and has_vert:
+        # Mixed labels — treat as vertical (the dominant pattern) and flag
+        inferred = "vertical"
+    else:
+        # No discussion labels at all — fall back to metadata
+        inferred = ""
+
+    stages    = data.get("stages", {})
+    meta_struct = (
+        stages.get("recruitment", {}).get("communication_structure")
+        or stages.get("decision",   {}).get("structure_used", "")
+    )
+    meta_struct = (meta_struct or "").lower()
+
+    if inferred:
+        mislabeled = (meta_struct != inferred)
+        return inferred, mislabeled
+    # No labels to infer from — trust metadata
+    return meta_struct, False
+
+
 def load_runs(data_dirs: list[Path], filter_discussion: bool = True) -> tuple[
     StructureData,               # horizontal
-    StructureData,               # vertical
+    StructureData,               # vertical (raw)
+    StructureData,               # vertical (aggregated — simultaneous reviewers collapsed)
     dict[str, dict[str, int]],  # counts_by_task[slug][structure]
     int,                         # n_skipped
 ]:
-    horiz = StructureData("horizontal")
-    vert  = StructureData("vertical")
+    horiz    = StructureData("horizontal")
+    vert     = StructureData("vertical")
+    vert_agg = StructureData("vertical_aggregated")
     counts_by_task: dict[str, dict[str, int]] = defaultdict(lambda: {"horizontal": 0, "vertical": 0})
-    n_skipped = 0
+    n_skipped   = 0
+    n_mislabeled = 0
 
     for data_dir in data_dirs:
         for run_dir in sorted(data_dir.iterdir()):
@@ -189,15 +272,11 @@ def load_runs(data_dirs: list[Path], filter_discussion: bool = True) -> tuple[
                 n_skipped += 1
                 continue
 
-            stages = data.get("stages", {})
-            structure = (
-                stages.get("recruitment", {}).get("communication_structure")
-                or stages.get("decision", {}).get("structure_used")
-            )
-            if not isinstance(structure, str):
-                n_skipped += 1
-                continue
-            structure = structure.lower()
+            structure, mislabeled = _infer_structure(data)
+            if mislabeled:
+                n_mislabeled += 1
+                print(f"[warn] mislabeled run (metadata≠labels), reclassified as "
+                      f"'{structure}': {run_dir.name}")
             if structure not in ("horizontal", "vertical"):
                 n_skipped += 1
                 continue
@@ -233,13 +312,22 @@ def load_runs(data_dirs: list[Path], filter_discussion: bool = True) -> tuple[
                 except Exception:
                     continue
 
-            bucket = horiz if structure == "horizontal" else vert
-            bucket.add_run(task_slug, timestamps, requests)
+            if structure == "horizontal":
+                horiz.add_run(task_slug, timestamps, requests)
+            else:
+                vert.add_run(task_slug, timestamps, requests)
+                # Also build the aggregated view: collapse simultaneous reviewers
+                agg_ts = _aggregate_vertical_run_timestamps(timestamps, requests)
+                # Pass empty requests list — aggregated timestamps have no 1:1 source mapping
+                vert_agg.add_run(task_slug, agg_ts, [{}] * len(agg_ts))
             counts_by_task[task_slug][structure] += 1
 
     horiz.sort()
     vert.sort()
-    return horiz, vert, dict(counts_by_task), n_skipped
+    vert_agg.sort()
+    if n_mislabeled:
+        print(f"[info] reclassified {n_mislabeled} mislabeled run(s) based on request labels")
+    return horiz, vert, vert_agg, dict(counts_by_task), n_skipped
 
 
 # ---------------------------------------------------------------------------
@@ -560,26 +648,264 @@ def plot_comparison(
 
 
 # ---------------------------------------------------------------------------
+# Plot 4: 3-way comparison — horizontal vs vertical (raw) vs vertical (aggregated)
+# ---------------------------------------------------------------------------
+
+def plot_aggregated_comparison(
+    horiz: StructureData,
+    vert: StructureData,
+    vert_agg: StructureData,
+    output_path: Path,
+    max_iat: float,
+    filter_discussion: bool = True,
+) -> None:
+    """3-way comparison testing the aggregation hypothesis.
+
+    The hypothesis is that aggregating simultaneous reviewer requests in vertical
+    discussion (collapsing all reviewers that fire concurrently in a round into a
+    single virtual request) will shift the vertical IAT distribution to resemble
+    the horizontal distribution more closely — removing the near-zero IAT spike.
+
+    Layout (3 rows × 2 cols):
+      [0,0] Histogram + KDE — all three distributions overlaid
+      [0,1] ECDF — all three distributions overlaid
+      [1,0] Box plot — side-by-side comparison
+      [1,1] Zero-IAT fraction bar chart (IAT < 1 s)
+      [2,0] Per-task mean IAT comparison (grouped bar)
+      [2,1] Annotation / statistics table
+    """
+    h_pool   = horiz.pooled_run_iats
+    v_pool   = vert.pooled_run_iats
+    va_pool  = vert_agg.pooled_run_iats
+
+    scope = "discussion stage only" if filter_discussion else "all workflow stages"
+
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+    fig.patch.set_facecolor(DARK_BG)
+    fig.suptitle(
+        "Aggregation Hypothesis: Collapsing Simultaneous Vertical Reviewer Requests\n"
+        f"horizontal ({horiz.n_runs} runs)  |  "
+        f"vertical-raw ({vert.n_runs} runs, {len(vert.all_ts)} reqs)  |  "
+        f"vertical-aggregated ({vert_agg.n_runs} runs)  "
+        f"[{scope}]",
+        fontsize=10, color=TEXT_COL, fontweight="bold",
+    )
+
+    series = [
+        (h_pool,  H_COLOR,  f"horizontal (n={len(h_pool)} IATs)"),
+        (v_pool,  V_COLOR,  f"vertical raw (n={len(v_pool)} IATs)"),
+        (va_pool, VA_COLOR, f"vertical aggregated (n={len(va_pool)} IATs)"),
+    ]
+
+    # ── [0,0] Histogram + KDE ─────────────────────────────────────────────
+    ax = axes[0][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("IAT Histogram + KDE (within-run)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("density")
+    ax.grid(True, color=GRID_COL, linewidth=0.5)
+    for vals, color, label in series:
+        if len(vals):
+            _hist_kde(ax, vals, color, label, max_iat)
+    ax.legend(fontsize=7)
+
+    # ── [0,1] ECDF ────────────────────────────────────────────────────────
+    ax = axes[0][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("ECDF (within-run)  — dashed=p50, dotted=p95", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("P(X ≤ x)")
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, max_iat)
+    ax.grid(True, color=GRID_COL, linewidth=0.5)
+    for i, (vals, color, label) in enumerate(series):
+        if len(vals):
+            _ecdf_line(ax, vals, color, label, max_iat, row_offset=i)
+    ax.legend(fontsize=7)
+
+    # ── [1,0] Box plot ────────────────────────────────────────────────────
+    ax = axes[1][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("IAT Box Plot (within-run, clipped at max-iat)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.grid(True, color=GRID_COL, linewidth=0.5, axis="x")
+
+    bp_data, bp_labels, bp_colors = [], [], []
+    for vals, color, label in series:
+        if len(vals):
+            bp_data.append(vals[vals <= max_iat])
+            bp_labels.append(label.split(" (")[0])
+            bp_colors.append(color)
+
+    if bp_data:
+        positions = list(range(1, len(bp_data) + 1))
+        bp = ax.boxplot(
+            bp_data, positions=positions, vert=False, patch_artist=True,
+            widths=0.5, flierprops=dict(marker=".", markersize=2, alpha=0.3),
+        )
+        for patch, color in zip(bp["boxes"], bp_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.55)
+        for median in bp["medians"]:
+            median.set_color(TEXT_COL)
+            median.set_linewidth(1.5)
+        ax.set_yticks(positions)
+        ax.set_yticklabels(bp_labels, fontsize=8)
+        ax.set_xlim(0, max_iat)
+
+    # ── [1,1] Zero-IAT (< 1 s) fraction bar chart ────────────────────────
+    ax = axes[1][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Fraction of Near-Zero IATs (< 1 s)  [aggregation effect]",
+                 loc="left", fontsize=9)
+    ax.set_ylabel("fraction of IATs < 1 s")
+    ax.grid(True, color=GRID_COL, linewidth=0.5, axis="y")
+
+    bar_labels, bar_fracs, bar_colors = [], [], []
+    for vals, color, label in series:
+        if len(vals):
+            frac = float(np.mean(vals < 1.0))
+            bar_labels.append(label.split(" (")[0])
+            bar_fracs.append(frac)
+            bar_colors.append(color)
+
+    if bar_labels:
+        x_pos = np.arange(len(bar_labels))
+        bars = ax.bar(x_pos, bar_fracs, color=bar_colors, alpha=0.7, width=0.5)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(bar_labels, fontsize=8)
+        ax.set_ylim(0, 1.0)
+        for bar, frac in zip(bars, bar_fracs):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    frac + 0.02, f"{frac:.1%}",
+                    ha="center", va="bottom", fontsize=8, color=TEXT_COL)
+
+    # ── [2,0] Per-task mean IAT comparison ───────────────────────────────
+    ax = axes[2][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Mean IAT by Task (clipped at max-iat)", loc="left", fontsize=9)
+    ax.set_xlabel("mean interarrival time (s)")
+    ax.set_ylabel("task")
+    ax.grid(True, color=GRID_COL, linewidth=0.5, axis="x")
+
+    all_tasks = sorted(set(horiz.by_task) | set(vert.by_task) | set(vert_agg.by_task))
+    if all_tasks:
+        task_structs = [
+            (horiz,    H_COLOR,  "horizontal"),
+            (vert,     V_COLOR,  "vertical raw"),
+            (vert_agg, VA_COLOR, "vertical agg"),
+        ]
+        n_structs = len(task_structs)
+        bar_h = 0.25
+        y_base = np.arange(len(all_tasks))
+        for si, (sd, color, label) in enumerate(task_structs):
+            means = []
+            for task in all_tasks:
+                run_list = sd.runs_by_task.get(task, [])
+                iats = []
+                for run_ts in run_list:
+                    if len(run_ts) >= 2:
+                        d = np.diff(np.array(run_ts))
+                        iats.extend(d[d <= max_iat].tolist())
+                means.append(float(np.mean(iats)) if iats else 0.0)
+            offset = (si - (n_structs - 1) / 2) * bar_h
+            ax.barh(y_base + offset, means, height=bar_h,
+                    color=color, alpha=0.7, label=label)
+        ax.set_yticks(y_base)
+        ax.set_yticklabels(all_tasks, fontsize=8)
+        ax.legend(fontsize=7)
+
+    # ── [2,1] Statistics table ────────────────────────────────────────────
+    ax = axes[2][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Summary Statistics", loc="left", fontsize=9)
+    ax.axis("off")
+
+    rows = []
+    for vals, _, label in series:
+        if len(vals) == 0:
+            rows.append([label.split(" (")[0], "—", "—", "—", "—", "—"])
+            continue
+        clipped = vals[vals <= max_iat]
+        frac_zero = float(np.mean(vals < 1.0))
+        rows.append([
+            label.split(" (")[0],
+            f"{len(vals)}",
+            f"{np.mean(clipped):.2f}s",
+            f"{np.median(clipped):.2f}s",
+            f"{np.percentile(clipped, 95):.2f}s",
+            f"{frac_zero:.1%}",
+        ])
+    col_labels = ["Structure", "N IATs", "Mean", "Median", "p95", "< 1 s"]
+    tbl = ax.table(
+        cellText=rows,
+        colLabels=col_labels,
+        cellLoc="center",
+        loc="center",
+        bbox=[0.0, 0.3, 1.0, 0.6],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    for (row_idx, col_idx), cell in tbl.get_celld().items():
+        cell.set_edgecolor(GRID_COL)
+        if row_idx == 0:
+            cell.set_facecolor("#dddddd")
+            cell.set_text_props(fontweight="bold")
+        elif row_idx % 2 == 0:
+            cell.set_facecolor("#eeeeee")
+        else:
+            cell.set_facecolor("white")
+
+    # Annotation below table explaining the aggregation
+    ax.text(
+        0.5, 0.18,
+        "Aggregation: within each vertical run, all reviewer requests\n"
+        "in the same round are collapsed to a single virtual request\n"
+        "(min timestamp kept). Solver requests remain individual.",
+        ha="center", va="top", fontsize=7, color="#555555",
+        transform=ax.transAxes,
+        wrap=True,
+    )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        plt.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(output_path, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"[info] saved plot → {output_path}")
+
+
+# ---------------------------------------------------------------------------
 # Summary table
 # ---------------------------------------------------------------------------
 
-def print_summary(horiz: StructureData, vert: StructureData, max_iat: float) -> None:
+def print_summary(
+    horiz: StructureData,
+    vert: StructureData,
+    max_iat: float,
+    vert_agg: StructureData | None = None,
+) -> None:
     print()
     print("=" * 72)
     print("  Discussion Structure — IAT Summary  (within-run IATs)")
     print("=" * 72)
-    print(f"{'Structure':<14} {'Runs':>6} {'IAT samples':>12} {'Mean (s)':>10} "
-          f"{'Median (s)':>11} {'p95 (s)':>9}")
+    print(f"{'Structure':<22} {'Runs':>6} {'IAT samples':>12} {'Mean (s)':>10} "
+          f"{'Median (s)':>11} {'p95 (s)':>9} {'< 1s':>7}")
     print("-" * 72)
-    for sd in (horiz, vert):
+    structs = [horiz, vert]
+    if vert_agg is not None:
+        structs.append(vert_agg)
+    for sd in structs:
         pool = sd.pooled_run_iats
         if len(pool) == 0:
-            print(f"{sd.name:<14} {sd.n_runs:>6} {'—':>12} {'—':>10} {'—':>11} {'—':>9}")
+            print(f"{sd.name:<22} {sd.n_runs:>6} {'—':>12} {'—':>10} {'—':>11} {'—':>9} {'—':>7}")
             continue
-        clipped = pool[pool <= max_iat]
-        print(f"{sd.name:<14} {sd.n_runs:>6} {len(pool):>12} "
+        clipped  = pool[pool <= max_iat]
+        frac_z   = float(np.mean(pool < 1.0))
+        print(f"{sd.name:<22} {sd.n_runs:>6} {len(pool):>12} "
               f"{np.mean(clipped):>10.2f} {np.median(clipped):>11.2f} "
-              f"{np.percentile(clipped, 95):>9.2f}")
+              f"{np.percentile(clipped, 95):>9.2f} {frac_z:>6.1%}")
     print("=" * 72)
     print()
 
@@ -619,7 +945,7 @@ def main() -> None:
     print(f"[info] filter_discussion={filter_discussion}  "
           f"({'discussion stage only' if filter_discussion else 'all workflow stages'})")
     print(f"[info] loading runs from {len(data_dirs)} director{'y' if len(data_dirs)==1 else 'ies'} …")
-    horiz, vert, counts_by_task, n_skipped = load_runs(data_dirs, filter_discussion)
+    horiz, vert, vert_agg, counts_by_task, n_skipped = load_runs(data_dirs, filter_discussion)
 
     total = horiz.n_runs + vert.n_runs
     if total == 0:
@@ -629,7 +955,7 @@ def main() -> None:
     print(f"[info] loaded {total} runs  "
           f"(horizontal={horiz.n_runs}, vertical={vert.n_runs}, skipped={n_skipped})")
 
-    print_summary(horiz, vert, args.max_iat)
+    print_summary(horiz, vert, args.max_iat, vert_agg)
 
     # Per-structure 3×2 plots (mirrors plot_results.py format)
     plot_structure_iat(horiz, output_dir / f"horizontal{suffix}_iat.png",
@@ -641,6 +967,13 @@ def main() -> None:
     plot_comparison(horiz, vert, counts_by_task,
                     output_dir / f"horizontal_vs_vertical{suffix}_iat.png",
                     args.max_iat, filter_discussion)
+
+    # 3-way aggregation hypothesis plot
+    plot_aggregated_comparison(
+        horiz, vert, vert_agg,
+        output_dir / f"vertical_aggregated{suffix}_iat.png",
+        args.max_iat, filter_discussion,
+    )
 
 
 if __name__ == "__main__":

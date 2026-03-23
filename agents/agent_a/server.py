@@ -235,6 +235,11 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             # Check if client wants streaming (SSE)
             stream = data.get("stream", False)
 
+            # Optional structure override for controlled experiments.
+            # Accepted values: "horizontal", "vertical". Anything else is ignored.
+            _fs = data.get("force_structure", None)
+            force_structure: Optional[str] = _fs if _fs in ("horizontal", "vertical") else None
+
             span.set_attribute("app.task", task)
             span.set_attribute("app.max_iterations", max_iterations)
             span.set_attribute("app.success_threshold", success_threshold)
@@ -283,6 +288,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         task_id=task_id,
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
+                        force_structure=force_structure,
                     )
 
                     # Persist the completed run for offline analysis.
@@ -305,6 +311,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         task_id=task_id,
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
+                        force_structure=force_structure,
                     )
                     # Persist the completed run for offline analysis.
                     self._persist_agentverse_run(

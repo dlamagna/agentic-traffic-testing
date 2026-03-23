@@ -179,7 +179,11 @@ class AgentVerseState:
     iteration: int = 0
     max_iterations: int = 3
     success_threshold: int = 70  # Score (0-100) required to accept and stop iterating
-    
+
+    # Optional override: "horizontal" or "vertical". When set, the LLM recruitment
+    # decision is skipped and this structure is used directly. None = LLM decides.
+    force_structure: Optional[str] = None
+
     # Stage results
     recruitment: Optional[RecruitmentResult] = None
     decision: Optional[DecisionResult] = None
@@ -936,12 +940,17 @@ class AgentVerseOrchestrator:
                     )
                 ]
             
-            # Parse communication structure
+            # Parse communication structure from LLM response
             structure_str = parsed.get("communication_structure", "horizontal")
             try:
                 structure = CommunicationStructure(structure_str.lower())
             except ValueError:
                 structure = CommunicationStructure.HORIZONTAL
+
+            # Override with forced structure if requested (for controlled experiments).
+            # This skips the LLM's own choice without altering any other behaviour.
+            if state.force_structure in ("horizontal", "vertical"):
+                structure = CommunicationStructure(state.force_structure)
             
             # Use LLM reasoning if provided, else generate fallback from structure
             raw_reasoning = parsed.get("reasoning", "").strip()
@@ -1862,10 +1871,13 @@ Focus on what is relevant to your expertise.
         task_id: str,
         max_iterations: int = 3,
         success_threshold: int = 70,
+        force_structure: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the complete AgentVerse 4-stage workflow.
         success_threshold: score (0-100) required to accept and stop iterating.
+        force_structure: if "horizontal" or "vertical", overrides the LLM's
+            own choice of discussion structure. None (default) = LLM decides.
         """
         with self.tracer.start_as_current_span(
             "orchestrator.run_workflow",
@@ -1873,12 +1885,15 @@ Focus on what is relevant to your expertise.
         ) as span:
             span.set_attribute("app.task_id", task_id)
             span.set_attribute("app.success_threshold", success_threshold)
-            
+            if force_structure:
+                span.set_attribute("app.force_structure", force_structure)
+
             state = AgentVerseState(
                 task_id=task_id,
                 original_task=task,
                 max_iterations=max_iterations,
                 success_threshold=min(100, max(0, success_threshold)),
+                force_structure=force_structure if force_structure in ("horizontal", "vertical") else None,
             )
             
             self.logger.log(

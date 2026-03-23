@@ -11,13 +11,17 @@
 #
 # Usage:
 #   ./run_experiment.sh -n <iterations> [options]
+#   ./run_experiment.sh -n <iterations> -b [options]
 #   ./run_experiment.sh -c -o <existing-experiment-dir> [options]
 #
 # Options:
 #   -n <int>     Number of iterations per task (required for fresh runs)
+#   -b           Balanced mode: force exactly 50 % horizontal + 50 % vertical runs
+#                (passes force_structure to Agent A; incompatible with -c)
 #   -c           Continue/resume an interrupted experiment (requires -o)
 #   -o <dir>     Output directory — new dir for fresh runs, existing dir for -c
 #                (default for fresh runs: <repo>/data/runs/experiment_<ts>)
+#                (balanced default:       <repo>/data/runs/balanced_experiment_<ts>)
 #   -a <url>     Agent A base URL  (default: http://localhost:8101)
 #   -p <url>     Prometheus URL    (default: http://localhost:9090)
 #   -w <int>     Seconds to wait after each run for metrics to propagate
@@ -26,6 +30,7 @@
 #
 # Examples:
 #   ./run_experiment.sh -n 50
+#   ./run_experiment.sh -n 25 -b          # 25 H + 25 V per task = 50 * tasks total
 #   ./run_experiment.sh -n 10 -a http://192.168.1.100:8101 -w 30
 #   ./run_experiment.sh -c -o data/runs/experiment_2026-03-10_17-42-47
 # =============================================================================
@@ -33,12 +38,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+UNINSTALL_SCRIPT="$REPO_ROOT/scripts/deploy/uninstall_testbed.sh"
+DEPLOY_SCRIPT="$REPO_ROOT/scripts/deploy/deploy.sh"
 
 DASHBOARD_JSON="$REPO_ROOT/infra/monitoring/grafana/provisioning/dashboards/agentic-traffic.json"
 SCRAPE_SCRIPT="$SCRIPT_DIR/scrape_metrics.py"
 PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
 STRUCTURE_COMPARE_SCRIPT="$SCRIPT_DIR/compare_discussion_structures.py"
+STRUCTURE_CORRELATE_SCRIPT="$SCRIPT_DIR/correlate_structure_metrics.py"
+IAT_STATS_SCRIPT="$SCRIPT_DIR/analyse_iat_statistics.py"
+CORRELATE_METRICS_SCRIPT="$SCRIPT_DIR/correlate_metrics.py"
 WORKFLOW_TEMPLATE="$REPO_ROOT/agents/templates/agentverse_workflow.json"
 
 # Use the repo's .venv python if available (has matplotlib/pandas/etc.)
@@ -55,6 +66,10 @@ ITERATIONS=""
 WAIT_AFTER_RUN=20
 OUTPUT_DIR_OVERRIDE=""
 CONTINUE_MODE=0
+BALANCED_MODE=0
+# Set to 1 (or export SKIP_RESET=1) to skip the reset+deploy at startup.
+# run_aggregated_experiment.sh sets this when it manages its own reset.
+SKIP_RESET="${SKIP_RESET:-0}"
 
 # AgentVerse request defaults (mirrors UI payload fields)
 # These are sent to Agent A (/agentverse) and propagate into LLM prompts.
@@ -110,9 +125,10 @@ usage() {
     exit 0
 }
 
-while getopts "n:a:p:w:o:ch" opt; do
+while getopts "n:a:p:w:o:cbh" opt; do
     case $opt in
         n) ITERATIONS="$OPTARG" ;;
+        b) BALANCED_MODE=1 ;;
         c) CONTINUE_MODE=1 ;;
         a) AGENT_A_URL="$OPTARG" ;;
         p) PROMETHEUS_URL="$OPTARG" ;;
@@ -126,6 +142,11 @@ done
 # -------------------------------------------------------------------------
 # Validate options and set up experiment directory
 # -------------------------------------------------------------------------
+if [[ $BALANCED_MODE -eq 1 && $CONTINUE_MODE -eq 1 ]]; then
+    echo "ERROR: -b (balanced) and -c (continue) cannot be used together"
+    exit 1
+fi
+
 if [[ $CONTINUE_MODE -eq 1 ]]; then
     # -c mode: must have -o pointing at an existing experiment
     if [[ -z "$OUTPUT_DIR_OVERRIDE" ]]; then
@@ -157,9 +178,28 @@ else
         echo "ERROR: -n must be a positive integer, got: $ITERATIONS"
         exit 1
     fi
+    # Reset testbed: tear down any running deployment, then redeploy fresh.
+    # Skip only when called from run_aggregated_experiment.sh (SKIP_RESET=1),
+    # which manages its own reset before spawning this script.
+    if [[ "${SKIP_RESET}" -ne 1 ]]; then
+        echo "[*] Resetting testbed before experiment..."
+        if [[ -x "$UNINSTALL_SCRIPT" ]]; then
+            "$UNINSTALL_SCRIPT" --keep-logs
+        else
+            echo "[!] uninstall_testbed.sh not found at $UNINSTALL_SCRIPT — skipping reset"
+        fi
+        if [[ -x "$DEPLOY_SCRIPT" ]]; then
+            "$DEPLOY_SCRIPT"
+        else
+            echo "[!] deploy.sh not found at $DEPLOY_SCRIPT — skipping deploy"
+        fi
+    fi
+
     EXPERIMENT_TS=$(date +%Y-%m-%d_%H-%M-%S)
     if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
         EXPERIMENT_DIR="$OUTPUT_DIR_OVERRIDE"
+    elif [[ $BALANCED_MODE -eq 1 ]]; then
+        EXPERIMENT_DIR="$REPO_ROOT/data/runs/balanced_experiment_${EXPERIMENT_TS}"
     else
         EXPERIMENT_DIR="$REPO_ROOT/data/runs/experiment_${EXPERIMENT_TS}"
     fi
@@ -201,10 +241,51 @@ finalize_experiment() {
     fi
 
     echo ""
+    echo "Generating discussion structure vs network metrics correlation..."
+    if "$PYTHON" "$STRUCTURE_CORRELATE_SCRIPT" \
+        "$EXPERIMENT_DIR" \
+        --output-dir "$EXPERIMENT_DIR/plots/" 2>&1; then
+        echo "  Correlation plots saved → $EXPERIMENT_DIR/plots/"
+    else
+        echo "  WARNING: Discussion structure correlation failed"
+    fi
+
+    echo ""
+    echo "Generating IAT statistical analysis (KS tests, effect sizes)..."
+    if "$PYTHON" "$IAT_STATS_SCRIPT" \
+        --experiment-dir "$EXPERIMENT_DIR" \
+        --output-dir     "$EXPERIMENT_DIR/plots/" 2>&1; then
+        echo "  IAT statistics saved → $EXPERIMENT_DIR/plots/iat_statistics.{png,txt}"
+    else
+        echo "  WARNING: IAT statistical analysis failed"
+    fi
+
+    echo ""
+    echo "Correlating LLM call log with Prometheus TCP telemetry..."
+    if "$PYTHON" "$CORRELATE_METRICS_SCRIPT" \
+        --call-log       "$REPO_ROOT/logs/llm_calls.jsonl" \
+        --agentverse-dir "$REPO_ROOT/logs/agentverse" \
+        --prometheus     "$PROMETHEUS_URL" \
+        --output         "$EXPERIMENT_DIR/correlated.csv" 2>&1; then
+        echo "  Correlated metrics saved → $EXPERIMENT_DIR/correlated.csv"
+    else
+        echo "  WARNING: Metric correlation failed (check logs/llm_calls.jsonl exists)"
+    fi
+
+    echo ""
     echo "================================================================"
     echo "  DONE"
     echo "  Results: $EXPERIMENT_DIR"
     echo "================================================================"
+
+    # Uninstall testbed so the LLM backend is not left running idle.
+    echo ""
+    echo "[*] Uninstalling testbed (keeping logs)..."
+    if [[ -x "$UNINSTALL_SCRIPT" ]]; then
+        "$UNINSTALL_SCRIPT" --keep-logs
+    else
+        echo "[!] uninstall_testbed.sh not found at $UNINSTALL_SCRIPT — skipping"
+    fi
 }
 
 # -------------------------------------------------------------------------
@@ -323,6 +404,9 @@ PYEOF
     echo "  Prometheus  : $PROMETHEUS_URL"
     echo "================================================================"
 
+    # Continue mode is always single-structure (resume doesn't support balanced)
+    STRUCTURE_LIST=("")
+
     if [[ $START_ITER -gt $ITERATIONS ]]; then
         echo ""
         echo "Experiment already complete! All $TOTAL_RUNS runs finished."
@@ -335,14 +419,24 @@ else
     START_ITER=1
     START_TASK_IDX=0
     RUN_COUNT=0
-    TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS ))
+    if [[ $BALANCED_MODE -eq 1 ]]; then
+        STRUCTURE_LIST=("horizontal" "vertical")
+        TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS * 2 ))
+    else
+        STRUCTURE_LIST=("")
+        TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS ))
+    fi
     EXPERIMENT_START_MS=$(python3 -c "import time; print(int(time.time() * 1000))")
     EXPERIMENT_TS=$(date +%Y-%m-%d_%H-%M-%S)
 
     echo "================================================================"
     echo "  Agentic Traffic Experiment"
+    if [[ $BALANCED_MODE -eq 1 ]]; then
+        echo "  Mode       : BALANCED (50 % horizontal + 50 % vertical)"
+    fi
     echo "  Timestamp  : $EXPERIMENT_TS"
     echo "  Iterations : $ITERATIONS per task ($NUM_TASKS tasks total)"
+    echo "  Total Runs : $TOTAL_RUNS"
     echo "  Agent A    : $AGENT_A_URL"
     echo "  Prometheus : $PROMETHEUS_URL"
     echo "  Output     : $EXPERIMENT_DIR"
@@ -359,13 +453,15 @@ send_agentverse_request() {
     local url="$2"
     local max_iterations="$3"
     local success_threshold="$4"
-    python3 - "$task" "$url" "$max_iterations" "$success_threshold" <<'PYEOF'
+    local force_structure="${5:-}"   # optional; "horizontal" or "vertical" for balanced mode
+    python3 - "$task" "$url" "$max_iterations" "$success_threshold" "$force_structure" <<'PYEOF'
 import json, sys, urllib.request, urllib.error
 
-task_text = sys.argv[1]
-base_url  = sys.argv[2].rstrip("/")
-max_iterations = sys.argv[3]
+task_text       = sys.argv[1]
+base_url        = sys.argv[2].rstrip("/")
+max_iterations  = sys.argv[3]
 success_threshold = sys.argv[4]
+force_structure = sys.argv[5] if len(sys.argv) > 5 else ""
 
 try:
     max_iterations = int(max_iterations)
@@ -377,17 +473,18 @@ try:
 except Exception:
     success_threshold = 90
 
-payload = json.dumps(
-    {
-        "task": task_text,
-        "stream": False,
-        "max_iterations": max_iterations,
-        "success_threshold": success_threshold,
-    }
-).encode()
+payload = {
+    "task": task_text,
+    "stream": False,
+    "max_iterations": max_iterations,
+    "success_threshold": success_threshold,
+}
+if force_structure in ("horizontal", "vertical"):
+    payload["force_structure"] = force_structure
+
 req = urllib.request.Request(
     f"{base_url}/agentverse",
-    data=payload,
+    data=json.dumps(payload).encode(),
     headers={"Content-Type": "application/json"},
     method="POST",
 )
@@ -432,7 +529,8 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         FIRST_TASK_IDX=0
     fi
 
-    for TASK_IDX in $(seq "$FIRST_TASK_IDX" $(( NUM_TASKS - 1 ))); do
+    for FORCE_STRUCTURE in "${STRUCTURE_LIST[@]}"; do
+        for TASK_IDX in $(seq "$FIRST_TASK_IDX" $(( NUM_TASKS - 1 ))); do
         TASK="${TASK_NAMES[$TASK_IDX]}"
         TASK_SLUG="${TASK_SLUGS[$TASK_IDX]}"
         RUN_COUNT=$(( RUN_COUNT + 1 ))
@@ -442,13 +540,17 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         RUN_START_MS=$(python3 -c "import time; print(int(time.time() * 1000))")
 
         echo ""
-        echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  iter=$ITER  task=$TASK_SLUG ---"
+        if [[ -n "$FORCE_STRUCTURE" ]]; then
+            echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  iter=$ITER  structure=$FORCE_STRUCTURE  task=$TASK_SLUG ---"
+        else
+            echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  iter=$ITER  task=$TASK_SLUG ---"
+        fi
         echo "  Time  : $RUN_TS"
         echo "  Task  : ${TASK:0:80}..."
 
         # Send request
         RESPONSE=""
-        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" "$AGENTVERSE_MAX_ITERATIONS" "$AGENTVERSE_SUCCESS_THRESHOLD" 2>/tmp/agentverse_err.txt); then
+        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" "$AGENTVERSE_MAX_ITERATIONS" "$AGENTVERSE_SUCCESS_THRESHOLD" "$FORCE_STRUCTURE" 2>/tmp/agentverse_err.txt); then
             :
         else
             ERR=$(cat /tmp/agentverse_err.txt 2>/dev/null || true)
@@ -507,6 +609,7 @@ meta = {
     "duration_s":   $DURATION_S,
     "agent_a_url":  "$AGENT_A_URL",
     "prometheus_url": "$PROMETHEUS_URL",
+    "forced_structure": "$FORCE_STRUCTURE" or None,
     "agentverse": {
         "max_iterations": int("$AGENTVERSE_MAX_ITERATIONS"),
         "success_threshold": int("$AGENTVERSE_SUCCESS_THRESHOLD"),
@@ -522,13 +625,14 @@ PYEOF
         python3 - <<PYEOF
 import json
 record = {
-    "run_dir":      "$RUN_DIR",
-    "task_slug":    "$TASK_SLUG",
-    "iteration":    $ITER,
-    "task_id":      "$TASK_ID",
-    "run_start_ms": $RUN_START_MS,
-    "run_end_ms":   $RUN_END_MS,
-    "duration_s":   $DURATION_S,
+    "run_dir":          "$RUN_DIR",
+    "task_slug":        "$TASK_SLUG",
+    "iteration":        $ITER,
+    "task_id":          "$TASK_ID",
+    "forced_structure": "$FORCE_STRUCTURE" or None,
+    "run_start_ms":     $RUN_START_MS,
+    "run_end_ms":       $RUN_END_MS,
+    "duration_s":       $DURATION_S,
 }
 with open("$RUN_LOG", "a") as f:
     f.write(json.dumps(record) + "\n")
@@ -557,8 +661,11 @@ PYEOF
             echo "  WARNING: Per-run metrics scrape failed (Prometheus may not be running)"
         fi
 
-    done
-done
+        done  # TASK_IDX
+        # After the first structure pass, subsequent passes start from task 0
+        FIRST_TASK_IDX=0
+    done  # FORCE_STRUCTURE
+done  # ITER
 
 # -------------------------------------------------------------------------
 # Aggregate scrape for full experiment window

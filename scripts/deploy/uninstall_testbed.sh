@@ -17,7 +17,8 @@ set -euo pipefail
 #   ./scripts/deploy/uninstall_testbed.sh [OPTIONS]
 #
 # OPTIONS:
-#   --keep-logs     Don't remove the logs directory
+#   --keep-logs     Don't remove the logs directory (default: on)
+#   --delete-logs   Remove the logs directory
 #   --keep-images   Don't prune Docker images
 #   -h, --help      Show this help
 #
@@ -40,13 +41,17 @@ LOG_DIR="${ROOT_DIR}/logs"
 STOP_SCRIPT="${ROOT_DIR}/scripts/deploy/stop.sh"
 
 # Parse arguments
-KEEP_LOGS=false
+KEEP_LOGS=true
 PRUNE_IMAGES=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-logs)
       KEEP_LOGS=true
+      shift
+      ;;
+    --delete-logs)
+      KEEP_LOGS=false
       shift
       ;;
     --keep-images)
@@ -86,11 +91,32 @@ clear_gpu_resources() {
 
   local pids
   pids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)"
+  # Returns true if the process tree rooted at $1 was spawned from a vllm
+  # process that is owned by the current user.
+  _pid_is_user_vllm() {
+    local p="$1"
+    while [[ -n "$p" && "$p" != "1" ]]; do
+      local owner cmd
+      owner="$(ps -o user= -p "$p" 2>/dev/null | tr -d ' ')"
+      cmd="$(ps -o args= -p "$p" 2>/dev/null || true)"
+      if [[ "$owner" == "${USER}" ]] && echo "$cmd" | grep -q "vllm"; then
+        return 0
+      fi
+      p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    done
+    return 1
+  }
+
   if [[ -n "${pids}" ]]; then
     local pid
     for pid in ${pids}; do
-      if ps -o user= -p "${pid}" 2>/dev/null | grep -q "^${USER}$"; then
-        echo "[*] Stopping lingering GPU process PID ${pid}..."
+      local owner
+      owner="$(ps -o user= -p "${pid}" 2>/dev/null | tr -d ' ')"
+      if [[ "$owner" == "${USER}" ]]; then
+        echo "[*] Stopping lingering GPU process PID ${pid} (owned by ${USER})..."
+        kill -TERM "${pid}" 2>/dev/null || true
+      elif _pid_is_user_vllm "${pid}"; then
+        echo "[*] Stopping GPU process PID ${pid} (root-owned vllm subprocess traced to ${USER})..."
         kill -TERM "${pid}" 2>/dev/null || true
       else
         echo "[*] Skipping GPU PID ${pid} (not owned by ${USER})."
@@ -98,7 +124,9 @@ clear_gpu_resources() {
     done
     sleep 2
     for pid in ${pids}; do
-      if ps -o user= -p "${pid}" 2>/dev/null | grep -q "^${USER}$"; then
+      local owner
+      owner="$(ps -o user= -p "${pid}" 2>/dev/null | tr -d ' ')"
+      if [[ "$owner" == "${USER}" ]] || _pid_is_user_vllm "${pid}"; then
         kill -KILL "${pid}" 2>/dev/null || true
       fi
     done
@@ -182,7 +210,7 @@ else
 fi
 
 # Remove any pcap files in the traffic logs
-if [[ -d "${LOG_DIR}/traffic" ]]; then
+if [[ "${KEEP_LOGS}" == "false" && -d "${LOG_DIR}/traffic" ]]; then
   rm -rf "${LOG_DIR}/traffic"/* 2>/dev/null || true
 fi
 

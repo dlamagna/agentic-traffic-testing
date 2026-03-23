@@ -59,7 +59,7 @@ GRID_COL  = "#cccccc"
 TEXT_COL  = "#222222"
 
 # Hard cap on the interarrival-time x-axis — matches the LLM request timeout
-IAT_MAX_S = 180
+IAT_MAX_S = 100
 PALETTE   = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
     "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
@@ -859,6 +859,290 @@ def plot_interarrival_from_responses(
 
 
 # ---------------------------------------------------------------------------
+# Aggregation hypothesis: vertical simultaneous-reviewer collapsing
+# ---------------------------------------------------------------------------
+
+def plot_aggregated_iat_comparison(
+    experiment_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Test the aggregation hypothesis using response.json timestamps.
+
+    For vertical discussion runs, reviewers within the same round fire
+    concurrently (sub-millisecond IATs).  This function collapses those
+    simultaneous reviewer requests into a single virtual request (keeping
+    only the minimum timestamp per round-reviewer group) and then compares
+    the resulting IAT distribution against:
+      • horizontal (raw)
+      • vertical (raw)
+    to test whether aggregation makes the vertical distribution resemble
+    horizontal more closely.
+
+    Produces: aggregated_iat_comparison.png
+    """
+    from datetime import datetime as _dt
+    from collections import defaultdict as _dd
+
+    # ---- constants matching compare_discussion_structures.py ---------------
+    DISC_PREFIXES = (
+        "horizontal_discussion",
+        "synthesize_discussion",
+        "vertical_solver",
+        "vertical_reviewer",
+    )
+    H_COLOR  = "#1f77b4"
+    V_COLOR  = "#ff7f0e"
+    VA_COLOR = "#2ca02c"
+
+    def _aggregate_vertical_run(timestamps: list, requests: list) -> list:
+        groups: dict = _dd(list)
+        for ts, req in zip(timestamps, requests):
+            label   = req.get("label", "")
+            round_n = req.get("round")
+            seq     = req.get("seq", ts)
+            if label.startswith("vertical_reviewer"):
+                key: tuple = ("reviewers", round_n)
+            elif label.startswith("vertical_solver"):
+                key = ("solver", round_n)
+            else:
+                key = ("other", seq)
+            groups[key].append(ts)
+        return sorted(min(v) for v in groups.values())
+
+    # ---- load all runs -----------------------------------------------------
+    by_structure: dict[str, list[np.ndarray]] = {"horizontal": [], "vertical": [], "vertical_agg": []}
+
+    for run_dir in sorted(experiment_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        resp_path = run_dir / "response.json"
+        if not resp_path.exists():
+            continue
+        try:
+            data = json.loads(resp_path.read_text())
+        except Exception:
+            continue
+
+        # Infer structure from actual request labels — overrides metadata when
+        # labels contradict it (two runs found with metadata='horizontal' but
+        # vertical_solver_*/vertical_reviewer_* labels in llm_requests).
+        all_labels = {req.get("label", "") for req in data.get("llm_requests", [])}
+        has_horiz = any(l.startswith("horizontal_discussion") for l in all_labels)
+        has_vert  = any(l.startswith(("vertical_solver", "vertical_reviewer")) for l in all_labels)
+        if has_horiz and not has_vert:
+            structure = "horizontal"
+        elif has_vert and not has_horiz:
+            structure = "vertical"
+        elif has_horiz and has_vert:
+            structure = "vertical"   # mixed — treat as vertical
+        else:
+            # No discussion labels — fall back to metadata
+            stages    = data.get("stages", {})
+            structure = (
+                stages.get("recruitment", {}).get("communication_structure")
+                or stages.get("decision",   {}).get("structure_used", "")
+            )
+            if not isinstance(structure, str):
+                continue
+            structure = structure.lower()
+        if structure not in ("horizontal", "vertical"):
+            continue
+
+        timestamps: list[float] = []
+        requests:   list[dict]  = []
+        for req in data.get("llm_requests", []):
+            ts_str = req.get("start_time_utc", "")
+            label  = req.get("label", "")
+            if not ts_str:
+                continue
+            if not any(label.startswith(p) for p in DISC_PREFIXES):
+                continue
+            try:
+                ts = _dt.fromisoformat(ts_str).timestamp()
+                timestamps.append(ts)
+                requests.append(req)
+            except Exception:
+                continue
+
+        if len(timestamps) < 2:
+            continue
+
+        sorted_ts = sorted(timestamps)
+        run_iats  = np.diff(np.array(sorted_ts))
+        by_structure[structure].append(run_iats)
+
+        if structure == "vertical":
+            agg_ts   = _aggregate_vertical_run(timestamps, requests)
+            if len(agg_ts) >= 2:
+                by_structure["vertical_agg"].append(np.diff(np.array(agg_ts)))
+
+    def _pool(key: str) -> np.ndarray:
+        arrs = by_structure[key]
+        return np.concatenate(arrs) if arrs else np.array([])
+
+    h_pool  = _pool("horizontal")
+    v_pool  = _pool("vertical")
+    va_pool = _pool("vertical_agg")
+
+    if len(v_pool) == 0:
+        print("  WARN  no vertical runs found — skipping aggregated IAT comparison plot")
+        return
+
+    series = [
+        (h_pool,  H_COLOR,  f"horizontal (n={len(h_pool)} IATs, {len(by_structure['horizontal'])} runs)"),
+        (v_pool,  V_COLOR,  f"vertical raw (n={len(v_pool)} IATs, {len(by_structure['vertical'])} runs)"),
+        (va_pool, VA_COLOR, f"vertical aggregated (n={len(va_pool)} IATs)"),
+    ]
+
+    def _hist_kde_local(ax, vals, color, label):
+        if len(vals) == 0:
+            return
+        clipped = vals[vals <= IAT_MAX_S]
+        n_over  = len(vals) - len(clipped)
+        lbl     = label if n_over == 0 else f"{label} ({n_over} clipped)"
+        ax.hist(clipped, bins=35, density=True, alpha=0.35, color=color, label=lbl)
+        if SCIPY_AVAILABLE and len(clipped) > 5:
+            kde = scipy_stats.gaussian_kde(clipped)
+            xs  = np.linspace(0, IAT_MAX_S, 400)
+            ax.plot(xs, kde(xs), color=color, linewidth=2.2)
+        ax.set_xlim(0, IAT_MAX_S)
+
+    def _ecdf_local(ax, vals, color, label, row_offset=0):
+        clipped = np.sort(vals[vals <= IAT_MAX_S]) if len(vals) else np.array([])
+        if len(clipped) == 0:
+            return
+        y = np.arange(1, len(clipped) + 1) / len(clipped)
+        ax.plot(clipped, y, color=color, linewidth=2, label=label)
+        for pct, ls in [(50, "--"), (95, ":")]:
+            pval = np.percentile(clipped, pct)
+            ax.axvline(pval, color=color, linestyle=ls, alpha=0.6, linewidth=1)
+            ax.text(pval, 0.02 + row_offset * 0.07,
+                    f"p{pct}={pval:.2f}s", color=color, fontsize=6, ha="left")
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    fig.patch.set_facecolor(DARK_BG)
+    fig.suptitle(
+        "Aggregation Hypothesis — Collapsing Simultaneous Vertical Reviewer Requests\n"
+        "Discussion stage only  |  within-run IATs",
+        fontsize=11, color=TEXT_COL, fontweight="bold",
+    )
+
+    # ── [0,0] Histogram + KDE ─────────────────────────────────────────────
+    ax = axes[0][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("IAT Histogram + KDE (within-run)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("density")
+    ax.grid(True, color=GRID_COL, linewidth=0.5)
+    for vals, color, label in series:
+        _hist_kde_local(ax, vals, color, label)
+    ax.legend(fontsize=7)
+
+    # ── [0,1] ECDF ────────────────────────────────────────────────────────
+    ax = axes[0][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("ECDF  — dashed=p50, dotted=p95", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.set_ylabel("P(X ≤ x)")
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, IAT_MAX_S)
+    ax.grid(True, color=GRID_COL, linewidth=0.5)
+    for i, (vals, color, label) in enumerate(series):
+        _ecdf_local(ax, vals, color, label, row_offset=i)
+    ax.legend(fontsize=7)
+
+    # ── [1,0] Box plot ────────────────────────────────────────────────────
+    ax = axes[1][0]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("IAT Box Plot (within-run, clipped at max-iat)", loc="left", fontsize=9)
+    ax.set_xlabel("interarrival time (s)")
+    ax.grid(True, color=GRID_COL, linewidth=0.5, axis="x")
+
+    bp_data, bp_labels, bp_colors = [], [], []
+    for vals, color, label in series:
+        if len(vals):
+            bp_data.append(vals[vals <= IAT_MAX_S])
+            bp_labels.append(label.split(" (")[0])
+            bp_colors.append(color)
+    if bp_data:
+        positions = list(range(1, len(bp_data) + 1))
+        bp = ax.boxplot(
+            bp_data, positions=positions, vert=False, patch_artist=True,
+            widths=0.5, flierprops=dict(marker=".", markersize=2, alpha=0.3),
+        )
+        for patch, color in zip(bp["boxes"], bp_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.55)
+        for median in bp["medians"]:
+            median.set_color(TEXT_COL)
+            median.set_linewidth(1.5)
+        ax.set_yticks(positions)
+        ax.set_yticklabels(bp_labels, fontsize=8)
+        ax.set_xlim(0, IAT_MAX_S)
+
+    # ── [1,1] Near-zero fraction + statistics table ───────────────────────
+    ax = axes[1][1]
+    ax.set_facecolor(PANEL_BG)
+    ax.set_title("Fraction of Near-Zero IATs (< 1 s)  &  Summary Stats",
+                 loc="left", fontsize=9)
+    ax.axis("off")
+
+    rows = []
+    for vals, _, label in series:
+        if len(vals) == 0:
+            rows.append([label.split(" (")[0], "—", "—", "—", "—", "—"])
+            continue
+        clipped  = vals[vals <= IAT_MAX_S]
+        frac_z   = float(np.mean(vals < 1.0))
+        rows.append([
+            label.split(" (")[0],
+            f"{len(vals)}",
+            f"{np.mean(clipped):.2f}s",
+            f"{np.median(clipped):.2f}s",
+            f"{np.percentile(clipped, 95):.2f}s",
+            f"{frac_z:.1%}",
+        ])
+    col_labels = ["Structure", "N IATs", "Mean", "Median", "p95", "IAT < 1 s"]
+    tbl = ax.table(
+        cellText=rows,
+        colLabels=col_labels,
+        cellLoc="center",
+        loc="center",
+        bbox=[0.0, 0.35, 1.0, 0.55],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    for (row_idx, col_idx), cell in tbl.get_celld().items():
+        cell.set_edgecolor(GRID_COL)
+        if row_idx == 0:
+            cell.set_facecolor("#dddddd")
+            cell.set_text_props(fontweight="bold")
+        elif row_idx % 2 == 0:
+            cell.set_facecolor("#eeeeee")
+        else:
+            cell.set_facecolor("white")
+
+    ax.text(
+        0.5, 0.28,
+        "Aggregation: within each vertical run, all reviewer requests in the\n"
+        "same round are collapsed to a single virtual request (min timestamp).\n"
+        "Solver requests remain individual.",
+        ha="center", va="top", fontsize=7.5, color="#444444",
+        transform=ax.transAxes,
+    )
+
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        plt.tight_layout(rect=[0, 0, 1, 0.94])
+
+    out_path = output_dir / "aggregated_iat_comparison.png"
+    fig.savefig(out_path, bbox_inches="tight", facecolor=DARK_BG)
+    plt.close(fig)
+    print(f"  saved  {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Distribution fitting & hypothesis tests for interarrival times
 # ---------------------------------------------------------------------------
 
@@ -1272,6 +1556,11 @@ def main() -> None:
     # 4. Interarrival times from raw response.json timestamps (no Grafana)
     # -----------------------------------------------------------------------
     plot_interarrival_from_responses(experiment_dir, plots_dir)
+
+    # -----------------------------------------------------------------------
+    # 4b. Aggregation hypothesis: collapsing simultaneous vertical reviewers
+    # -----------------------------------------------------------------------
+    plot_aggregated_iat_comparison(experiment_dir, plots_dir)
 
     # -----------------------------------------------------------------------
     # 5. Distribution fitting & hypothesis tests

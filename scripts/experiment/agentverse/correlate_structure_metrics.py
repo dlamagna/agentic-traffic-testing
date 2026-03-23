@@ -187,7 +187,7 @@ def _resolve_data_dirs(cli_dirs: list[str]) -> list[Path]:
             if not p.is_dir():
                 sys.exit(f"ERROR: directory not found: {p}")
         return paths
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     runs_root = repo_root / "data" / "runs"
     candidates = sorted(runs_root.glob("100_RUNS_*"), reverse=True)
     if not candidates:
