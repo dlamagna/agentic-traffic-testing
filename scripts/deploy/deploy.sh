@@ -92,6 +92,25 @@ PY
   done
 }
 
+# Retry wrapper for docker compose up --build.
+# Usage: docker_compose_up_with_retry <max_attempts> <compose args...>
+docker_compose_up_with_retry() {
+  local max_attempts="$1"; shift
+  local attempt=1
+  while true; do
+    if docker compose "$@"; then
+      return 0
+    fi
+    if (( attempt >= max_attempts )); then
+      echo "[!] docker compose failed after ${max_attempts} attempt(s). Giving up."
+      return 1
+    fi
+    echo "[!] docker compose failed (attempt ${attempt}/${max_attempts}). Retrying in 30s..."
+    sleep 30
+    attempt=$(( attempt + 1 ))
+  done
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "[!] docker is not installed or not on PATH."
   exit 1
@@ -126,7 +145,7 @@ if [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   echo
 
   echo "[*] Building and starting services with distributed network topology..."
-  docker compose -f docker-compose.distributed.yml up --build -d \
+  docker_compose_up_with_retry 3 -f docker-compose.distributed.yml up --build -d \
     llm-backend \
     agent-a \
     agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5 \
@@ -138,7 +157,7 @@ if [[ "${DEPLOYMENT_MODE}" == "distributed" ]]; then
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
     echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
-    docker compose -f docker-compose.monitoring.distributed.yml up --build -d prometheus grafana docker-mapping-exporter
+    docker_compose_up_with_retry 3 -f docker-compose.monitoring.distributed.yml up --build -d prometheus grafana docker-mapping-exporter
     echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
     if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
       echo "    cadvisor-host already running; skipping."
@@ -215,14 +234,14 @@ else
 
   echo "[*] Single-network deployment: all containers on one bridge network."
   echo "[*] Building and starting services..."
-  docker compose up --build -d llm-backend agent-a agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5 mcp-tool-db chat-ui jaeger
+  docker_compose_up_with_retry 3 up --build -d llm-backend agent-a agent-b agent-b-2 agent-b-3 agent-b-4 agent-b-5 mcp-tool-db chat-ui jaeger
   deploy_ui_single_host
 
   # Optional: Deploy monitoring stack
   if [[ "${ENABLE_MONITORING:-0}" == "1" ]]; then
     echo
     echo "[*] Deploying monitoring stack (Prometheus + Grafana)..."
-    docker compose -f docker-compose.monitoring.yml up --build -d prometheus grafana docker-mapping-exporter
+    docker_compose_up_with_retry 3 -f docker-compose.monitoring.yml up --build -d prometheus grafana docker-mapping-exporter
     echo "[*] Ensuring host-mode cAdvisor is running on :8080..."
     if docker ps --format '{{.Names}}' | grep -q '^cadvisor-host$'; then
       echo "    cadvisor-host already running; skipping."
