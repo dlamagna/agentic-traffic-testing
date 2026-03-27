@@ -18,6 +18,7 @@ Runs entirely on a **single GPU server** using **Docker containers** to simulate
 - [6. Monitoring](#6-monitoring)
 - [7. Experiment runner](#7-experiment-runner)
 - [8. Benchmark integrations](#8-benchmark-integrations)
+  - [MARBLE (MultiAgentBench)](#marble-multiagentbench)
 - [9. Shared GPU usage](#9-shared-gpu-usage)
 
 ---
@@ -140,8 +141,12 @@ See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md)
 │   ├── monitoring/       # tcp_metrics_collector.py, docker_mapping_exporter.py, health_check.py
 │   ├── setup/            # Prerequisites (Docker)
 │   └── traffic/          # Traffic collection helpers
+├── benchmarks/
+│   └── marble/           # MARBLE benchmark adapter (loader, topology, scorer, runner)
 ├── data/
-│   └── runs/             # Experiment output (JSON responses, scraped metrics, plots)
+│   ├── agentverse/       # AgentVerse experiment runs
+│   ├── marble/           # MARBLE experiment runs
+│   └── agentbench/       # AgentBench experiment runs
 ├── docs/
 │   ├── monitoring.md
 │   ├── networking.md
@@ -150,6 +155,7 @@ See [docs/architecture_diagrams/layers.md](docs/architecture_diagrams/layers.md)
 │   │   └── experiment_runner.md  # Bulk experiment pipeline, plots, interpretation
 │   ├── benchmarks/
 │   │   ├── README.md             # Cross-benchmark comparison and integration pattern
+│   │   ├── marble.md             # MARBLE integration details
 │   │   ├── agentbench.md
 │   │   ├── oolong.md
 │   │   └── mcp_universe.md
@@ -353,9 +359,51 @@ The testbed integrates multiple industry-standard agentic benchmarks so that the
 | **AgentBench** | OS / SQL / KG / Embodied | Multi-turn tool-use (function calling) | SR, F1 | [docs/benchmarks/agentbench.md](docs/benchmarks/agentbench.md) |
 | **OOLONG** | Long-context aggregation | Single-shot (or parallel fan-out) | Exponential decay, exact match | [docs/benchmarks/oolong.md](docs/benchmarks/oolong.md) |
 | **MCP-Universe** | Real-world MCP tool execution (6 domains) | Multi-turn ReAct via MCP | SR, AE, AS | [docs/benchmarks/mcp_universe.md](docs/benchmarks/mcp_universe.md) |
-| **MARBLE** *(planned)* | Multi-agent collaboration + competition | Multi-agent (star / chain / graph) | Milestone KPIs | — |
+| **MARBLE** | Multi-agent collaboration (research / coding / bargaining) | Multi-agent (star / chain / tree / graph) | Task score, coordination score | [docs/benchmarks/marble.md](docs/benchmarks/marble.md) |
 
 See [docs/benchmarks/README.md](docs/benchmarks/README.md) for a full comparison: how each benchmark differs in traffic pattern, when to use each, and how to compare outputs across benchmarks.
+
+### MARBLE (MultiAgentBench)
+
+MARBLE ([Zhu et al. 2025](https://arxiv.org/abs/2503.01935), ACL 2025) evaluates multi-agent coordination across four topology types and multiple cognitive domains. The testbed **reimplements MARBLE's coordination logic over Docker HTTP agents** rather than running its in-process engine — this means every agent-to-agent interaction becomes a real TCP flow measurable by the testbed's telemetry pipeline.
+
+**Topologies**: `star`, `chain`, `tree`, `graph`
+**Domains in use**: `research`, `coding`, `bargaining`
+**Requires**: MARBLE repo cloned locally (set `MARBLE_REPO_PATH` in `infra/.env`)
+
+```bash
+# Clone MARBLE
+git clone https://github.com/ulab-uiuc/MARBLE ../MARBLE
+
+# Run a single combo (5 tasks, research domain, graph topology)
+source .venv/bin/activate
+python -m benchmarks.marble.runner \
+  --domain research --topology graph --max-tasks 5 --verbose
+
+# Run a full experiment (all 4 topologies × 3 domains, with cron crash recovery)
+./scripts/experiment/marble/run_marble_aggregated_experiment.sh -n 20
+```
+
+**Per-task outputs** (written to `data/marble/<experiment>/tasks/<ts>_<domain>_<topology>_<uuid>/`):
+
+| File | Contents |
+|------|----------|
+| `meta.json` | Task metadata, agent count, timestamps, scores |
+| `response.json` | Full agent outputs, iteration history, score details |
+| `calls.csv` | Per-LLM-call record: timestamps, tokens, latency, IAT |
+
+**Experiment-level outputs** (`data/marble/<experiment>/`):
+
+| File / dir | Contents |
+|------------|----------|
+| `runs.jsonl` | One line per task — index of all task runs |
+| `results/<domain>_<topology>.jsonl` | Aggregate task scores and stats per combo |
+| `plots/iat/` | IAT histogram, ECDF, boxplot per topology |
+| `plots/results/` | Score/duration/fan-out comparison plots |
+| `plots/tokens_concurrency/` | Token distributions, concurrency timeline |
+| `logs/marble_llm_calls.jsonl` | Raw per-call log (source for IAT and concurrency analysis) |
+
+See [docs/benchmarks/marble.md](docs/benchmarks/marble.md) for architecture details, design decisions, and how to compare against the paper's reported scores.
 
 ---
 
