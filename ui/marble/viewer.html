@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MARBLE — Run Viewer</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #334155;
+      --border: #334155;
+      --border-active: #3b82f6;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --green: #22c55e;
+      --orange: #f59e0b;
+      --red: #ef4444;
+      --purple: #a855f7;
+      --teal: #14b8a6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+    }
+    .header h1 { font-size: 20px; display: flex; align-items: center; gap: 10px; }
+    .header-links { display: flex; gap: 16px; }
+    .header-links a { color: var(--text-secondary); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+    .header-links a:hover { color: var(--text-primary); }
+    .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+    .card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .card h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+    /* Drop / paste zone */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: 12px; padding: 32px;
+      text-align: center; cursor: pointer; transition: all 0.2s; margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(59,130,246,0.05); }
+    .drop-zone .dz-icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-zone p { color: var(--text-secondary); font-size: 14px; }
+    .drop-zone .dz-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .paste-area {
+      width: 100%; padding: 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text-primary); font-family: 'SF Mono','Fira Code',monospace;
+      font-size: 12px; resize: vertical; min-height: 100px; max-height: 240px;
+      outline: none; transition: border-color 0.2s; margin-bottom: 8px;
+    }
+    .paste-area:focus { border-color: var(--accent); }
+    .paste-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px;
+      background: var(--accent); color: white; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px;
+      background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+      border-radius: 8px; font-size: 13px; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-secondary:hover { border-color: var(--text-secondary); color: var(--text-primary); }
+
+    /* Error / info banners */
+    .banner {
+      padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: none;
+    }
+    .banner.error { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; display: block; }
+    .banner.info  { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: #93c5fd; display: block; }
+
+    /* Task info */
+    .task-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .tag { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+    .tag-blue   { background: rgba(59,130,246,0.15);  color: #60a5fa; }
+    .tag-green  { background: rgba(34,197,94,0.15);   color: #4ade80; }
+    .tag-purple { background: rgba(168,85,247,0.15);  color: #c084fc; }
+    .tag-orange { background: rgba(245,158,11,0.15);  color: #fbbf24; }
+    .tag-teal   { background: rgba(20,184,166,0.15);  color: #2dd4bf; }
+    .tag-red    { background: rgba(239,68,68,0.15);   color: #f87171; }
+    .task-content-box {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px; font-size: 13px; line-height: 1.7; color: var(--text-secondary);
+      white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
+    }
+
+    /* Agent chips */
+    .agent-list { display: flex; flex-direction: column; gap: 8px; }
+    .agent-chip {
+      background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 14px; font-size: 13px;
+    }
+    .agent-chip-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .agent-chip-profile { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+    /* Topology SVG */
+    .topo-viz-container {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; position: relative; overflow: hidden;
+    }
+    .topo-viz-container svg { display: block; margin: 0 auto; }
+    .topo-viz-container svg .agent-label { font-size: 10px; fill: var(--text-primary); text-anchor: middle; font-weight: 600; }
+    .topo-viz-container svg .agent-role-label { font-size: 8px; fill: var(--text-muted); text-anchor: middle; }
+    .topo-viz-container svg .edge-line { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .topo-viz-container svg .edge-comm { stroke: var(--purple); stroke-width: 2; stroke-dasharray: 6,3; }
+
+    /* Scores */
+    .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .score-card { background: var(--bg-tertiary); border-radius: 8px; padding: 12px; text-align: center; }
+    .score-card .score-value { font-size: 26px; font-weight: 700; }
+    .score-card .score-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .metric-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .metric-row:last-child { border-bottom: none; }
+    .metric-row .metric-label { color: var(--text-secondary); }
+    .metric-row .metric-value { font-weight: 600; }
+
+    /* Iterations */
+    .iter-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .iter-tab {
+      padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+      background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text-secondary);
+      transition: all 0.2s;
+    }
+    .iter-tab.active { background: var(--accent); border-color: var(--accent); color: white; }
+    .iter-panel { display: none; }
+    .iter-panel.active { display: block; }
+    .iter-agent-output { margin-bottom: 12px; }
+    .iter-agent-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+    .output-box {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+      font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+      max-height: 300px; overflow-y: auto; color: var(--text-secondary);
+    }
+    .iter-summary-box {
+      background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.2); border-radius: 8px;
+      padding: 12px; font-size: 12px; color: var(--text-secondary); margin-top: 12px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .iter-summary-label { font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+
+    /* Communications */
+    .comm-session { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .comm-session-header {
+      display: flex; align-items: center; justify-content: space-between; padding: 10px 14px;
+      background: var(--bg-tertiary); cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .comm-session-header:hover { background: rgba(255,255,255,0.04); }
+    .comm-toggle { font-size: 12px; font-weight: normal; color: var(--text-muted); }
+    .comm-messages { display: none; padding: 10px 14px; }
+    .comm-messages.open { display: block; }
+    .comm-message { margin-bottom: 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px; background: var(--bg-primary); }
+    .comm-message-from { font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 3px; }
+    .comm-message-text { color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
+
+    /* Final output */
+    .final-output-box {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+      font-size: 13px; line-height: 1.8; white-space: pre-wrap; word-break: break-word;
+      max-height: 500px; overflow-y: auto;
+    }
+
+    /* Raw JSON */
+    .raw-json {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+      font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; overflow-x: auto; max-height: 500px;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-secondary); display: none;
+    }
+    .section-header-clickable { cursor: pointer; user-select: none; }
+    .section-header-clickable:hover { color: var(--text-primary); }
+    .toggle-hint { font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 8px; }
+
+    .hidden { display: none !important; }
+    .empty-state { text-align: center; padding: 32px; color: var(--text-muted); font-size: 13px; }
+
+    /* Section divider label */
+    .section-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--text-muted);
+      text-transform: uppercase; margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      MARBLE — Run Viewer
+    </h1>
+    <nav class="header-links">
+      <a href="../">Home</a>
+      <a href="index.html">Live Runner</a>
+      <a href="../agentverse/">AgentVerse</a>
+      <a href="https://arxiv.org/abs/2503.01935" target="_blank">Paper</a>
+      <a href="https://github.com/ulab-uiuc/MARBLE" target="_blank">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="container">
+
+    <!-- Input card -->
+    <div class="card">
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        Load Task Result
+      </h2>
+
+      <!-- Drop zone -->
+      <div class="drop-zone" id="dropZone">
+        <div class="dz-icon">📂</div>
+        <p>Drop <code>response.json</code> here, or click to browse</p>
+        <p class="dz-sub">Accepts MARBLE <code>response.json</code> files or results JSONL lines</p>
+        <input type="file" id="filePicker" accept=".json,.jsonl" style="display:none">
+      </div>
+
+      <!-- Paste area -->
+      <p class="paste-hint">Or paste JSON directly (Ctrl+Enter to load):</p>
+      <textarea class="paste-area" id="pasteArea" placeholder='Paste task result JSON here…'></textarea>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="loadFromPasted()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Load JSON
+        </button>
+        <button class="btn-secondary" onclick="clearAll()">Clear</button>
+      </div>
+    </div>
+
+    <div class="banner" id="banner"></div>
+
+    <!-- Results (hidden until data loaded) -->
+    <div id="results" class="hidden">
+
+      <!-- Task info -->
+      <div class="card" id="taskInfoCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+          </svg>
+          Task
+        </h2>
+        <div class="task-meta" id="taskMeta"></div>
+        <div class="task-content-box" id="taskContent"></div>
+      </div>
+
+      <!-- Agents + Topology side by side -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div class="card" style="margin-bottom:0">
+          <h2>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            Agents
+          </h2>
+          <div class="agent-list" id="agentList"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <h2>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+            </svg>
+            Topology
+          </h2>
+          <div class="topo-viz-container">
+            <svg id="topoSvg" width="380" height="180"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scores -->
+      <div class="card" id="scoresCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          Evaluation Scores
+        </h2>
+        <div class="score-grid" id="scoreGrid"></div>
+        <div id="metricsTable"></div>
+      </div>
+
+      <!-- Iteration timeline -->
+      <div class="card" id="iterationsCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          Iterations
+        </h2>
+        <div class="iter-tabs" id="iterTabs"></div>
+        <div id="iterPanels"></div>
+      </div>
+
+      <!-- Communications -->
+      <div class="card hidden" id="commsCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          Agent Communications
+          <span id="commsCount" style="font-size:12px;font-weight:normal;color:var(--text-muted);margin-left:4px"></span>
+        </h2>
+        <div id="commsList"></div>
+      </div>
+
+      <!-- Agent final outputs -->
+      <div class="card" id="agentOutputsCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          Final Agent Outputs
+        </h2>
+        <div id="agentOutputs"></div>
+      </div>
+
+      <!-- Final output -->
+      <div class="card" id="finalOutputCard">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          Final Output
+        </h2>
+        <div class="final-output-box" id="finalOutput"></div>
+      </div>
+
+      <!-- Raw JSON -->
+      <div class="card">
+        <h2 class="section-header-clickable" onclick="toggleRawJson()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+          </svg>
+          Raw JSON
+          <span class="toggle-hint" id="rawToggle">(show)</span>
+        </h2>
+        <pre class="raw-json" id="rawJson"></pre>
+      </div>
+
+    </div><!-- /#results -->
+  </div>
+
+  <script>
+    const AGENT_COLORS = ['#3b82f6','#14b8a6','#a855f7','#f59e0b','#ef4444','#ec4899','#06b6d4','#84cc16'];
+
+    function esc(t) {
+      const d = document.createElement('div');
+      d.textContent = String(t ?? '');
+      return d.innerHTML;
+    }
+
+    /* ===== Banner ===== */
+    function showBanner(type, msg) {
+      const el = document.getElementById('banner');
+      el.className = 'banner ' + type;
+      el.textContent = msg;
+    }
+    function hideBanner() {
+      document.getElementById('banner').className = 'banner';
+    }
+
+    /* ===== File drag/drop and picker ===== */
+    const dropZone = document.getElementById('dropZone');
+    const filePicker = document.getElementById('filePicker');
+
+    dropZone.addEventListener('click', () => filePicker.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) loadFile(file);
+    });
+    filePicker.addEventListener('change', () => {
+      if (filePicker.files[0]) loadFile(filePicker.files[0]);
+    });
+
+    function loadFile(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const text = e.target.result.trim();
+        document.getElementById('pasteArea').value = text;
+        parseAndRender(text);
+      };
+      reader.readAsText(file);
+    }
+
+    /* ===== Paste area ===== */
+    document.getElementById('pasteArea').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) loadFromPasted();
+    });
+
+    function loadFromPasted() {
+      const text = document.getElementById('pasteArea').value.trim();
+      if (!text) { showBanner('error', 'Please paste a JSON task result first.'); return; }
+      parseAndRender(text);
+    }
+
+    /* ===== Parse JSON — handle object, array, or JSONL ===== */
+    function parseAndRender(text) {
+      hideBanner();
+      let data;
+      try {
+        const raw = JSON.parse(text);
+        // If array (e.g. multi-task results), pick the first or let user know
+        if (Array.isArray(raw)) {
+          if (raw.length === 0) { showBanner('error', 'Array is empty.'); return; }
+          data = raw[0];
+          if (raw.length > 1) showBanner('info', `Loaded first of ${raw.length} tasks in the array. Paste a single task object to view a different task.`);
+        } else {
+          data = raw;
+        }
+      } catch (_) {
+        // Try JSONL — take the first non-empty line
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          try { data = JSON.parse(line); break; } catch (_) {}
+        }
+        if (!data) { showBanner('error', 'Could not parse JSON. Make sure to paste a valid response.json or JSONL line.'); return; }
+        if (lines.length > 1) showBanner('info', `Loaded first of ${lines.length} JSONL lines. Paste a single line to view a different task.`);
+      }
+
+      // Normalise: the results.jsonl format has flat score fields; response.json wraps them in score{}
+      if (data.score !== undefined && typeof data.score !== 'object') {
+        data = normaliseFlat(data);
+      }
+
+      render(data);
+    }
+
+    /* Normalise flat JSONL record into response.json shape */
+    function normaliseFlat(d) {
+      return {
+        task_id: d.task_id,
+        marble_task_id: d.marble_task_id,
+        domain: d.benchmark_domain || d.domain,
+        coordinate_mode: d.coordinate_mode,
+        task_content: d.task_content || '',
+        agent_profiles: d.agent_profiles || [],
+        agent_outputs: d.agent_outputs || {},
+        final_output: d.final_output || '',
+        iterations: d.iterations || [],
+        communications: d.communications || [],
+        total_agent_calls: d.total_agent_calls,
+        total_llm_calls: d.total_llm_calls,
+        total_tokens: d.total_tokens,
+        duration_s: d.duration_s,
+        error: d.error || d.topology_error || null,
+        score: {
+          aggregate: d.score,
+          task_quality: d.task_quality,
+          collaboration_quality: d.collaboration_quality,
+          communication_quality: d.communication_quality,
+          planning_quality: d.planning_quality,
+          domain_score: d.domain_score,
+          details: d.score_details || {},
+          error: d.score_error || null,
+        },
+      };
+    }
+
+    /* ===== Main render ===== */
+    function render(data) {
+      document.getElementById('results').classList.remove('hidden');
+
+      renderTaskInfo(data);
+      renderAgents(data);
+      renderTopology(data);
+      renderScores(data);
+      renderIterations(data);
+      renderCommunications(data);
+      renderAgentOutputs(data);
+      renderFinalOutput(data);
+
+      document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+    }
+
+    /* ===== Task info ===== */
+    function renderTaskInfo(data) {
+      const domain = data.domain || data.benchmark_domain || '?';
+      const topo = data.coordinate_mode || '?';
+      const taskId = data.marble_task_id ?? data.marble_task_id ?? '?';
+      const runId = data.task_id ? data.task_id.substring(0, 8) + '…' : '?';
+
+      const topoTagClass = { star:'tag-orange', chain:'tag-teal', tree:'tag-green', graph:'tag-purple' }[topo] || 'tag-blue';
+      const domainTagClass = { research:'tag-blue', coding:'tag-green', bargaining:'tag-orange', database:'tag-teal', minecraft:'tag-purple' }[domain] || 'tag-blue';
+
+      document.getElementById('taskMeta').innerHTML =
+        `<span class="tag ${domainTagClass}">${esc(domain)}</span>` +
+        `<span class="tag ${topoTagClass}">${esc(topo)}</span>` +
+        `<span class="tag tag-blue">Task #${esc(taskId)}</span>` +
+        `<span class="tag" style="background:rgba(100,116,139,0.15);color:var(--text-muted)">run: ${esc(runId)}</span>` +
+        (data.error ? `<span class="tag tag-red">Error</span>` : '');
+
+      const content = data.task_content || '(no task content in this result)';
+      document.getElementById('taskContent').textContent = content;
+    }
+
+    /* ===== Agents ===== */
+    function renderAgents(data) {
+      const profiles = data.agent_profiles || [];
+      // Fallback: derive from agent_outputs keys if profiles missing
+      const ids = profiles.length
+        ? profiles.map(p => p.agent_id)
+        : Object.keys(data.agent_outputs || {});
+
+      if (!ids.length) {
+        document.getElementById('agentList').innerHTML = '<div class="empty-state">No agent profiles in this result.</div>';
+        return;
+      }
+
+      document.getElementById('agentList').innerHTML = ids.map((id, i) => {
+        const color = AGENT_COLORS[i % AGENT_COLORS.length];
+        const profile = profiles.find(p => p.agent_id === id)?.profile || '';
+        const shortProfile = profile.length > 160 ? profile.substring(0, 160) + '…' : profile;
+        const roleTag = i === 0
+          ? '<span class="tag tag-blue" style="margin-left:auto;font-size:10px">Agent A</span>'
+          : `<span class="tag tag-green" style="margin-left:auto;font-size:10px">Agent B-${i}</span>`;
+        return `<div class="agent-chip">
+          <div class="agent-chip-header">
+            <div class="agent-dot" style="background:${color}"></div>
+            <strong>${esc(id)}</strong>${roleTag}
+          </div>
+          ${shortProfile ? `<div class="agent-chip-profile">${esc(shortProfile)}</div>` : ''}
+        </div>`;
+      }).join('');
+    }
+
+    /* ===== Topology SVG ===== */
+    function renderTopology(data) {
+      const profiles = data.agent_profiles || [];
+      const ids = profiles.length
+        ? profiles.map(p => p.agent_id)
+        : Object.keys(data.agent_outputs || {});
+      const topo = data.coordinate_mode || 'graph';
+
+      const agents = ids.map((id, i) => ({ id, color: AGENT_COLORS[i % AGENT_COLORS.length] }));
+      const svg = document.getElementById('topoSvg');
+      const W = 380, H = 180;
+      svg.setAttribute('width', W);
+      svg.setAttribute('height', H);
+
+      if (!agents.length) { svg.innerHTML = ''; return; }
+
+      const n = agents.length;
+      const positions = {};
+
+      if (topo === 'star') {
+        positions[agents[0].id] = { x: W / 2, y: 38 };
+        agents.slice(1).forEach((a, i) => {
+          const angle = Math.PI * (0.15 + 0.7 * i / Math.max(agents.length - 2, 1));
+          positions[a.id] = { x: W / 2 + Math.cos(angle - Math.PI / 2) * 140, y: 148 };
+        });
+      } else if (topo === 'chain') {
+        agents.forEach((a, i) => {
+          positions[a.id] = { x: 40 + i * (W - 80) / Math.max(n - 1, 1), y: H / 2 };
+        });
+      } else if (topo === 'tree') {
+        positions[agents[0].id] = { x: W / 2, y: 32 };
+        agents.slice(1).forEach((a, i) => {
+          positions[a.id] = { x: 50 + i * (W - 100) / Math.max(agents.length - 2, 1), y: 148 };
+        });
+      } else {
+        // graph / default: circular
+        agents.forEach((a, i) => {
+          const angle = -Math.PI / 2 + (2 * Math.PI * i) / n;
+          positions[a.id] = { x: W / 2 + Math.cos(angle) * 130, y: H / 2 + Math.sin(angle) * 60 };
+        });
+      }
+
+      let html = '<defs><marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#475569" opacity="0.7"/></marker></defs>';
+
+      // Edges
+      if (topo === 'star') {
+        agents.slice(1).forEach(a => {
+          const p0 = positions[agents[0].id], p1 = positions[a.id];
+          html += `<line class="edge-line" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrow)"/>`;
+        });
+      } else if (topo === 'chain') {
+        for (let i = 0; i < agents.length - 1; i++) {
+          const p0 = positions[agents[i].id], p1 = positions[agents[i + 1].id];
+          html += `<line class="edge-line" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrow)"/>`;
+        }
+      } else if (topo === 'tree') {
+        agents.slice(1).forEach(a => {
+          const p0 = positions[agents[0].id], p1 = positions[a.id];
+          html += `<line class="edge-line" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrow)"/>`;
+        });
+      } else {
+        // graph: show all pairs with dashed lines
+        for (let i = 0; i < agents.length; i++) {
+          for (let j = i + 1; j < agents.length; j++) {
+            const p0 = positions[agents[i].id], p1 = positions[agents[j].id];
+            html += `<line class="edge-line" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" stroke-dasharray="4,4" opacity="0.35"/>`;
+          }
+        }
+      }
+
+      // Highlight communication edges
+      (data.communications || []).forEach(session => {
+        const [a1, a2] = session.participants || [];
+        if (a1 && a2 && positions[a1] && positions[a2]) {
+          const p0 = positions[a1], p1 = positions[a2];
+          html += `<line class="edge-comm" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}"/>`;
+        }
+      });
+
+      // Nodes
+      agents.forEach((a, i) => {
+        const p = positions[a.id];
+        const r = i === 0 ? 20 : 16;
+        const shortId = a.id.replace('agent', 'A');
+        html += `<g>
+          <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${a.color}" opacity="0.85" stroke="${a.color}" stroke-width="2"/>
+          <text class="agent-label" x="${p.x}" y="${p.y + 4}">${esc(shortId)}</text>
+          <text class="agent-role-label" x="${p.x}" y="${p.y + r + 12}">${esc(a.id)}</text>
+        </g>`;
+      });
+
+      svg.innerHTML = html;
+    }
+
+    /* ===== Scores ===== */
+    function renderScores(data) {
+      const score = data.score || {};
+      const hasScore = score.aggregate !== null && score.aggregate !== undefined;
+
+      if (!hasScore && !data.total_agent_calls) {
+        document.getElementById('scoresCard').classList.add('hidden');
+        return;
+      }
+
+      if (hasScore) {
+        document.getElementById('scoreGrid').innerHTML = [
+          { label: 'Aggregate',     value: score.aggregate,             color: 'var(--accent)' },
+          { label: 'Task Quality',  value: score.task_quality,          color: 'var(--green)' },
+          { label: 'Collaboration', value: score.collaboration_quality, color: 'var(--teal)' },
+          { label: 'Communication', value: score.communication_quality, color: 'var(--purple)' },
+          { label: 'Planning',      value: score.planning_quality,      color: 'var(--orange)' },
+        ].filter(s => s.value !== null && s.value !== undefined)
+          .map(s => {
+            const pct = ((s.value || 0) * 100).toFixed(0);
+            return `<div class="score-card">
+              <div class="score-value" style="color:${s.color}">${pct}%</div>
+              <div class="score-label">${s.label}</div>
+            </div>`;
+          }).join('');
+      } else {
+        document.getElementById('scoreGrid').innerHTML = '<div style="color:var(--text-muted);font-size:13px">Scoring was skipped or not available.</div>';
+      }
+
+      const domain = data.domain || data.benchmark_domain || '?';
+      const topo = data.coordinate_mode || '?';
+      const agentCount = (data.agent_profiles || []).length || Object.keys(data.agent_outputs || {}).length;
+
+      document.getElementById('metricsTable').innerHTML = [
+        ['Domain', domain],
+        ['Topology', topo],
+        ['Agents', agentCount || '?'],
+        ['Iterations', data.iterations?.length ?? data.iterations ?? '?'],
+        ['Agent Calls', data.total_agent_calls],
+        ['LLM Calls', data.total_llm_calls],
+        ['Total Tokens', data.total_tokens != null ? data.total_tokens.toLocaleString() : null],
+        ['Comm Sessions', (data.communications || []).length || null],
+        ['Duration', data.duration_s != null ? data.duration_s.toFixed(1) + 's' : null],
+        ['Error', data.error || null],
+      ].filter(([, v]) => v != null)
+        .map(([l, v]) => `<div class="metric-row"><span class="metric-label">${l}</span><span class="metric-value">${esc(v)}</span></div>`)
+        .join('');
+    }
+
+    /* ===== Iterations ===== */
+    function renderIterations(data) {
+      const iterations = Array.isArray(data.iterations) ? data.iterations : [];
+      const card = document.getElementById('iterationsCard');
+
+      if (!iterations.length) {
+        card.classList.add('hidden');
+        return;
+      }
+      card.classList.remove('hidden');
+
+      const agentIds = Object.keys(iterations[0]?.results || {});
+      const agentColorMap = {};
+      const allIds = (data.agent_profiles || []).map(p => p.agent_id).length
+        ? (data.agent_profiles || []).map(p => p.agent_id)
+        : agentIds;
+      allIds.forEach((id, i) => { agentColorMap[id] = AGENT_COLORS[i % AGENT_COLORS.length]; });
+
+      // Tabs
+      document.getElementById('iterTabs').innerHTML = iterations.map((iter, i) =>
+        `<div class="iter-tab ${i === 0 ? 'active' : ''}" onclick="selectIteration(${i})" id="iter-tab-${i}">
+          Iteration ${iter.iteration ?? i + 1}
+        </div>`
+      ).join('');
+
+      // Panels
+      document.getElementById('iterPanels').innerHTML = iterations.map((iter, i) => {
+        const results = iter.results || {};
+        const agentsHtml = Object.entries(results).map(([agentId, output]) => {
+          const color = agentColorMap[agentId] || '#64748b';
+          const text = String(output || '');
+          return `<div class="iter-agent-output">
+            <div class="iter-agent-header">
+              <div class="agent-dot" style="background:${color}"></div>
+              <strong>${esc(agentId)}</strong>
+            </div>
+            <div class="output-box">${esc(text)}</div>
+          </div>`;
+        }).join('');
+
+        const summaryHtml = iter.summary
+          ? `<div class="iter-summary-box">
+              <div class="iter-summary-label">Synthesis / Summary</div>
+              ${esc(iter.summary)}
+            </div>`
+          : '';
+
+        return `<div class="iter-panel ${i === 0 ? 'active' : ''}" id="iter-panel-${i}">
+          ${agentsHtml}
+          ${summaryHtml}
+        </div>`;
+      }).join('');
+    }
+
+    function selectIteration(idx) {
+      document.querySelectorAll('.iter-tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+      document.querySelectorAll('.iter-panel').forEach((p, i) => p.classList.toggle('active', i === idx));
+    }
+
+    /* ===== Communications ===== */
+    function renderCommunications(data) {
+      const comms = data.communications || [];
+      const card = document.getElementById('commsCard');
+
+      if (!comms.length) { card.classList.add('hidden'); return; }
+      card.classList.remove('hidden');
+      document.getElementById('commsCount').textContent = `(${comms.length} session${comms.length !== 1 ? 's' : ''})`;
+
+      document.getElementById('commsList').innerHTML = comms.map((session, i) => {
+        const participants = (session.participants || []).join(' ↔ ');
+        const turns = session.turns ?? (session.messages || []).length;
+        const messages = session.messages || [];
+
+        const msgsHtml = messages.map(m => `<div class="comm-message">
+          <div class="comm-message-from">${esc(m.from)} → ${esc(m.to)}</div>
+          <div class="comm-message-text">${esc(m.message || '')}</div>
+        </div>`).join('');
+
+        return `<div class="comm-session">
+          <div class="comm-session-header" onclick="toggleComm(${i})">
+            <span>${esc(participants)}</span>
+            <span style="display:flex;align-items:center;gap:12px">
+              <span class="tag tag-purple">${turns} turn${turns !== 1 ? 's' : ''}</span>
+              <span class="comm-toggle" id="comm-toggle-${i}">${messages.length ? '▶ show' : 'no messages'}</span>
+            </span>
+          </div>
+          ${messages.length ? `<div class="comm-messages" id="comm-messages-${i}">${msgsHtml}</div>` : ''}
+        </div>`;
+      }).join('');
+    }
+
+    function toggleComm(i) {
+      const el = document.getElementById(`comm-messages-${i}`);
+      const tg = document.getElementById(`comm-toggle-${i}`);
+      if (!el) return;
+      const open = el.classList.toggle('open');
+      tg.textContent = open ? '▼ hide' : '▶ show';
+    }
+
+    /* ===== Agent final outputs ===== */
+    function renderAgentOutputs(data) {
+      const outputs = data.agent_outputs || {};
+      const card = document.getElementById('agentOutputsCard');
+      if (!Object.keys(outputs).length) { card.classList.add('hidden'); return; }
+      card.classList.remove('hidden');
+
+      const profileIds = (data.agent_profiles || []).map(p => p.agent_id);
+      const allIds = profileIds.length ? profileIds : Object.keys(outputs);
+      const agentColorMap = {};
+      allIds.forEach((id, i) => { agentColorMap[id] = AGENT_COLORS[i % AGENT_COLORS.length]; });
+
+      document.getElementById('agentOutputs').innerHTML = allIds
+        .filter(id => outputs[id] != null)
+        .map(id => {
+          const color = agentColorMap[id] || '#64748b';
+          const text = String(outputs[id] || '');
+          return `<div class="iter-agent-output">
+            <div class="iter-agent-header">
+              <div class="agent-dot" style="background:${color}"></div>
+              <strong>${esc(id)}</strong>
+            </div>
+            <div class="output-box" style="max-height:200px">${esc(text)}</div>
+          </div>`;
+        }).join('');
+    }
+
+    /* ===== Final output ===== */
+    function renderFinalOutput(data) {
+      const card = document.getElementById('finalOutputCard');
+      if (!data.final_output) { card.classList.add('hidden'); return; }
+      card.classList.remove('hidden');
+      document.getElementById('finalOutput').textContent = data.final_output;
+    }
+
+    /* ===== Raw JSON toggle ===== */
+    function toggleRawJson() {
+      const el = document.getElementById('rawJson');
+      const tg = document.getElementById('rawToggle');
+      const visible = el.style.display !== 'none' && el.style.display !== '';
+      el.style.display = visible ? 'none' : 'block';
+      tg.textContent = visible ? '(show)' : '(hide)';
+    }
+
+    /* ===== Clear ===== */
+    function clearAll() {
+      document.getElementById('pasteArea').value = '';
+      document.getElementById('results').classList.add('hidden');
+      document.getElementById('rawJson').style.display = 'none';
+      document.getElementById('rawToggle').textContent = '(show)';
+      hideBanner();
+    }
+  </script>
+</body>
+</html>
