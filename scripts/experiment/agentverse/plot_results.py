@@ -27,6 +27,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import _tasks_dir  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Guard: friendly error if matplotlib / pandas not installed
 # ---------------------------------------------------------------------------
@@ -182,7 +185,7 @@ def load_metrics_csv(path: Path) -> pd.DataFrame:
 def load_all_run_csvs(experiment_dir: Path) -> pd.DataFrame:
     """Load and concatenate all per-run metrics.csv files."""
     frames: list[pd.DataFrame] = []
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         csv_path = run_dir / "metrics.csv"
         if csv_path.exists() and run_dir.is_dir():
             df = load_metrics_csv(csv_path)
@@ -467,7 +470,7 @@ def plot_per_run_summary(
     """Bar/line chart summarising key stats per run."""
     # Load meta.json files from each run directory
     run_metas: list[dict] = []
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         meta_path = run_dir / "meta.json"
         if meta_path.exists() and run_dir.is_dir():
             with open(meta_path) as f:
@@ -533,7 +536,7 @@ def plot_task_comparison(
 
     # ---- Load run metadata ----
     metas = []
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         meta = run_dir / "meta.json"
         if meta.exists():
             metas.append(json.loads(meta.read_text()))
@@ -546,7 +549,7 @@ def plot_task_comparison(
     # ---- Compute per-run metric means ----
     run_stats = []
 
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         csv_path = run_dir / "metrics.csv"
         meta_path = run_dir / "meta.json"
 
@@ -644,7 +647,7 @@ def load_arrival_times_from_responses(
     by_source: dict[str, list[float]] = {}
     all_ts:    list[float] = []
 
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         if not run_dir.is_dir():
             continue
         resp_path = run_dir / "response.json"
@@ -737,9 +740,11 @@ def plot_interarrival_from_responses(
         lbl = label if n_over == 0 else f"{label} ({n_over} > {IAT_MAX_S}s clipped)"
         ax.hist(clipped, bins=30, density=True, alpha=0.4, color=color, label=lbl)
         if SCIPY_AVAILABLE and len(clipped) > 5:
-            kde = scipy_stats.gaussian_kde(clipped)
-            xs = np.linspace(0, IAT_MAX_S, 300)
-            ax.plot(xs, kde(xs), color=color, linewidth=2)
+            kde      = scipy_stats.gaussian_kde(clipped)
+            xs       = np.linspace(0, IAT_MAX_S, 300)
+            kde_vals = kde(xs)
+            kde_vals[xs < clipped.min()] = 0.0
+            ax.plot(xs, kde_vals, color=color, linewidth=2)
         ax.set_xlim(0, IAT_MAX_S)
 
     def _annotate_pct(ax, vals, color, row_offset=0):
@@ -840,9 +845,11 @@ def plot_interarrival_from_responses(
     global_lbl = f"global (n={len(global_iats)}" + (f", {n_over_global} clipped)" if n_over_global else ")")
     ax.hist(global_clipped, bins=40, density=True, alpha=0.5, color=agg_color, label=global_lbl)
     if SCIPY_AVAILABLE and len(global_clipped) > 5:
-        kde = scipy_stats.gaussian_kde(global_clipped)
-        xs = np.linspace(0, IAT_MAX_S, 300)
-        ax.plot(xs, kde(xs), color=agg_color, linewidth=2.5, label="KDE")
+        kde      = scipy_stats.gaussian_kde(global_clipped)
+        xs       = np.linspace(0, IAT_MAX_S, 300)
+        kde_vals = kde(xs)
+        kde_vals[xs < global_clipped.min()] = 0.0
+        ax.plot(xs, kde_vals, color=agg_color, linewidth=2.5, label="KDE")
     ax.set_xlim(0, IAT_MAX_S)
     for pct, ls in [(50, "--"), (95, ":"), (99, "-.")]:
         pval = np.percentile(global_iats, pct)
@@ -912,7 +919,7 @@ def plot_aggregated_iat_comparison(
     # ---- load all runs -----------------------------------------------------
     by_structure: dict[str, list[np.ndarray]] = {"horizontal": [], "vertical": [], "vertical_agg": []}
 
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         if not run_dir.is_dir():
             continue
         resp_path = run_dir / "response.json"
@@ -1002,9 +1009,11 @@ def plot_aggregated_iat_comparison(
         lbl     = label if n_over == 0 else f"{label} ({n_over} clipped)"
         ax.hist(clipped, bins=35, density=True, alpha=0.35, color=color, label=lbl)
         if SCIPY_AVAILABLE and len(clipped) > 5:
-            kde = scipy_stats.gaussian_kde(clipped)
-            xs  = np.linspace(0, IAT_MAX_S, 400)
-            ax.plot(xs, kde(xs), color=color, linewidth=2.2)
+            kde      = scipy_stats.gaussian_kde(clipped)
+            xs       = np.linspace(0, IAT_MAX_S, 400)
+            kde_vals = kde(xs)
+            kde_vals[xs < clipped.min()] = 0.0
+            ax.plot(xs, kde_vals, color=color, linewidth=2.2)
         ax.set_xlim(0, IAT_MAX_S)
 
     def _ecdf_local(ax, vals, color, label, row_offset=0):
@@ -1357,9 +1366,11 @@ def analyse_iat_distributions(
     ax_hist.hist(vals_clipped, bins=50, density=True, alpha=0.35,
                  color=PALETTE[0], label=fit_lbl)
     # KDE of empirical data
-    kde = scipy_stats.gaussian_kde(vals_clipped)
-    xs  = np.linspace(0, IAT_MAX_S, 500)
-    ax_hist.plot(xs, kde(xs), color=PALETTE[0], linewidth=2, linestyle="--", label="empirical KDE")
+    kde      = scipy_stats.gaussian_kde(vals_clipped)
+    xs       = np.linspace(0, IAT_MAX_S, 500)
+    kde_vals = kde(xs)
+    kde_vals[xs < vals_clipped.min()] = 0.0
+    ax_hist.plot(xs, kde_vals, color=PALETTE[0], linewidth=2, linestyle="--", label="empirical KDE")
 
     for i, fit in enumerate(fits):
         dist   = getattr(scipy_stats, fit["name"])
@@ -1496,6 +1507,12 @@ def main() -> None:
     plots_dir = experiment_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
+    # Subdirectory layout
+    dashboard_dir     = plots_dir / "dashboard"
+    iat_dir           = plots_dir / "iat_analysis"
+    for d in (dashboard_dir, iat_dir):
+        d.mkdir(exist_ok=True)
+
     # Load panels from dashboard JSON
     dashboard_path = Path(args.dashboard_json)
     if not dashboard_path.exists():
@@ -1536,43 +1553,34 @@ def main() -> None:
             section_title  = section_title,
             panels         = section_panels,
             df             = df_all,
-            output_dir     = plots_dir,
+            output_dir     = dashboard_dir,
             section_idx    = idx,
         )
 
     # -----------------------------------------------------------------------
-    # 2. Interarrival specialised plots
+    # 2. Interarrival from raw response.json timestamps  →  iat_analysis/
     # -----------------------------------------------------------------------
-    plot_interarrival_distribution(df_all, plots_dir)
-    plot_interarrival_ecdf(df_all, plots_dir)
+    plot_interarrival_from_responses(experiment_dir, iat_dir)
 
     # -----------------------------------------------------------------------
-    # 3. Per-run summary (duration, etc.)
+    # 3. Aggregation hypothesis: collapsing simultaneous vertical reviewers
     # -----------------------------------------------------------------------
-    plot_per_run_summary(experiment_dir, df_all, plots_dir)
-    plot_task_comparison(experiment_dir, df_all, plots_dir)
+    plot_aggregated_iat_comparison(experiment_dir, iat_dir)
 
     # -----------------------------------------------------------------------
-    # 4. Interarrival times from raw response.json timestamps (no Grafana)
+    # 4. Distribution fitting & hypothesis tests  →  iat_analysis/
     # -----------------------------------------------------------------------
-    plot_interarrival_from_responses(experiment_dir, plots_dir)
+    analyse_iat_distributions(experiment_dir, iat_dir)
 
     # -----------------------------------------------------------------------
-    # 4b. Aggregation hypothesis: collapsing simultaneous vertical reviewers
+    # 5. Statistics table  →  dashboard/
     # -----------------------------------------------------------------------
-    plot_aggregated_iat_comparison(experiment_dir, plots_dir)
+    print_stats_table(df_all, dashboard_dir)
 
-    # -----------------------------------------------------------------------
-    # 5. Distribution fitting & hypothesis tests
-    # -----------------------------------------------------------------------
-    analyse_iat_distributions(experiment_dir, plots_dir)
-
-    # -----------------------------------------------------------------------
-    # 6. Statistics table
-    # -----------------------------------------------------------------------
-    print_stats_table(df_all, plots_dir)
-
-    print(f"\n  all plots saved to {plots_dir}/")
+    print(f"\n  plots saved to subdirectories under {plots_dir}/")
+    print(f"    dashboard/    — Grafana section screenshots + statistics.txt")
+    print(f"    iat_analysis/ — interarrival timing plots and distribution fits")
+    print(f"  (statistical analysis outputs go to plots/analysis/ — run analysis scripts separately)")
 
 
 if __name__ == "__main__":

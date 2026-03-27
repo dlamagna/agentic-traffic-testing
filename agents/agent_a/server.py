@@ -129,6 +129,15 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(message.encode("utf-8"))
         self.wfile.flush()
 
+    def _start_marble_sse(self) -> None:
+        """Send SSE response headers for MARBLE streaming."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self._set_cors()
+        self.end_headers()
+
     def _handle_get_agentverse_run(self, task_id: str) -> None:
         """
         Look up a previously completed AgentVerse run by task_id and return
@@ -240,6 +249,19 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             _fs = data.get("force_structure", None)
             force_structure: Optional[str] = _fs if _fs in ("horizontal", "vertical") else None
 
+            # Optional agent count override for controlled experiments.
+            # Must be a non-negative integer; anything else is ignored.
+            # 0 = solo mode (Agent A only, no sub-agents).
+            _fac = data.get("force_agent_count", None)
+            force_agent_count: Optional[int] = None
+            if _fac is not None:
+                try:
+                    _fac_int = int(_fac)
+                    if _fac_int >= 0:
+                        force_agent_count = _fac_int
+                except (TypeError, ValueError):
+                    pass
+
             span.set_attribute("app.task", task)
             span.set_attribute("app.max_iterations", max_iterations)
             span.set_attribute("app.success_threshold", success_threshold)
@@ -289,6 +311,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
                         force_structure=force_structure,
+                        force_agent_count=force_agent_count,
                     )
 
                     # Persist the completed run for offline analysis.
@@ -299,10 +322,10 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         success_threshold=success_threshold,
                         result=result,
                     )
-                    
+
                     # Send final result as SSE event
                     self._send_sse_event("complete", result)
-                    
+
                 else:
                     # Non-streaming mode (original behavior)
                     orchestrator = AgentVerseOrchestrator(logger=logger, tracer=self.tracer)
@@ -312,6 +335,7 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                         max_iterations=max_iterations,
                         success_threshold=success_threshold,
                         force_structure=force_structure,
+                        force_agent_count=force_agent_count,
                     )
                     # Persist the completed run for offline analysis.
                     self._persist_agentverse_run(
@@ -418,8 +442,226 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(502, {"error": f"RLM workflow failed: {exc}"})
 
+    def _build_marble_result(
+        self,
+        domain: str,
+        marble_task: Any,
+        topo_result: Any,
+        score: Any,
+        duration: float,
+    ) -> Dict[str, Any]:
+        """Build the final JSON result dict shared by streaming and non-streaming paths."""
+        result: Dict[str, Any] = {
+            "benchmark_source": "marble",
+            "benchmark_domain": domain,
+            "marble_task_id": marble_task.task_id,
+            "task_id": topo_result.task_id,
+            "task_content": marble_task.task_content[:2000],
+            "coordinate_mode": topo_result.coordinate_mode,
+            "agent_count": marble_task.agent_count,
+            "agent_ids": marble_task.agent_ids,
+            "final_output": topo_result.final_output[:5000],
+            "total_agent_calls": topo_result.total_agent_calls,
+            "total_llm_calls": topo_result.total_llm_calls,
+            "total_tokens": topo_result.total_tokens,
+            "duration_s": round(duration, 2),
+            "iterations": len(topo_result.iterations),
+            "communication_sessions": len(topo_result.communications),
+            "topology_error": topo_result.error,
+            "agent_outputs": {k: v[:2000] for k, v in topo_result.agent_outputs.items()},
+            "iteration_details": [
+                {"iteration": i + 1, "summary": str(it)[:500]}
+                for i, it in enumerate(topo_result.iterations)
+            ],
+        }
+        if score:
+            result.update({
+                "score": score.aggregate,
+                "task_quality": score.task_quality,
+                "communication_quality": score.communication_quality,
+                "planning_quality": score.planning_quality,
+                "collaboration_quality": score.collaboration_quality,
+                "domain_score": score.domain_score,
+                "score_error": score.error,
+            })
+        return result
+
+    def _handle_marble(self) -> None:
+        """Handle MARBLE (MultiAgentBench) single-task requests from the UI."""
+        marble_carrier = {key: value for key, value in self.headers.items()}
+        marble_parent_ctx = propagate.extract(marble_carrier)
+        with self.tracer.start_as_current_span(
+            "agent_a.marble_task", context=marble_parent_ctx, kind=SpanKind.SERVER,
+        ) as span:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+            try:
+                data: Dict[str, Any] = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+
+            domain = data.get("domain", "research")
+            topology = data.get("topology", "graph")
+            max_iterations = data.get("max_iterations", 3)
+            task_id_req = data.get("task_id")
+            skip_judge = data.get("skip_judge", False)
+            stream = data.get("stream", False)
+
+            if topology not in ("star", "chain", "tree", "graph"):
+                topology = "graph"
+            if not isinstance(max_iterations, int) or max_iterations < 1:
+                max_iterations = 3
+            max_iterations = min(max_iterations, 5)
+
+            span.set_attribute("app.benchmark", "marble")
+            span.set_attribute("app.domain", domain)
+            span.set_attribute("app.topology", topology)
+            span.set_attribute("app.stream", stream)
+
+            logger = TelemetryLogger(agent_id="AgentA-MARBLE", scenario=f"marble_{domain}")
+            task_id = logger.new_task_id()
+            span.set_attribute("app.task_id", task_id)
+
+            logger.log(
+                task_id=task_id,
+                event_type="marble_request_received",
+                message=f"Received /marble request: domain={domain} topology={topology}",
+                extra={"domain": domain, "topology": topology, "max_iterations": max_iterations, "stream": stream},
+            )
+
+            try:
+                from benchmarks.marble.loader import (
+                    available_domains,
+                    load_marble_tasks,
+                    marble_root,
+                )
+                from benchmarks.marble.scorer import score_marble_task
+                from benchmarks.marble.topology import TopologyResult, run_topology
+
+                root = marble_root()
+                if not root.is_dir():
+                    if stream:
+                        self._start_marble_sse()
+                        self._send_sse_event("error", {"error": f"MARBLE repo not found at {root}. Set MARBLE_ROOT env var."})
+                    else:
+                        self._send_json(400, {"error": f"MARBLE repo not found at {root}. Set MARBLE_ROOT env var."})
+                    return
+
+                avail = available_domains()
+                if domain not in avail:
+                    err = f"Domain '{domain}' not available. Found: {avail}"
+                    if stream:
+                        self._start_marble_sse()
+                        self._send_sse_event("error", {"error": err})
+                    else:
+                        self._send_json(400, {"error": err})
+                    return
+
+                task_ids = [int(task_id_req)] if task_id_req is not None else None
+                tasks = list(load_marble_tasks(
+                    domain=domain,
+                    max_tasks=1,
+                    task_ids=task_ids,
+                    topology_override=topology,
+                ))
+                if not tasks:
+                    err = f"No tasks found for domain '{domain}'" + (f" task_id={task_id_req}" if task_id_req else "")
+                    if stream:
+                        self._start_marble_sse()
+                        self._send_sse_event("error", {"error": err})
+                    else:
+                        self._send_json(404, {"error": err})
+                    return
+
+                marble_task = tasks[0]
+                import time
+                start = time.monotonic()
+
+                if stream:
+                    self._start_marble_sse()
+                    _sse_lock = threading.Lock()
+
+                    def marble_progress(event_type: str, event_data: Dict[str, Any]) -> None:
+                        with _sse_lock:
+                            self._send_sse_event(event_type, event_data)
+
+                    topo_result = run_topology(
+                        marble_task,
+                        max_iterations=max_iterations,
+                        topology_override=topology,
+                        progress_callback=marble_progress,
+                    )
+
+                    score = None
+                    if not skip_judge:
+                        marble_progress("phase_start", {"phase": "scoring"})
+                        try:
+                            score = score_marble_task(
+                                task_content=marble_task.task_content,
+                                topology_result=topo_result,
+                                skip_judge=False,
+                            )
+                        except Exception:
+                            pass
+                        marble_progress("phase_complete", {"phase": "scoring"})
+
+                    duration = time.monotonic() - start
+                    result = self._build_marble_result(domain, marble_task, topo_result, score, duration)
+
+                    logger.log(
+                        task_id=task_id,
+                        event_type="marble_complete",
+                        message=f"MARBLE task complete: score={score.aggregate if score else 'skipped'}",
+                    )
+                    with _sse_lock:
+                        self._send_sse_event("complete", result)
+
+                else:
+                    topo_result = run_topology(
+                        marble_task,
+                        max_iterations=max_iterations,
+                        topology_override=topology,
+                    )
+
+                    score = None
+                    if not skip_judge:
+                        try:
+                            score = score_marble_task(
+                                task_content=marble_task.task_content,
+                                topology_result=topo_result,
+                                skip_judge=False,
+                            )
+                        except Exception:
+                            pass
+
+                    duration = time.monotonic() - start
+                    result = self._build_marble_result(domain, marble_task, topo_result, score, duration)
+
+                    logger.log(
+                        task_id=task_id,
+                        event_type="marble_complete",
+                        message=f"MARBLE task complete: score={score.aggregate if score else 'skipped'}",
+                    )
+                    self._send_json(200, result)
+
+            except Exception as exc:
+                logger.log(
+                    task_id=task_id,
+                    event_type="marble_error",
+                    message=f"MARBLE workflow failed: {exc}",
+                )
+                if stream:
+                    try:
+                        self._send_sse_event("error", {"error": str(exc)})
+                    except Exception:
+                        pass
+                else:
+                    self._send_json(502, {"error": f"MARBLE workflow failed: {exc}"})
+
     def do_OPTIONS(self) -> None:  # type: ignore[override]
-        if self.path in ("/task", "/rlm") or self.path.startswith("/agentverse"):
+        if self.path in ("/task", "/rlm", "/marble") or self.path.startswith("/agentverse"):
             self.send_response(204)
         else:
             self.send_response(404)
@@ -463,11 +705,19 @@ class AgentARequestHandler(BaseHTTPRequestHandler):
             self._handle_rlm()
             return
 
+        if self.path == "/marble":
+            self._handle_marble()
+            return
+
         if self.path != "/task":
             self._send_json(404, {"error": "Not found"})
             return
 
-        with self.tracer.start_as_current_span("agent_a.handle_task") as span:
+        carrier = {key: value for key, value in self.headers.items()}
+        parent_ctx = propagate.extract(carrier)
+        with self.tracer.start_as_current_span(
+            "agent_a.handle_task", context=parent_ctx, kind=SpanKind.SERVER,
+        ) as span:
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b""
 

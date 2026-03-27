@@ -12,16 +12,27 @@
 # Usage:
 #   ./run_experiment.sh -n <iterations> [options]
 #   ./run_experiment.sh -n <iterations> -b [options]
+#   ./run_experiment.sh -n <iterations> -s [options]
 #   ./run_experiment.sh -c -o <existing-experiment-dir> [options]
 #
 # Options:
 #   -n <int>     Number of iterations per task (required for fresh runs)
 #   -b           Balanced mode: force exactly 50 % horizontal + 50 % vertical runs
-#                (passes force_structure to Agent A; incompatible with -c)
+#                (passes force_structure to Agent A; incompatible with -c and -s)
+#   -s           Sweep mode: run every combination of discussion structure
+#                (horizontal, vertical) × agent count (1–5) plus solo (0 agents)
+#                — 11 combos total.
+#                Each combo is run -n times per task. Incompatible with -b and -c.
+#   -A <int>     Force a fixed number of sub-agents (experts) for every run.
+#                0–5 (capped at MAX_PARALLEL_WORKERS / available AGENT_B_URLS).
+#                0 = solo mode (Agent A only, no sub-agents).
+#                Ignored when -s is active (sweep covers all counts 1–5).
+#                Omit to let the LLM decide (default behaviour).
 #   -c           Continue/resume an interrupted experiment (requires -o)
 #   -o <dir>     Output directory — new dir for fresh runs, existing dir for -c
-#                (default for fresh runs: <repo>/data/runs/experiment_<ts>)
-#                (balanced default:       <repo>/data/runs/balanced_experiment_<ts>)
+#                (default for fresh runs: <repo>/data/agentverse/experiment_<ts>)
+#                (balanced default:       <repo>/data/agentverse/balanced_experiment_<ts>)
+#                (sweep default:          <repo>/data/agentverse/sweep_experiment_<ts>)
 #   -a <url>     Agent A base URL  (default: http://localhost:8101)
 #   -p <url>     Prometheus URL    (default: http://localhost:9090)
 #   -w <int>     Seconds to wait after each run for metrics to propagate
@@ -31,8 +42,11 @@
 # Examples:
 #   ./run_experiment.sh -n 50
 #   ./run_experiment.sh -n 25 -b          # 25 H + 25 V per task = 50 * tasks total
+#   ./run_experiment.sh -n 25 -b -A 3     # balanced, always 3 agents
+#   ./run_experiment.sh -n 10 -A 1        # single-agent baseline
+#   ./run_experiment.sh -n 10 -s          # sweep: 10 iters × 10 combos × tasks
 #   ./run_experiment.sh -n 10 -a http://192.168.1.100:8101 -w 30
-#   ./run_experiment.sh -c -o data/runs/experiment_2026-03-10_17-42-47
+#   ./run_experiment.sh -c -o data/agentverse/experiment_2026-03-10_17-42-47
 # =============================================================================
 
 set -euo pipefail
@@ -55,6 +69,9 @@ PLOT_SCRIPT="$SCRIPT_DIR/plot_results.py"
 STRUCTURE_COMPARE_SCRIPT="$SCRIPT_DIR/compare_discussion_structures.py"
 STRUCTURE_CORRELATE_SCRIPT="$SCRIPT_DIR/correlate_structure_metrics.py"
 IAT_STATS_SCRIPT="$SCRIPT_DIR/analyse_iat_statistics.py"
+BURST_AGENTS_SCRIPT="$SCRIPT_DIR/analyse_burst_removed_agents.py"
+VERTICAL_RAW_AGG_SCRIPT="$SCRIPT_DIR/analyse_vertical_raw_vs_aggregated.py"
+CONCURRENCY_PERF_SCRIPT="$SCRIPT_DIR/analyse_concurrency_performance.py"
 CORRELATE_METRICS_SCRIPT="$SCRIPT_DIR/correlate_metrics.py"
 WORKFLOW_TEMPLATE="$REPO_ROOT/agents/templates/agentverse_workflow.json"
 
@@ -73,6 +90,10 @@ WAIT_AFTER_RUN=20
 OUTPUT_DIR_OVERRIDE=""
 CONTINUE_MODE=0
 BALANCED_MODE=0
+SWEEP_MODE=0
+# Optional: force a fixed number of sub-agents (experts) for every run.
+# Empty string = let the LLM decide (default). Ignored when SWEEP_MODE=1.
+FORCE_AGENT_COUNT=""
 # Set to 1 (or export SKIP_RESET=1) to skip the reset+deploy at startup.
 # run_aggregated_experiment.sh sets this when it manages its own reset.
 SKIP_RESET="${SKIP_RESET:-0}"
@@ -127,14 +148,16 @@ echo ""
 # Parse options
 # -------------------------------------------------------------------------
 usage() {
-    sed -n '3,32p' "$0" | sed 's/^# //' | sed 's/^#//'
+    sed -n '3,50p' "$0" | sed 's/^# //' | sed 's/^#//'
     exit 0
 }
 
-while getopts "n:a:p:w:o:cbh" opt; do
+while getopts "n:A:a:p:w:o:csbh" opt; do
     case $opt in
         n) ITERATIONS="$OPTARG" ;;
         b) BALANCED_MODE=1 ;;
+        s) SWEEP_MODE=1 ;;
+        A) FORCE_AGENT_COUNT="$OPTARG" ;;
         c) CONTINUE_MODE=1 ;;
         a) AGENT_A_URL="$OPTARG" ;;
         p) PROMETHEUS_URL="$OPTARG" ;;
@@ -148,8 +171,16 @@ done
 # -------------------------------------------------------------------------
 # Validate options and set up experiment directory
 # -------------------------------------------------------------------------
+if [[ $BALANCED_MODE -eq 1 && $SWEEP_MODE -eq 1 ]]; then
+    echo "ERROR: -b (balanced) and -s (sweep) cannot be used together"
+    exit 1
+fi
 if [[ $BALANCED_MODE -eq 1 && $CONTINUE_MODE -eq 1 ]]; then
     echo "ERROR: -b (balanced) and -c (continue) cannot be used together"
+    exit 1
+fi
+if [[ $SWEEP_MODE -eq 1 && $CONTINUE_MODE -eq 1 ]]; then
+    echo "ERROR: -s (sweep) and -c (continue) cannot be used together"
     exit 1
 fi
 
@@ -204,10 +235,18 @@ else
     EXPERIMENT_TS=$(date +%Y-%m-%d_%H-%M-%S)
     if [[ -n "$OUTPUT_DIR_OVERRIDE" ]]; then
         EXPERIMENT_DIR="$OUTPUT_DIR_OVERRIDE"
-    elif [[ $BALANCED_MODE -eq 1 ]]; then
-        EXPERIMENT_DIR="$REPO_ROOT/data/runs/balanced_experiment_${EXPERIMENT_TS}"
     else
-        EXPERIMENT_DIR="$REPO_ROOT/data/runs/experiment_${EXPERIMENT_TS}"
+        # Build directory prefix from active options
+        _DIR_PREFIX=""
+        if [[ $SWEEP_MODE -eq 1 ]]; then
+            _DIR_PREFIX="sweep_"
+        elif [[ $BALANCED_MODE -eq 1 ]]; then
+            _DIR_PREFIX="balanced_"
+        fi
+        if [[ $SWEEP_MODE -eq 0 && -n "$FORCE_AGENT_COUNT" ]]; then
+            _DIR_PREFIX="${_DIR_PREFIX}agents${FORCE_AGENT_COUNT}_"
+        fi
+        EXPERIMENT_DIR="$REPO_ROOT/data/agentverse/${_DIR_PREFIX}experiment_${EXPERIMENT_TS}"
     fi
     mkdir -p "$EXPERIMENT_DIR"
     RUN_LOG="$EXPERIMENT_DIR/runs.jsonl"
@@ -240,8 +279,8 @@ finalize_experiment() {
     echo "Generating discussion structure comparison plots..."
     if "$PYTHON" "$STRUCTURE_COMPARE_SCRIPT" \
         "$EXPERIMENT_DIR" \
-        --output-dir "$EXPERIMENT_DIR/plots/" 2>&1; then
-        echo "  Structure plots saved → $EXPERIMENT_DIR/plots/"
+        --output-dir "$EXPERIMENT_DIR/plots/discussion_structure/" 2>&1; then
+        echo "  Structure plots saved → $EXPERIMENT_DIR/plots/discussion_structure/"
     else
         echo "  WARNING: Discussion structure comparison plotting failed"
     fi
@@ -250,8 +289,8 @@ finalize_experiment() {
     echo "Generating discussion structure vs network metrics correlation..."
     if "$PYTHON" "$STRUCTURE_CORRELATE_SCRIPT" \
         "$EXPERIMENT_DIR" \
-        --output-dir "$EXPERIMENT_DIR/plots/" 2>&1; then
-        echo "  Correlation plots saved → $EXPERIMENT_DIR/plots/"
+        --output-dir "$EXPERIMENT_DIR/plots/structure_correlation/" 2>&1; then
+        echo "  Correlation plots saved → $EXPERIMENT_DIR/plots/structure_correlation/"
     else
         echo "  WARNING: Discussion structure correlation failed"
     fi
@@ -260,10 +299,49 @@ finalize_experiment() {
     echo "Generating IAT statistical analysis (KS tests, effect sizes)..."
     if "$PYTHON" "$IAT_STATS_SCRIPT" \
         --experiment-dir "$EXPERIMENT_DIR" \
-        --output-dir     "$EXPERIMENT_DIR/plots/" 2>&1; then
-        echo "  IAT statistics saved → $EXPERIMENT_DIR/plots/iat_statistics.{png,txt}"
+        --output-dir     "$EXPERIMENT_DIR/plots/iat_analysis/" 2>&1; then
+        echo "  IAT statistics saved → $EXPERIMENT_DIR/plots/iat_analysis/iat_statistics.{png,txt}"
     else
         echo "  WARNING: IAT statistical analysis failed"
+    fi
+
+    echo ""
+    echo "Generating burst-removal and agent-count IAT analysis..."
+    if "$PYTHON" "$BURST_AGENTS_SCRIPT" \
+        --experiment-dir "$EXPERIMENT_DIR" \
+        --output-dir     "$EXPERIMENT_DIR/plots/iat_analysis/" 2>&1; then
+        echo "  Burst analysis saved → $EXPERIMENT_DIR/plots/iat_analysis/"
+        echo "    burst_comparison.{png,txt}                   — H / V-agg / V-burst-removed comparison"
+        echo "    vertical/"
+        echo "      agent_count_iat.{png,txt}                  — vertical IAT by n_experts (raw + burst-removed)"
+        echo "      burst_removed_ks_pairwise.{png,txt}        — vertical pairwise KS tests across n_experts"
+        echo "      exponential_fit_nN.{png,txt}               — vertical exponential GOF for largest n_experts"
+        echo "    horizontal/"
+        echo "      h_agent_count_iat.{png,txt}                — horizontal IAT by n_experts (raw, no burst removal)"
+        echo "      h_ks_pairwise.{png,txt}                    — horizontal pairwise KS tests across n_experts"
+        echo "      exponential_fit_h_nN.{png,txt}             — horizontal exponential GOF for largest n_experts"
+    else
+        echo "  WARNING: Burst / agent-count IAT analysis failed"
+    fi
+
+    echo ""
+    echo "Generating vertical raw vs aggregated IAT comparison..."
+    if "$PYTHON" "$VERTICAL_RAW_AGG_SCRIPT" \
+        --experiment-dir "$EXPERIMENT_DIR" \
+        --output-dir     "$EXPERIMENT_DIR/plots/iat_analysis/" 2>&1; then
+        echo "  Vertical comparison saved → $EXPERIMENT_DIR/plots/iat_analysis/vertical_raw_vs_aggregated.{png,txt}"
+    else
+        echo "  WARNING: Vertical raw vs aggregated analysis failed"
+    fi
+
+    echo ""
+    echo "Generating LLM concurrency performance analysis..."
+    if "$PYTHON" "$CONCURRENCY_PERF_SCRIPT" \
+        --experiment-dir "$EXPERIMENT_DIR" \
+        --output-dir     "$EXPERIMENT_DIR/plots/concurrency/" 2>&1; then
+        echo "  Concurrency analysis saved → $EXPERIMENT_DIR/plots/concurrency/concurrency_performance.{png,txt}"
+    else
+        echo "  WARNING: Concurrency performance analysis failed"
     fi
 
     echo ""
@@ -282,6 +360,12 @@ finalize_experiment() {
     echo "================================================================"
     echo "  DONE"
     echo "  Results: $EXPERIMENT_DIR"
+    echo "  Plots layout:"
+    echo "    plots/dashboard/            — Grafana section PNGs + statistics.txt"
+    echo "    plots/iat_analysis/         — IAT timing, fit, stats, burst, vertical analysis"
+    echo "    plots/concurrency/          — throughput / latency / queue-wait vs agent count"
+    echo "    plots/discussion_structure/ — horizontal vs vertical IAT comparisons"
+    echo "    plots/structure_correlation/— structure vs network metric correlations"
     echo "================================================================"
 
     # Uninstall testbed so the LLM backend is not left running idle.
@@ -410,8 +494,9 @@ PYEOF
     echo "  Prometheus  : $PROMETHEUS_URL"
     echo "================================================================"
 
-    # Continue mode is always single-structure (resume doesn't support balanced)
-    STRUCTURE_LIST=("")
+    # Continue mode is always single-structure (resume doesn't support balanced/sweep)
+    COMBO_STRUCTURES=("")
+    COMBO_AGENT_COUNTS=("")
 
     if [[ $START_ITER -gt $ITERATIONS ]]; then
         echo ""
@@ -425,23 +510,59 @@ else
     START_ITER=1
     START_TASK_IDX=0
     RUN_COUNT=0
-    if [[ $BALANCED_MODE -eq 1 ]]; then
-        STRUCTURE_LIST=("horizontal" "vertical")
-        TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS * 2 ))
+
+    # Build the list of (structure, agent_count) combos to cycle through per
+    # iteration.  Using two parallel arrays because bash lacks tuples.
+    COMBO_STRUCTURES=()
+    COMBO_AGENT_COUNTS=()
+
+    if [[ $SWEEP_MODE -eq 1 ]]; then
+        # Solo baseline (0 agents — Agent A only, no discussion structure)
+        COMBO_STRUCTURES+=("solo")
+        COMBO_AGENT_COUNTS+=("0")
+        # Full grid: horizontal × {1..5} then vertical × {1..5} = 10 combos
+        # Total with solo: 11 combos
+        for _s in horizontal vertical; do
+            for _n in 1 2 3 4 5; do
+                COMBO_STRUCTURES+=("$_s")
+                COMBO_AGENT_COUNTS+=("$_n")
+            done
+        done
+    elif [[ $BALANCED_MODE -eq 1 ]]; then
+        COMBO_STRUCTURES=("horizontal" "vertical")
+        COMBO_AGENT_COUNTS=("$FORCE_AGENT_COUNT" "$FORCE_AGENT_COUNT")
     else
-        STRUCTURE_LIST=("")
-        TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS ))
+        COMBO_STRUCTURES=("")
+        COMBO_AGENT_COUNTS=("$FORCE_AGENT_COUNT")
     fi
+
+    NUM_COMBOS=${#COMBO_STRUCTURES[@]}
+    TOTAL_RUNS=$(( ITERATIONS * NUM_TASKS * NUM_COMBOS ))
+
     EXPERIMENT_START_MS=$(python3 -c "import time; print(int(time.time() * 1000))")
     EXPERIMENT_TS=$(date +%Y-%m-%d_%H-%M-%S)
 
     echo "================================================================"
     echo "  Agentic Traffic Experiment"
-    if [[ $BALANCED_MODE -eq 1 ]]; then
+    if [[ $SWEEP_MODE -eq 1 ]]; then
+        echo "  Mode       : SWEEP (solo + horizontal+vertical × agents 1–5 = 11 combos)"
+        echo "  Combos     : ${COMBO_STRUCTURES[*]} / counts ${COMBO_AGENT_COUNTS[*]}"
+    elif [[ $BALANCED_MODE -eq 1 ]]; then
         echo "  Mode       : BALANCED (50 % horizontal + 50 % vertical)"
+        if [[ -n "$FORCE_AGENT_COUNT" ]]; then
+            echo "  Agents     : FIXED = $FORCE_AGENT_COUNT sub-agent(s) per run"
+        else
+            echo "  Agents     : LLM-decided (up to MAX_PARALLEL_WORKERS)"
+        fi
+    else
+        if [[ -n "$FORCE_AGENT_COUNT" ]]; then
+            echo "  Agents     : FIXED = $FORCE_AGENT_COUNT sub-agent(s) per run"
+        else
+            echo "  Agents     : LLM-decided (up to MAX_PARALLEL_WORKERS)"
+        fi
     fi
     echo "  Timestamp  : $EXPERIMENT_TS"
-    echo "  Iterations : $ITERATIONS per task ($NUM_TASKS tasks total)"
+    echo "  Iterations : $ITERATIONS per task ($NUM_TASKS tasks, $NUM_COMBOS combo(s))"
     echo "  Total Runs : $TOTAL_RUNS"
     echo "  Agent A    : $AGENT_A_URL"
     echo "  Prometheus : $PROMETHEUS_URL"
@@ -459,15 +580,17 @@ send_agentverse_request() {
     local url="$2"
     local max_iterations="$3"
     local success_threshold="$4"
-    local force_structure="${5:-}"   # optional; "horizontal" or "vertical" for balanced mode
-    python3 - "$task" "$url" "$max_iterations" "$success_threshold" "$force_structure" <<'PYEOF'
+    local force_structure="${5:-}"    # optional; "horizontal" or "vertical" for balanced mode
+    local force_agent_count="${6:-}"  # optional; positive integer to fix sub-agent count
+    python3 - "$task" "$url" "$max_iterations" "$success_threshold" "$force_structure" "$force_agent_count" <<'PYEOF'
 import json, sys, urllib.request, urllib.error
 
-task_text       = sys.argv[1]
-base_url        = sys.argv[2].rstrip("/")
-max_iterations  = sys.argv[3]
+task_text         = sys.argv[1]
+base_url          = sys.argv[2].rstrip("/")
+max_iterations    = sys.argv[3]
 success_threshold = sys.argv[4]
-force_structure = sys.argv[5] if len(sys.argv) > 5 else ""
+force_structure   = sys.argv[5] if len(sys.argv) > 5 else ""
+force_agent_count = sys.argv[6] if len(sys.argv) > 6 else ""
 
 try:
     max_iterations = int(max_iterations)
@@ -487,6 +610,13 @@ payload = {
 }
 if force_structure in ("horizontal", "vertical"):
     payload["force_structure"] = force_structure
+if force_agent_count not in ("", None):
+    try:
+        n = int(force_agent_count)
+        if n >= 0:
+            payload["force_agent_count"] = n
+    except (TypeError, ValueError):
+        pass
 
 req = urllib.request.Request(
     f"{base_url}/agentverse",
@@ -535,7 +665,9 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         FIRST_TASK_IDX=0
     fi
 
-    for FORCE_STRUCTURE in "${STRUCTURE_LIST[@]}"; do
+    for COMBO_IDX in "${!COMBO_STRUCTURES[@]}"; do
+        FORCE_STRUCTURE="${COMBO_STRUCTURES[$COMBO_IDX]}"
+        FORCE_AGENT_COUNT="${COMBO_AGENT_COUNTS[$COMBO_IDX]}"
         for TASK_IDX in $(seq "$FIRST_TASK_IDX" $(( NUM_TASKS - 1 ))); do
         TASK="${TASK_NAMES[$TASK_IDX]}"
         TASK_SLUG="${TASK_SLUGS[$TASK_IDX]}"
@@ -546,17 +678,17 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         RUN_START_MS=$(python3 -c "import time; print(int(time.time() * 1000))")
 
         echo ""
-        if [[ -n "$FORCE_STRUCTURE" ]]; then
-            echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  iter=$ITER  structure=$FORCE_STRUCTURE  task=$TASK_SLUG ---"
-        else
-            echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  iter=$ITER  task=$TASK_SLUG ---"
-        fi
+        _RUN_LABEL="iter=$ITER"
+        [[ -n "$FORCE_STRUCTURE" ]] && _RUN_LABEL="$_RUN_LABEL  structure=$FORCE_STRUCTURE"
+        [[ -n "$FORCE_AGENT_COUNT" ]] && _RUN_LABEL="$_RUN_LABEL  agents=$FORCE_AGENT_COUNT"
+        _RUN_LABEL="$_RUN_LABEL  task=$TASK_SLUG"
+        echo "--- Run $RUN_COUNT / $TOTAL_RUNS  |  $_RUN_LABEL ---"
         echo "  Time  : $RUN_TS"
         echo "  Task  : ${TASK:0:80}..."
 
         # Send request
         RESPONSE=""
-        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" "$AGENTVERSE_MAX_ITERATIONS" "$AGENTVERSE_SUCCESS_THRESHOLD" "$FORCE_STRUCTURE" 2>/tmp/agentverse_err.txt); then
+        if RESPONSE=$(send_agentverse_request "$TASK" "$AGENT_A_URL" "$AGENTVERSE_MAX_ITERATIONS" "$AGENTVERSE_SUCCESS_THRESHOLD" "$FORCE_STRUCTURE" "$FORCE_AGENT_COUNT" 2>/tmp/agentverse_err.txt); then
             :
         else
             ERR=$(cat /tmp/agentverse_err.txt 2>/dev/null || true)
@@ -575,8 +707,8 @@ for ITER in $(seq "$START_ITER" "$ITERATIONS"); do
         echo "  Task ID  : $TASK_ID"
         echo "  Duration : ${DURATION_S}s"
 
-        # Create run directory: <timestamp>_<task-slug>_<task-id>
-        RUN_DIR="$EXPERIMENT_DIR/${RUN_TS}_${TASK_SLUG}_${TASK_ID}"
+        # Create run directory: tasks/<timestamp>_<task-slug>_<task-id>
+        RUN_DIR="$EXPERIMENT_DIR/tasks/${RUN_TS}_${TASK_SLUG}_${TASK_ID}"
         mkdir -p "$RUN_DIR"
 
         # Save response JSON (pretty-printed if possible)
@@ -616,6 +748,7 @@ meta = {
     "agent_a_url":  "$AGENT_A_URL",
     "prometheus_url": "$PROMETHEUS_URL",
     "forced_structure": "$FORCE_STRUCTURE" or None,
+    "forced_agent_count": int("$FORCE_AGENT_COUNT") if "$FORCE_AGENT_COUNT" else None,
     "agentverse": {
         "max_iterations": int("$AGENTVERSE_MAX_ITERATIONS"),
         "success_threshold": int("$AGENTVERSE_SUCCESS_THRESHOLD"),
@@ -631,14 +764,15 @@ PYEOF
         python3 - <<PYEOF
 import json
 record = {
-    "run_dir":          "$RUN_DIR",
-    "task_slug":        "$TASK_SLUG",
-    "iteration":        $ITER,
-    "task_id":          "$TASK_ID",
-    "forced_structure": "$FORCE_STRUCTURE" or None,
-    "run_start_ms":     $RUN_START_MS,
-    "run_end_ms":       $RUN_END_MS,
-    "duration_s":       $DURATION_S,
+    "run_dir":           "$RUN_DIR",
+    "task_slug":         "$TASK_SLUG",
+    "iteration":         $ITER,
+    "task_id":           "$TASK_ID",
+    "forced_structure":  "$FORCE_STRUCTURE" or None,
+    "forced_agent_count": int("$FORCE_AGENT_COUNT") if "$FORCE_AGENT_COUNT" else None,
+    "run_start_ms":      $RUN_START_MS,
+    "run_end_ms":        $RUN_END_MS,
+    "duration_s":        $DURATION_S,
 }
 with open("$RUN_LOG", "a") as f:
     f.write(json.dumps(record) + "\n")
@@ -668,9 +802,9 @@ PYEOF
         fi
 
         done  # TASK_IDX
-        # After the first structure pass, subsequent passes start from task 0
+        # After the first combo pass, subsequent passes start from task 0
         FIRST_TASK_IDX=0
-    done  # FORCE_STRUCTURE
+    done  # COMBO_IDX
 done  # ITER
 
 # -------------------------------------------------------------------------

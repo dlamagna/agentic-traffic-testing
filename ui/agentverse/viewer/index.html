@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentVerse Viewer Redirect</title>
+</head>
+<body>
+  <script>
+    // Keep query string/hash so /agentverse/viewer/?task_id=... works.
+    const target = '../viewer.html' + window.location.search + window.location.hash;
+    window.location.replace(target);
+  </script>
+</body>
+</html>

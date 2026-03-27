@@ -28,6 +28,9 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import _tasks_dir  # noqa: E402
+
 try:
     import matplotlib
     matplotlib.use("Agg")
@@ -358,7 +361,7 @@ def load_all_runs(data_dirs: list[Path]) -> pd.DataFrame:
     rows = []
     n_skipped = 0
     for data_dir in data_dirs:
-        for run_dir in sorted(data_dir.iterdir()):
+        for run_dir in sorted(_tasks_dir(data_dir).iterdir()):
             if not run_dir.is_dir():
                 continue
             result = extract_run(run_dir)

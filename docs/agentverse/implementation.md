@@ -56,14 +56,14 @@ Agent B instances are homogeneous at deploy time: they all run the same `/subtas
 
 | Structure | Description | Best For |
 |-----------|-------------|----------|
-| **Horizontal** | All experts contribute in rounds; consensus via `[CONSENSUS]` token | Consulting, brainstorming, tool-using |
+| **Horizontal** | All experts contribute in rounds; consensus via `[CONSENSUS]` signal | Consulting, brainstorming, tool-using |
 | **Vertical** | Solver proposes; reviewers critique; solver refines | Math, coding, software development |
 
-- **Horizontal**: Each expert gets the discussion history; up to 3 rounds; agents may signal `[CONSENSUS]`
+- **Horizontal**: Each expert receives the accumulated discussion history; up to 3 rounds. Agents signal consensus by ending their response with `[CONSENSUS]` (or common markdown variants such as `**CONSENSUS**` and `**CONSENSUS:**`). The orchestrator uses a regex to detect any of these forms — all remaining rounds are skipped once every agent has signalled. Discussion history is truncated from the front when it exceeds `DISCUSSION_HISTORY_MAX_CHARS` to prevent context explosion (see [Known Issues](#known-issues)).
 - **Vertical**: Solver (first expert) proposes; reviewers (remaining experts) critique; up to 3 iterations; reviewers may signal `[APPROVED]`
 - After discussion, the orchestrator synthesizes a final decision via another LLM call
 
-**Adaptation**: All experts are implemented as Agent B instances. The orchestrator sends HTTP requests to `AGENT_B_URLS` in sequence (horizontal) or solver-then-reviewers (vertical).
+**Adaptation**: All experts are implemented as Agent B instances. The orchestrator sends HTTP requests to `AGENT_B_URLS` in sequence (horizontal) or solver-then-reviewers (vertical). Each request embeds the full prompt template (including role and contract), so Agent B does not prepend a duplicate contract header.
 
 ### Stage 3: Action Execution
 
@@ -143,7 +143,9 @@ POST http://agent-a:8101/agentverse
 ```json
 {
   "task": "Your task description here",
-  "max_iterations": 3
+  "max_iterations": 3,
+  "success_threshold": 70,
+  "force_structure": "horizontal"
 }
 ```
 
@@ -151,6 +153,8 @@ POST http://agent-a:8101/agentverse
 |-------|------|----------|-------------|
 | `task` | string | Yes | The user's task or question |
 | `max_iterations` | int | No | Max evaluation loops (1–5, default 3) |
+| `success_threshold` | int | No | Score (0–100) at which the workflow accepts the result and stops iterating (default 70) |
+| `force_structure` | string | No | Override LLM-chosen communication structure: `"horizontal"` or `"vertical"`. Omit to let the recruiter decide. |
 
 ### Response
 
@@ -213,13 +217,17 @@ See [experiment_runner.md](experiment_runner.md) for the full reference: CLI fla
 
 ### Environment Variables (Agent A)
 
+See [agents/README.md § Configuration](../../agents/README.md#configuration) for the full variable reference. AgentVerse-specific variables:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_SERVER_URL` | `http://localhost:8000/chat` | LLM API endpoint |
-| `AGENT_B_URLS` | Comma-separated list | URLs for Agent B instances |
-| `AGENT_B_TIMEOUT_SECONDS` | 120 | Timeout for Agent B calls |
-| `MAX_PARALLEL_WORKERS` | 5 | Max experts in one iteration |
-| `EVAL_MAX_PROMPT_CHARS` | 20000 | Max character budget for evaluation prompt (older result text is truncated if exceeded) |
+| `LLM_MAX_MODEL_LEN` | `4096` | Model context window — must match the vLLM `--max-model-len` setting |
+| `LLM_MAX_TOKENS` | `512` | Default max output tokens per LLM call |
+| `LLM_EVAL_MAX_TOKENS` | `= LLM_MAX_TOKENS` | Max tokens for evaluation-stage LLM calls |
+| `LLM_PROMPT_SAFETY_MARGIN_TOKENS` | `128` | Headroom reserved for chat templates and backend metadata when computing prompt budgets |
+| `MAX_PARALLEL_WORKERS` | `5` | Max experts per iteration (limited by `AGENT_B_URLS` count) |
+| `DISCUSSION_HISTORY_MAX_CHARS` | `6000` | Max chars of discussion history injected per round; older rounds are trimmed from the front |
+| `EVAL_MAX_PROMPT_CHARS` | `20000` | Character-based fallback cap on evaluation prompt when token counting is unavailable |
 
 ### Docker Compose
 
@@ -230,6 +238,39 @@ http://agent-b:8102/subtask,http://agent-b-2:8103/subtask,http://agent-b-3:8104/
 ```
 
 Expert index maps to Agent B instance: index 0 → agent-b-1, index 1 → agent-b-2, etc.
+
+---
+
+## Known Issues
+
+### Context Explosion in Horizontal Discussion (observed 2026-03-23)
+
+**Root causes (three compounding bugs):**
+
+1. **Unbounded discussion history** — agent responses were appended verbatim to `discussion_history` and re-injected into every subsequent prompt. With 5 agents and verbose responses, the prompt for round 3 reached ~16,000 tokens against a 4,096-token context window, causing vLLM to reject or stall requests.
+
+2. **Fragile consensus detection** — agents were instructed to emit `[CONSENSUS]` but frequently produced markdown variants (`**CONSENSUS:**`, `**CONSENSUS**`). The original exact-string check missed these, so `all_consensus` stayed `False` and all 3 rounds ran unconditionally, maximising history growth.
+
+3. **Duplicate contract injection** — `HORIZONTAL_DISCUSSION_PROMPT` (and `EXECUTION_PROMPT`) already embed the agent contract in the template body. The agent_b server was also prepending `"Contract: ..."` to the LLM prompt, sending it twice per call and wasting context tokens.
+
+**Fixes applied:**
+
+1. **History truncation** (`DISCUSSION_HISTORY_MAX_CHARS=6000`): before each round, `discussion_history` is trimmed from the front when it exceeds the character budget, keeping the most recent rounds and prefixing with `...[earlier rounds truncated]...`.
+
+2. **Broadened consensus detection**: the check now uses `_CONSENSUS_SIGNAL_RE`, a compiled regex that matches `[CONSENSUS]`, `**CONSENSUS**`, `**CONSENSUS:**`, and other common forms (case-insensitive). Rounds now short-circuit as intended.
+
+3. **Single contract injection**: `agent_b/server.py` checks `"Your Contract:" in subtask` before prepending the contract to the role-context prefix. Fully-templated subtasks skip the duplicate; raw short subtasks are unaffected.
+
+**Note on the per-turn output cap:** an earlier version of the mitigation imposed a hard `max_tokens=512` on every discussion turn (`DISCUSSION_MAX_TOKENS`). This was removed because it blocked legitimate long outputs (e.g. code generation tasks). The history truncation and early consensus exit together provide sufficient protection.
+
+**Worst-case context budget after fixes (5 agents, 3 rounds):**
+
+| Component | Tokens (approx.) |
+|-----------|-----------------|
+| Base prompt + task | ~300 |
+| Discussion history cap (6,000 chars ÷ 4) | ~1,500 |
+| Agent output (uncapped) | up to remaining budget |
+| **Prompt tokens per call** | **≤ ~1,800** |
 
 ---
 

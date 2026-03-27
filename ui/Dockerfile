@@ -4,6 +4,7 @@ WORKDIR /app
 # Copy all UI directories
 COPY ui/chat /app/chat
 COPY ui/agentverse /app/agentverse
+COPY ui/marble /app/marble
 
 # Copy templates to both locations for access
 COPY agents/templates /app/chat/templates
@@ -43,6 +44,11 @@ RUN echo '<!DOCTYPE html>\n\
         <div class="icon">🌐</div>\n\
         <h2>AgentVerse</h2>\n\
         <p>4-stage workflow with dynamic expert recruitment and collaborative decision-making</p>\n\
+      </a>\n\
+      <a href="/marble/" class="card">\n\
+        <div class="icon">🧱</div>\n\
+        <h2>MARBLE</h2>\n\
+        <p>MultiAgentBench topologies — star, chain, tree, and graph coordination modes</p>\n\
       </a>\n\
     </div>\n\
   </div>\n\

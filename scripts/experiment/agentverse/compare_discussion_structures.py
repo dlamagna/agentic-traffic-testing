@@ -31,6 +31,9 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import _tasks_dir  # noqa: E402
+
 import warnings
 
 try:
@@ -149,7 +152,7 @@ class StructureData:
 def _aggregate_vertical_run_timestamps(
     timestamps: list[float],
     requests: list[dict],
-) -> list[float]:
+) -> tuple[list[float], list[dict]]:
     """Collapse simultaneous reviewer requests in one vertical run.
 
     In vertical discussion, the solver fires alone and then *all* reviewers in
@@ -162,10 +165,15 @@ def _aggregate_vertical_run_timestamps(
       - ("solver",    round_N)  → vertical_solver_iterN         (already solo)
       - ("reviewers", round_N)  → all vertical_reviewer_*_iterN (collapsed)
       - ("other",     seq)      → anything else (kept individually)
+
+    Returns (sorted_timestamps, representative_requests).
+    The representative request for each group is the one with the minimum
+    timestamp; reviewer batches get source="reviewer_batch" to distinguish
+    them from solo solver requests in per-source plots.
     """
     from collections import defaultdict as _dd
 
-    groups: dict[tuple, list[float]] = _dd(list)
+    groups: dict[tuple, list[tuple[float, dict]]] = _dd(list)
     for ts, req in zip(timestamps, requests):
         label    = req.get("label", "")
         round_n  = req.get("round")
@@ -176,9 +184,18 @@ def _aggregate_vertical_run_timestamps(
             key = ("solver", round_n)
         else:
             key = ("other", seq)
-        groups[key].append(ts)
+        groups[key].append((ts, req))
 
-    return sorted(min(ts_list) for ts_list in groups.values())
+    result: list[tuple[float, dict]] = []
+    for key, entries in groups.items():
+        min_ts, rep_req = min(entries, key=lambda x: x[0])
+        # For reviewer batches, override source so per-source plots are legible
+        if key[0] == "reviewers":
+            rep_req = dict(rep_req, source="reviewer_batch")
+        result.append((min_ts, rep_req))
+
+    result.sort(key=lambda x: x[0])
+    return [r[0] for r in result], [r[1] for r in result]
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +276,7 @@ def load_runs(data_dirs: list[Path], filter_discussion: bool = True) -> tuple[
     n_mislabeled = 0
 
     for data_dir in data_dirs:
-        for run_dir in sorted(data_dir.iterdir()):
+        for run_dir in sorted(_tasks_dir(data_dir).iterdir()):
             if not run_dir.is_dir():
                 continue
             resp_path = run_dir / "response.json"
@@ -317,9 +334,8 @@ def load_runs(data_dirs: list[Path], filter_discussion: bool = True) -> tuple[
             else:
                 vert.add_run(task_slug, timestamps, requests)
                 # Also build the aggregated view: collapse simultaneous reviewers
-                agg_ts = _aggregate_vertical_run_timestamps(timestamps, requests)
-                # Pass empty requests list — aggregated timestamps have no 1:1 source mapping
-                vert_agg.add_run(task_slug, agg_ts, [{}] * len(agg_ts))
+                agg_ts, agg_reqs = _aggregate_vertical_run_timestamps(timestamps, requests)
+                vert_agg.add_run(task_slug, agg_ts, agg_reqs)
             counts_by_task[task_slug][structure] += 1
 
     horiz.sort()
@@ -340,9 +356,11 @@ def _hist_kde(ax: plt.Axes, vals: np.ndarray, color: str, label: str, max_iat: f
     lbl = label if n_over == 0 else f"{label} ({n_over} > {max_iat:.0f}s clipped)"
     ax.hist(clipped, bins=35, density=True, alpha=0.35, color=color, label=lbl)
     if SCIPY_AVAILABLE and len(clipped) > 5:
-        kde = scipy_stats.gaussian_kde(clipped)
-        xs = np.linspace(0, max_iat, 400)
-        ax.plot(xs, kde(xs), color=color, linewidth=2.2)
+        kde      = scipy_stats.gaussian_kde(clipped)
+        xs       = np.linspace(0, max_iat, 400)
+        kde_vals = kde(xs)
+        kde_vals[xs < clipped.min()] = 0.0
+        ax.plot(xs, kde_vals, color=color, linewidth=2.2)
     ax.set_xlim(0, max_iat)
 
 
@@ -503,15 +521,17 @@ def plot_structure_iat(sd: StructureData, output_path: Path, max_iat: float,
     ax.set_xlabel("interarrival time (s)")
     ax.set_ylabel("density")
     ax.grid(True, color=GRID_COL, linewidth=0.5)
-    agg_color = H_COLOR if sd.name == "horizontal" else V_COLOR
+    agg_color = H_COLOR if sd.name == "horizontal" else (VA_COLOR if "aggregated" in sd.name else V_COLOR)
     global_clipped = global_iats[global_iats <= max_iat]
     n_over = len(global_iats) - len(global_clipped)
     lbl = f"global (n={len(global_iats)}" + (f", {n_over} clipped)" if n_over else ")")
     ax.hist(global_clipped, bins=40, density=True, alpha=0.5, color=agg_color, label=lbl)
     if SCIPY_AVAILABLE and len(global_clipped) > 5:
-        kde = scipy_stats.gaussian_kde(global_clipped)
-        xs = np.linspace(0, max_iat, 400)
-        ax.plot(xs, kde(xs), color=agg_color, linewidth=2.5, label="KDE")
+        kde      = scipy_stats.gaussian_kde(global_clipped)
+        xs       = np.linspace(0, max_iat, 400)
+        kde_vals = kde(xs)
+        kde_vals[xs < global_clipped.min()] = 0.0
+        ax.plot(xs, kde_vals, color=agg_color, linewidth=2.5, label="KDE")
     ax.set_xlim(0, max_iat)
     for pct, ls in [(50, "--"), (95, ":"), (99, "-.")]:
         pval = np.percentile(global_iats, pct)
@@ -958,9 +978,11 @@ def main() -> None:
     print_summary(horiz, vert, args.max_iat, vert_agg)
 
     # Per-structure 3×2 plots (mirrors plot_results.py format)
-    plot_structure_iat(horiz, output_dir / f"horizontal{suffix}_iat.png",
+    plot_structure_iat(horiz,     output_dir / f"horizontal{suffix}_iat.png",
                        args.max_iat, filter_discussion)
-    plot_structure_iat(vert,  output_dir / f"vertical{suffix}_iat.png",
+    plot_structure_iat(vert,      output_dir / f"vertical{suffix}_iat.png",
+                       args.max_iat, filter_discussion)
+    plot_structure_iat(vert_agg,  output_dir / f"vertical_aggregated{suffix}_iat.png",
                        args.max_iat, filter_discussion)
 
     # Side-by-side comparison 2×2 plot
@@ -971,7 +993,7 @@ def main() -> None:
     # 3-way aggregation hypothesis plot
     plot_aggregated_comparison(
         horiz, vert, vert_agg,
-        output_dir / f"vertical_aggregated{suffix}_iat.png",
+        output_dir / f"aggregation_hypothesis{suffix}_iat.png",
         args.max_iat, filter_discussion,
     )
 

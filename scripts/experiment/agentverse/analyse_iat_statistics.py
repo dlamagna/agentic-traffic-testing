@@ -33,6 +33,9 @@ from datetime import datetime
 from pathlib import Path
 from io import StringIO
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import _tasks_dir  # noqa: E402
+
 try:
     import matplotlib
     matplotlib.use("Agg")
@@ -157,7 +160,7 @@ def load_pools(experiment_dir: Path) -> tuple[
     run_counts: dict[str, int] = {"horizontal": 0, "vertical": 0}
     mislabeled: list[str] = []
 
-    for run_dir in sorted(experiment_dir.iterdir()):
+    for run_dir in sorted(_tasks_dir(experiment_dir).iterdir()):
         if not run_dir.is_dir():
             continue
         resp_path = run_dir / "response.json"
@@ -467,9 +470,11 @@ def generate_plot(
         lbl     = label if n_over == 0 else f"{label}  ({n_over} clipped)"
         ax.hist(clipped, bins=40, density=True, alpha=0.30, color=color, label=lbl)
         if SCIPY_AVAILABLE and len(clipped) > 5:
-            kde = scipy_stats.gaussian_kde(clipped)
-            xs  = np.linspace(0, IAT_MAX_S, 400)
-            ax.plot(xs, kde(xs), color=color, linewidth=2.2)
+            kde      = scipy_stats.gaussian_kde(clipped)
+            xs       = np.linspace(0, IAT_MAX_S, 400)
+            kde_vals = kde(xs)
+            kde_vals[xs < clipped.min()] = 0.0
+            ax.plot(xs, kde_vals, color=color, linewidth=2.2)
     ax.set_xlim(0, IAT_MAX_S)
     ax.legend(fontsize=6.5, loc="upper right")
 

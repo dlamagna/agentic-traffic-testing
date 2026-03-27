@@ -37,6 +37,9 @@ from agents.agent_a.prompts import (
     EXECUTION_PROMPT,
     EVALUATION_PROMPT,
     FINAL_SYNTHESIS_PROMPT,
+    SOLO_DECISION_PROMPT,
+    SOLO_SELF_REVIEW_PROMPT,
+    SOLO_EXECUTION_PROMPT,
     SYNTHESIZE_DISCUSSION_PROMPT,
 )
 
@@ -75,6 +78,16 @@ LLM_EVAL_MAX_TOKENS = int(os.environ.get("LLM_EVAL_MAX_TOKENS", str(LLM_MAX_TOKE
 # chat templates, system prompts, and any backend-side metadata.
 LLM_PROMPT_SAFETY_MARGIN_TOKENS = int(
     os.environ.get("LLM_PROMPT_SAFETY_MARGIN_TOKENS", "128")
+)
+# Hard cap (chars) on the discussion_history string injected into each round's
+# prompt.  Prevents context explosion when individual turn outputs are long.
+DISCUSSION_HISTORY_MAX_CHARS = int(os.environ.get("DISCUSSION_HISTORY_MAX_CHARS", "6000"))
+
+# Regex matching any consensus signal the LLM may emit.  Covers the exact
+# form instructed ("[CONSENSUS]") and common markdown variations the model
+# produces in practice ("**CONSENSUS:**", "**CONSENSUS**", etc.).
+_CONSENSUS_SIGNAL_RE = re.compile(
+    r"(?i)(\[CONSENSUS\]|\*{1,2}CONSENSUS[*:]*\*{0,2})"
 )
 
 _TOKENIZER = None
@@ -184,6 +197,12 @@ class AgentVerseState:
     # decision is skipped and this structure is used directly. None = LLM decides.
     force_structure: Optional[str] = None
 
+    # Optional override: fixed number of experts to recruit.
+    # 0 = solo mode (Agent A handles the entire workflow without sub-agents).
+    # 1-5 = the LLM list is trimmed/padded to hit exactly this count.
+    # None = use whatever the LLM recruits (up to MAX_PARALLEL_WORKERS).
+    force_agent_count: Optional[int] = None
+
     # Stage results
     recruitment: Optional[RecruitmentResult] = None
     decision: Optional[DecisionResult] = None
@@ -270,6 +289,7 @@ class AgentVerseOrchestrator:
         agent_b_contract: Optional[str] = None,
         agent_b_url: Optional[str] = None,
         task_id: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Call an Agent B instance."""
         payload: Dict[str, Any] = {"subtask": subtask, "scenario": scenario}
@@ -277,6 +297,8 @@ class AgentVerseOrchestrator:
             payload["agent_b_role"] = agent_b_role
         if agent_b_contract:
             payload["agent_b_contract"] = agent_b_contract
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         
         target_url = agent_b_url or DEFAULT_AGENT_B_URL
         
@@ -854,10 +876,63 @@ class AgentVerseOrchestrator:
             feedback_context = ""
             if feedback:
                 feedback_context = f"\nFeedback from previous iteration:\n{feedback}\n"
-            
+
+            # Solo mode: 0 sub-agents means Agent A handles everything itself.
+            # Skip the LLM recruitment call entirely — there is nothing to recruit.
+            if state.force_agent_count is not None and state.force_agent_count == 0:
+                reasoning = "Solo mode: Agent A handles the entire workflow without sub-agents."
+                result = RecruitmentResult(
+                    experts=[],
+                    communication_structure=CommunicationStructure.HORIZONTAL,
+                    execution_order=[],
+                    reasoning=reasoning,
+                )
+
+                self.logger.log(
+                    task_id=state.task_id,
+                    event_type="agentverse_recruitment_complete",
+                    message="Solo mode — no experts recruited",
+                    extra={"experts": [], "structure": "horizontal", "reasoning": reasoning},
+                )
+                span.set_attribute("app.expert_count", 0)
+                span.set_attribute("app.solo_mode", True)
+
+                self._send_progress("stage_complete", {
+                    "stage": "recruitment",
+                    "stage_number": 1,
+                    "iteration": state.iteration,
+                    "experts": [],
+                    "communication_structure": "horizontal",
+                    "reasoning": reasoning,
+                })
+                return result
+
+            if state.force_agent_count is not None:
+                _target = max(1, min(state.force_agent_count, MAX_PARALLEL_WORKERS, len(AGENT_B_URLS)))
+                agent_count_instruction = (
+                    f"IMPORTANT: You MUST recruit EXACTLY {_target} expert agent(s). "
+                    f"No more, no fewer."
+                )
+                agent_count_guidance = (
+                    f"Assign roles so that exactly {_target} expert(s) cover the work — "
+                    f"distribute responsibilities across exactly {_target} agent(s)"
+                )
+                agent_count_json_constraint = (
+                    f"IMPORTANT: The \"experts\" list MUST contain exactly {_target} object(s).\n"
+                    "IMPORTANT: \"execution_order\" must list each recruited expert role exactly once "
+                    "and must not include roles absent from \"experts\".\n"
+                )
+            else:
+                agent_count_instruction = ""
+                agent_count_guidance = "How many instances of each role (1-3 per role, max 5 total agents)?"
+                agent_count_json_constraint = ""
+
             prompt = EXPERT_RECRUITMENT_PROMPT.format(
                 task=state.original_task,
                 feedback_context=feedback_context,
+                agent_count_instruction=agent_count_instruction,
+                agent_count_guidance=agent_count_guidance,
+                agent_count_json_constraint=agent_count_json_constraint,
             )
             
             self.logger.log(
@@ -886,6 +961,8 @@ class AgentVerseOrchestrator:
                 else:
                     parsed = {}
             
+            valid_roles = {"planner", "researcher", "executor", "critic", "summarizer"}
+
             # Parse experts
             experts = []
             raw_experts = parsed.get("experts", [])
@@ -915,8 +992,11 @@ class AgentVerseOrchestrator:
                     # Fall back to first available URL
                     endpoint = AGENT_B_URLS[0] if AGENT_B_URLS else DEFAULT_AGENT_B_URL
                 
+                role_raw = str(expert_data.get("role", "executor")).strip().lower()
+                role = role_raw if role_raw in valid_roles else "executor"
+
                 experts.append(Expert(
-                    role=expert_data.get("role", "executor"),
+                    role=role,
                     responsibilities=expert_data.get("responsibilities", ""),
                     contract=expert_data.get("contract", ""),
                     endpoint=endpoint,
@@ -940,6 +1020,41 @@ class AgentVerseOrchestrator:
                     )
                 ]
             
+            # Apply forced agent count override (for controlled experiments).
+            # Trim excess experts or pad with executor defaults to hit the target.
+            if state.force_agent_count is not None:
+                target = max(1, min(state.force_agent_count, MAX_PARALLEL_WORKERS, len(AGENT_B_URLS)))
+                if len(experts) > target:
+                    experts = experts[:target]
+                while len(experts) < target:
+                    idx = len(experts)
+                    experts.append(Expert(
+                        role="executor",
+                        responsibilities="Execute an assigned subtask thoroughly",
+                        contract="You are an executor agent. Complete the assigned task thoroughly.",
+                        endpoint=AGENT_B_URLS[idx % len(AGENT_B_URLS)],
+                        index=idx,
+                    ))
+
+            # Ensure stable, contiguous expert indexes after trimming/padding.
+            for idx, expert in enumerate(experts):
+                expert.index = idx
+
+            # Normalize execution order so it only references recruited experts.
+            # This avoids mismatch when the LLM returns a larger role list than the
+            # forced expert count (e.g., after trimming to target).
+            expert_roles = [e.role for e in experts]
+            raw_execution_order = parsed.get("execution_order", [])
+            normalized_execution_order: List[str] = []
+            if isinstance(raw_execution_order, list):
+                for role in raw_execution_order:
+                    role_str = str(role).strip().lower()
+                    if role_str in expert_roles and role_str not in normalized_execution_order:
+                        normalized_execution_order.append(role_str)
+            for role in expert_roles:
+                if role not in normalized_execution_order:
+                    normalized_execution_order.append(role)
+
             # Parse communication structure from LLM response
             structure_str = parsed.get("communication_structure", "horizontal")
             try:
@@ -970,7 +1085,7 @@ class AgentVerseOrchestrator:
             result = RecruitmentResult(
                 experts=experts,
                 communication_structure=structure,
-                execution_order=parsed.get("execution_order", [e.role for e in experts]),
+                execution_order=normalized_execution_order,
                 reasoning=reasoning,
             )
             
@@ -1038,8 +1153,10 @@ class AgentVerseOrchestrator:
                 event_type="agentverse_decision_start",
                 message=f"Starting {recruitment.communication_structure.value} decision-making",
             )
-            
-            if recruitment.communication_structure == CommunicationStructure.HORIZONTAL:
+
+            if not recruitment.experts:
+                result = self._solo_decision(state)
+            elif recruitment.communication_structure == CommunicationStructure.HORIZONTAL:
                 result = self._horizontal_discussion(state, recruitment)
             else:
                 result = self._vertical_decision(state, recruitment)
@@ -1071,6 +1188,11 @@ class AgentVerseOrchestrator:
             round_responses = []
             all_consensus = True
             
+            # Truncate history to avoid context explosion across rounds.
+            # Keep the tail (most recent rounds) when over the char limit.
+            if len(discussion_history) > DISCUSSION_HISTORY_MAX_CHARS:
+                discussion_history = "...[earlier rounds truncated]...\n" + discussion_history[-DISCUSSION_HISTORY_MAX_CHARS:]
+
             for expert in recruitment.experts:
                 prompt = HORIZONTAL_DISCUSSION_PROMPT.format(
                     role=expert.role,
@@ -1090,7 +1212,9 @@ class AgentVerseOrchestrator:
                     response = self._call_agent_b(
                         subtask=prompt,
                         agent_b_role=expert.role,
-                        agent_b_contract=expert.contract,
+                        # Contract is already embedded in HORIZONTAL_DISCUSSION_PROMPT;
+                        # omitting it here avoids the agent_b server prepending it
+                        # a second time and wasting context tokens.
                         agent_b_url=expert.endpoint,
                         headers=headers,
                         task_id=state.task_id,
@@ -1136,10 +1260,10 @@ class AgentVerseOrchestrator:
                     "expert": expert.role,
                     "index": expert.index,
                     "response": output,
-                    "consensus": "[CONSENSUS]" in output,
+                    "consensus": bool(_CONSENSUS_SIGNAL_RE.search(output)),
                 })
-                
-                if "[CONSENSUS]" not in output:
+
+                if not _CONSENSUS_SIGNAL_RE.search(output):
                     all_consensus = False
             
             # Build history for next round
@@ -1425,6 +1549,109 @@ class AgentVerseOrchestrator:
             reviewer_roles=[r.role for r in reviewers],
         )
     
+    def _solo_decision(
+        self,
+        state: AgentVerseState,
+        max_revisions: int = 2,
+    ) -> DecisionResult:
+        """Solo decision-making with self-critique.
+
+        Agent A proposes a plan, reviews it, and optionally revises.  This
+        mirrors the vertical solver/reviewer pattern but with Agent A playing
+        both roles.  The loop runs at most *max_revisions* review rounds; it
+        exits early if the self-review returns [APPROVED].
+        """
+        feedback_context = ""
+        if state.iteration > 0 and state.evaluation and state.evaluation.feedback:
+            feedback_context = (
+                f"\nFeedback from previous iteration:\n{state.evaluation.feedback}\n"
+            )
+
+        # --- Propose initial plan ---
+        prompt = SOLO_DECISION_PROMPT.format(
+            task=state.original_task,
+            feedback_context=feedback_context,
+        )
+
+        headers: Dict[str, str] = {}
+        propagate.inject(headers)
+        proposal, _llm_meta = self._call_llm_tracked(
+            state, prompt, stage="decision", label="solo_decision_propose",
+            agent_role="orchestrator", headers=headers, max_tokens=2048,
+        )
+
+        discussion_rounds: List[Dict[str, Any]] = []
+
+        # --- Self-review loop: critique → revise ---
+        approved = False
+        for revision in range(1, max_revisions + 1):
+            review_prompt = SOLO_SELF_REVIEW_PROMPT.format(
+                task=state.original_task,
+                proposal=proposal,
+            )
+
+            headers = {}
+            propagate.inject(headers)
+            critique, _llm_meta = self._call_llm_tracked(
+                state, review_prompt,
+                stage="decision",
+                label=f"solo_self_review_{revision}",
+                agent_role="orchestrator",
+                headers=headers,
+            )
+
+            critique_approved = "[APPROVED]" in critique
+            discussion_rounds.append({
+                "revision": revision,
+                "proposal": proposal,
+                "critique": critique,
+                "approved": critique_approved,
+            })
+
+            self._send_progress("discussion_round", {
+                "stage": "decision",
+                "round": revision,
+                "iteration": state.iteration,
+                "responses": [
+                    {"expert": "orchestrator", "response": critique,
+                     "consensus": critique_approved},
+                ],
+                "consensus": critique_approved,
+            })
+
+            if critique_approved:
+                approved = True
+                break
+
+            # Revise the plan incorporating the self-critique
+            revise_prompt = SOLO_DECISION_PROMPT.format(
+                task=state.original_task,
+                feedback_context=(
+                    f"\nYour previous plan:\n{proposal}\n\n"
+                    f"Your self-review identified these issues:\n{critique}\n\n"
+                    "Revise the plan to address the critique.\n"
+                ),
+            )
+            headers = {}
+            propagate.inject(headers)
+            proposal, _llm_meta = self._call_llm_tracked(
+                state, revise_prompt,
+                stage="decision",
+                label=f"solo_decision_revise_{revision}",
+                agent_role="orchestrator",
+                headers=headers,
+                max_tokens=2048,
+            )
+
+        return DecisionResult(
+            final_decision=proposal,
+            discussion_rounds=discussion_rounds,
+            consensus_reached=approved,
+            structure_used="solo",
+            solver_role=None,
+            reviewer_roles=[],
+        )
+
     def _synthesize_discussion(
         self,
         state: AgentVerseState,
@@ -1478,7 +1705,14 @@ class AgentVerseOrchestrator:
                 event_type="agentverse_execution_start",
                 message="Starting action execution",
             )
-            
+
+            # Solo mode: Agent A executes directly via LLM when there are
+            # no sub-agents.  The output is packaged in the same shape as a
+            # normal expert output so downstream stages (evaluation,
+            # synthesis) work unchanged.
+            if not recruitment.experts:
+                return self._solo_execution(state, decision)
+
             # Create subtasks based on decision
             subtasks = self._create_subtasks(state, recruitment, decision)
             
@@ -1655,6 +1889,68 @@ class AgentVerseOrchestrator:
             
             return result
     
+    def _solo_execution(
+        self,
+        state: AgentVerseState,
+        decision: DecisionResult,
+    ) -> ExecutionResult:
+        """Execute the task directly via Agent A's LLM when there are no sub-agents."""
+        prompt = SOLO_EXECUTION_PROMPT.format(
+            task=state.original_task,
+            decision_context=decision.final_decision[:2000],
+        )
+
+        headers: Dict[str, str] = {}
+        propagate.inject(headers)
+        try:
+            response, _llm_meta = self._call_llm_tracked(
+                state, prompt, stage="execution", label="solo_execution",
+                agent_role="orchestrator", headers=headers, max_tokens=2048,
+            )
+            output = {
+                "expert": "orchestrator",
+                "index": 0,
+                "subtask": "Solo execution by Agent A",
+                "output": response,
+                "success": True,
+            }
+            success, failure = 1, 0
+        except Exception as exc:
+            output = {
+                "expert": "orchestrator",
+                "index": 0,
+                "subtask": "Solo execution by Agent A",
+                "output": f"Execution failed: {exc}",
+                "success": False,
+            }
+            success, failure = 0, 1
+
+        result = ExecutionResult(
+            outputs=[output],
+            success_count=success,
+            failure_count=failure,
+        )
+
+        self._send_progress("execution_result", {
+            "stage": "execution",
+            "iteration": state.iteration,
+            "expert": "orchestrator",
+            "success": output["success"],
+            "output_preview": output["output"][:200],
+            "completed": 1,
+            "total": 1,
+        })
+        self._send_progress("stage_complete", {
+            "stage": "execution",
+            "stage_number": 3,
+            "iteration": state.iteration,
+            "success_count": success,
+            "failure_count": failure,
+            "total": 1,
+        })
+
+        return result
+
     def _create_subtasks(
         self,
         state: AgentVerseState,
@@ -1872,12 +2168,17 @@ Focus on what is relevant to your expertise.
         max_iterations: int = 3,
         success_threshold: int = 70,
         force_structure: Optional[str] = None,
+        force_agent_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run the complete AgentVerse 4-stage workflow.
         success_threshold: score (0-100) required to accept and stop iterating.
         force_structure: if "horizontal" or "vertical", overrides the LLM's
             own choice of discussion structure. None (default) = LLM decides.
+        force_agent_count: if set, clamps the recruited expert list to exactly
+            this many agents (trimming or padding with executor defaults).
+            0 = solo mode (Agent A handles the workflow without sub-agents).
+            None (default) = use whatever the LLM recruits.
         """
         with self.tracer.start_as_current_span(
             "orchestrator.run_workflow",
@@ -1887,6 +2188,17 @@ Focus on what is relevant to your expertise.
             span.set_attribute("app.success_threshold", success_threshold)
             if force_structure:
                 span.set_attribute("app.force_structure", force_structure)
+            if force_agent_count is not None:
+                span.set_attribute("app.force_agent_count", force_agent_count)
+
+            _force_agent_count: Optional[int] = None
+            if force_agent_count is not None:
+                try:
+                    n = int(force_agent_count)
+                    if n >= 0:
+                        _force_agent_count = n
+                except (TypeError, ValueError):
+                    pass
 
             state = AgentVerseState(
                 task_id=task_id,
@@ -1894,6 +2206,7 @@ Focus on what is relevant to your expertise.
                 max_iterations=max_iterations,
                 success_threshold=min(100, max(0, success_threshold)),
                 force_structure=force_structure if force_structure in ("horizontal", "vertical") else None,
+                force_agent_count=_force_agent_count,
             )
             
             self.logger.log(
@@ -2028,8 +2341,14 @@ Focus on what is relevant to your expertise.
         if not state.execution:
             return "No execution results available."
         
+        _max_output_chars = 8000
+        def _cap(text: str) -> str:
+            if len(text) <= _max_output_chars:
+                return text
+            return text[:_max_output_chars] + f"\n... [truncated {len(text) - _max_output_chars} chars]"
+
         results_text = "\n\n".join([
-            f"[{output['expert']}]:\n{output['output']}"
+            f"[{output['expert']}]:\n{_cap(output['output'])}"
             for output in state.execution.outputs
         ])
         

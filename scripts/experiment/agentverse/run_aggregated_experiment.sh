@@ -12,16 +12,26 @@
 #   - Launch run_experiment.sh in the background via nohup
 #
 # Usage:
-#   ./run_aggregated_experiment.sh <iterations> [-b]
+#   ./run_aggregated_experiment.sh <iterations> [-b] [-s] [-A <int>]
 #
 # Options:
 #   <iterations>   Iterations per task (required)
 #   -b             Balanced mode: 50 % horizontal + 50 % vertical
-#                  (forwarded to run_experiment.sh -b)
+#                  (forwarded to run_experiment.sh -b; incompatible with -s)
+#   -s             Sweep mode: solo (0 agents) + all combos of structure × agent
+#                  count 1–5 — 11 combos (forwarded to run_experiment.sh -s;
+#                  incompatible with -b)
+#   -A <int>       Force a fixed number of sub-agents (experts) per run.
+#                  0–5 (forwarded to run_experiment.sh -A <int>).
+#                  0 = solo mode (Agent A only, no sub-agents).
+#                  Ignored when -s is active. Omit to let the LLM decide.
 #
 # Examples:
 #   ./run_aggregated_experiment.sh 50
 #   ./run_aggregated_experiment.sh 25 -b
+#   ./run_aggregated_experiment.sh 25 -b -A 3
+#   ./run_aggregated_experiment.sh 50 -A 1
+#   ./run_aggregated_experiment.sh 10 -s
 # =============================================================================
 set -euo pipefail
 
@@ -44,19 +54,38 @@ CRON_TAG="# agentic-experiment-monitor"
 
 ITERATIONS="${1:-}"
 BALANCED_FLAG=""
+SWEEP_FLAG=""
+AGENT_COUNT_FLAG=""
 
-# Parse optional -b flag (can appear as second positional or anywhere)
+# Parse optional flags from remaining args (can appear in any order after <iterations>)
+_NEXT_IS_A=0
 for arg in "${@:2}"; do
-    if [[ "$arg" == "-b" ]]; then
+    if [[ $_NEXT_IS_A -eq 1 ]]; then
+        AGENT_COUNT_FLAG="-A $arg"
+        _NEXT_IS_A=0
+    elif [[ "$arg" == "-b" ]]; then
         BALANCED_FLAG="-b"
+    elif [[ "$arg" == "-s" ]]; then
+        SWEEP_FLAG="-s"
+    elif [[ "$arg" == "-A" ]]; then
+        _NEXT_IS_A=1
+    elif [[ "$arg" =~ ^-A([0-9]+)$ ]]; then
+        AGENT_COUNT_FLAG="-A ${BASH_REMATCH[1]}"
     fi
 done
 
+if [[ -n "$BALANCED_FLAG" && -n "$SWEEP_FLAG" ]]; then
+    echo "ERROR: -b (balanced) and -s (sweep) cannot be used together"
+    exit 1
+fi
+
 if [[ -z "$ITERATIONS" ]]; then
     echo "Usage:"
-    echo "  ./run_aggregated_experiment.sh <iterations> [-b]"
+    echo "  ./run_aggregated_experiment.sh <iterations> [-b] [-s] [-A <int>]"
     echo ""
-    echo "  -b   Balanced mode: 50 % horizontal + 50 % vertical"
+    echo "  -b       Balanced mode: 50 % horizontal + 50 % vertical"
+    echo "  -s       Sweep mode: all combos of structure × agent count 1–5"
+    echo "  -A <int> Force a fixed number of sub-agents per run (ignored with -s)"
     exit 1
 fi
 
@@ -169,7 +198,11 @@ echo "[runner] Stabilisation wait complete"
 
 echo "================================="
 echo "Starting experiment"
-echo "Iterations: $ITERATIONS${BALANCED_FLAG:+  (balanced 50/50)}"
+_EXP_MODE=""
+[[ -n "$BALANCED_FLAG" ]] && _EXP_MODE=" (balanced 50/50)"
+[[ -n "$SWEEP_FLAG" ]]    && _EXP_MODE=" (sweep: solo + H+V × agents 1–5)"
+[[ -n "$AGENT_COUNT_FLAG" && -z "$SWEEP_FLAG" ]] && _EXP_MODE="${_EXP_MODE} (fixed agents: ${AGENT_COUNT_FLAG#-A })"
+echo "Iterations: $ITERATIONS${_EXP_MODE}"
 echo "================================="
 
 
@@ -196,7 +229,7 @@ echo "[runner] Monitor cron installed"
 # Tell run_experiment.sh not to reset again — we already reset above.
 export SKIP_RESET=1
 # shellcheck disable=SC2086
-nohup "$RUN_SCRIPT" -n "$ITERATIONS" $BALANCED_FLAG > "$SCRIPT_DIR/experiment.log" 2>&1 &
+nohup "$RUN_SCRIPT" -n "$ITERATIONS" $BALANCED_FLAG $SWEEP_FLAG $AGENT_COUNT_FLAG > "$SCRIPT_DIR/experiment.log" 2>&1 &
 
 PID=$!
 
@@ -205,8 +238,8 @@ echo "[runner] PID: $PID"
 
 sleep 3
 
-# Detect the most-recently created experiment dir (balanced or normal)
-EXPERIMENT_DIR=$(ls -td "$REPO_ROOT/data/runs"/{balanced_,}experiment_* 2>/dev/null | head -n1 || true)
+# Detect the most-recently created experiment dir (any prefix variant)
+EXPERIMENT_DIR=$(ls -td "$REPO_ROOT/data/agentverse/"*experiment_* 2>/dev/null | head -n1 || true)
 
 if [[ -z "$EXPERIMENT_DIR" ]]; then
     echo "[runner] ERROR: Could not detect experiment directory"

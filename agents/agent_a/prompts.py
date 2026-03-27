@@ -13,14 +13,16 @@ User Task:
 
 {feedback_context}
 
+{agent_count_instruction}
+
 Based on this task, determine:
 1. What specialized roles are needed? Choose from: planner, researcher, executor, critic, summarizer
-2. How many instances of each role (1-3 per role, max 5 total agents)?
+2. {agent_count_guidance}
 3. What specific responsibilities should each role have?
 4. Should agents use horizontal (democratic discussion) or vertical (solver + reviewers) communication?
 
 IMPORTANT: Return ONLY valid JSON with no extra text.
-The JSON MUST have this shape (types, not examples):
+{agent_count_json_constraint}The JSON MUST have this shape (types, not examples):
 - "experts": list of objects, each with:
   - "role": one of ["planner", "researcher", "executor", "critic", "summarizer"]
   - "responsibilities": string describing what this expert will do
@@ -178,6 +180,54 @@ IMPORTANT INSTRUCTIONS:
 8. The answer must make complete sense on its own without any additional context
 
 Produce the complete final answer now:
+"""
+
+SOLO_DECISION_PROMPT = """You are the Orchestrator (Agent A) working solo — there are no expert sub-agents.
+You must analyze the task yourself and decide on the best approach to solve it.
+
+Original Task:
+{task}
+
+{feedback_context}
+
+Analyze this task and produce a detailed plan of action:
+1. What are the key aspects and requirements of this task?
+2. What approach will you take to solve it step by step?
+3. What are potential challenges or edge cases to watch for?
+
+Provide a clear, actionable plan that you will execute yourself in the next stage.
+"""
+
+SOLO_SELF_REVIEW_PROMPT = """You are the Orchestrator (Agent A) reviewing your own proposed plan.
+There are no expert sub-agents — you must be your own critic.
+
+Original Task:
+{task}
+
+Your Proposed Plan:
+{proposal}
+
+Critically review your plan:
+1. Does the plan fully address every aspect of the original task?
+2. Are there logical errors, missing steps, or incorrect assumptions?
+3. Are there edge cases or requirements the plan overlooks?
+4. Is the plan specific and actionable enough to execute successfully?
+
+If the plan is sound and complete, respond with [APPROVED] and briefly explain why.
+Otherwise, provide specific critique and suggest concrete improvements.
+"""
+
+SOLO_EXECUTION_PROMPT = """You are the Orchestrator (Agent A) working solo — there are no expert sub-agents.
+Execute the task directly and produce a complete, thorough result.
+
+Original Task:
+{task}
+
+Your Plan:
+{decision_context}
+
+Now execute the plan fully. Provide a detailed, complete result that addresses every aspect of the original task.
+Be specific and thorough — this output will be evaluated for quality.
 """
 
 SYNTHESIZE_DISCUSSION_PROMPT = """You are the Orchestrator. Synthesize the discussion into a clear action plan.

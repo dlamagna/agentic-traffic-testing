@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from opentelemetry import propagate
 from opentelemetry.trace import SpanKind
@@ -98,6 +98,9 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
             agent_b_contract = (
                 data.get("agent_b_contract") if isinstance(data.get("agent_b_contract"), str) else None
             )
+            max_tokens: Optional[int] = None
+            if isinstance(data.get("max_tokens"), int):
+                max_tokens = data["max_tokens"]
             if not isinstance(subtask, str) or not subtask:
                 self._send_json(400, {"error": "Missing 'subtask' field"})
                 return
@@ -140,10 +143,15 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 tool_call_id=tool_call_id,
             )
 
+            # Build the role context prefix.  When the subtask is already a
+            # fully-formatted prompt template (e.g. HORIZONTAL_DISCUSSION_PROMPT
+            # or EXECUTION_PROMPT), it embeds "Your Contract:" itself, so we
+            # skip the contract line to avoid sending it twice and wasting tokens.
+            subtask_has_contract = "Your Contract:" in subtask
             role_context_parts = []
             if agent_b_role:
                 role_context_parts.append(f"Role: {agent_b_role}")
-            if agent_b_contract:
+            if agent_b_contract and not subtask_has_contract:
                 role_context_parts.append(f"Contract: {agent_b_contract}")
             role_context = "\n".join(role_context_parts)
             prompt = (
@@ -165,7 +173,7 @@ class AgentBRequestHandler(BaseHTTPRequestHandler):
                 if incoming_request_id:
                     headers["X-Request-ID"] = incoming_request_id
                 headers["X-Task-ID"] = task_id
-                output, llm_meta = call_llm(prompt, headers=headers)
+                output, llm_meta = call_llm(prompt, headers=headers, max_tokens=max_tokens)
                 end_time_utc = datetime.now(timezone.utc).isoformat()
                 agent_b_span_meta = span_to_metadata(span_llm)
                 self.metrics_logger.log_call(

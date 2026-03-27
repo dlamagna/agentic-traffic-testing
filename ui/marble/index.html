@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MARBLE - Multi-Agent Benchmark</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #334155;
+      --border: #334155;
+      --border-active: #3b82f6;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --green: #22c55e;
+      --orange: #f59e0b;
+      --red: #ef4444;
+      --purple: #a855f7;
+      --teal: #14b8a6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+    }
+    .header h1 { font-size: 20px; display: flex; align-items: center; gap: 10px; }
+    .header-links { display: flex; gap: 16px; }
+    .header-links a { color: var(--text-secondary); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+    .header-links a:hover { color: var(--text-primary); }
+    .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    .layout { display: grid; grid-template-columns: 380px 1fr; gap: 24px; align-items: start; }
+    @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+    .card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+    .card h2 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .card + .card { margin-top: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; margin-top: 12px; }
+    label:first-of-type { margin-top: 0; }
+    select, input[type="text"], input[type="number"] {
+      width: 100%; padding: 10px 12px; background: var(--bg-tertiary); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text-primary); font-size: 14px; font-family: inherit; transition: border-color 0.2s;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--accent); }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px;
+      background: var(--accent); color: white; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px;
+      background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+      border-radius: 8px; font-size: 13px; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-secondary:hover { border-color: var(--text-secondary); color: var(--text-primary); }
+    .button-row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    .topology-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    .topology-card {
+      background: var(--bg-tertiary); border: 2px solid var(--border); border-radius: 10px;
+      padding: 14px; cursor: pointer; transition: all 0.25s; text-align: center;
+    }
+    .topology-card:hover { border-color: var(--text-muted); }
+    .topology-card.selected { border-color: var(--accent); background: rgba(59,130,246,0.08); }
+    .topology-card svg { display: block; margin: 0 auto 8px; }
+    .topology-card .topo-name { font-size: 13px; font-weight: 600; }
+    .topology-card .topo-desc { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .agent-list { display: flex; flex-direction: column; gap: 8px; }
+    .agent-chip {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+    }
+    .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .agent-chip .agent-role { color: var(--text-secondary); font-size: 11px; margin-left: auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-bar {
+      display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px;
+    }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+    .status-dot.ready { background: var(--green); }
+    .status-dot.running { background: var(--orange); animation: pulse 1.5s infinite; }
+    .status-dot.error { background: var(--red); }
+    .status-dot.done { background: var(--green); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .progress-bar { height: 4px; background: var(--bg-tertiary); border-radius: 2px; margin-bottom: 20px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.4s ease; }
+
+    /* Live topology visualization */
+    #liveTopologySection { display: none; }
+    #liveTopologySection.active { display: block; }
+    .topo-viz-container {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; margin-bottom: 16px; position: relative; overflow: hidden;
+    }
+    .topo-viz-container svg { display: block; margin: 0 auto; }
+    .topo-viz-container svg .agent-node { cursor: default; }
+    .topo-viz-container svg .agent-label { font-size: 10px; fill: var(--text-primary); text-anchor: middle; font-weight: 600; }
+    .topo-viz-container svg .agent-role-label { font-size: 8px; fill: var(--text-muted); text-anchor: middle; }
+    .topo-viz-container svg .edge-line { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .topo-viz-container svg .edge-active { stroke: var(--accent); stroke-width: 2; }
+    .topo-viz-container svg .edge-comm { stroke: var(--purple); stroke-width: 2; stroke-dasharray: 6,3; }
+    @keyframes flowPulse { 0% { stroke-dashoffset: 20; } 100% { stroke-dashoffset: 0; } }
+    .topo-viz-container svg .edge-flowing {
+      stroke-dasharray: 10,10; animation: flowPulse 0.8s linear infinite;
+    }
+    .node-idle { opacity: 0.5; }
+    .node-active { opacity: 1; filter: drop-shadow(0 0 6px var(--accent)); }
+    .node-done { opacity: 0.85; }
+    .node-error { opacity: 1; filter: drop-shadow(0 0 6px var(--red)); }
+
+    /* Phase indicator */
+    .phase-bar {
+      display: flex; gap: 4px; margin-bottom: 16px; padding: 8px 12px;
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
+    }
+    .phase-pill {
+      padding: 4px 12px; border-radius: 16px; font-size: 11px; font-weight: 600;
+      background: var(--bg-tertiary); color: var(--text-muted); transition: all 0.3s;
+    }
+    .phase-pill.active { background: var(--accent); color: white; }
+    .phase-pill.completed { background: rgba(34,197,94,0.15); color: var(--green); }
+
+    /* Live event feed */
+    .event-feed {
+      max-height: 220px; overflow-y: auto; font-size: 12px; font-family: 'SF Mono','Fira Code',monospace;
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+    }
+    .event-line { padding: 2px 0; display: flex; gap: 8px; border-bottom: 1px solid rgba(51,65,85,0.4); }
+    .event-line:last-child { border-bottom: none; }
+    .event-time { color: var(--text-muted); flex-shrink: 0; min-width: 50px; }
+    .event-type { color: var(--accent); font-weight: 600; flex-shrink: 0; min-width: 100px; }
+    .event-type.phase { color: var(--teal); }
+    .event-type.call { color: var(--orange); }
+    .event-type.comm { color: var(--purple); }
+    .event-type.err { color: var(--red); }
+    .event-detail { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Result sections */
+    .result-section {
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 16px;
+    }
+    .result-section h3 { font-size: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+    .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .score-card { background: var(--bg-tertiary); border-radius: 8px; padding: 12px; text-align: center; }
+    .score-card .score-value { font-size: 24px; font-weight: 700; color: var(--accent); }
+    .score-card .score-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .metric-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .metric-row:last-child { border-bottom: none; }
+    .metric-row .metric-label { color: var(--text-secondary); }
+    .metric-row .metric-value { font-weight: 600; }
+    .output-box {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+      font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto;
+    }
+    .timeline { margin-top: 12px; }
+    .timeline-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .timeline-item:last-child { border-bottom: none; }
+    .timeline-dot {
+      width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: white;
+      font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 2px;
+    }
+    .timeline-body { flex: 1; min-width: 0; }
+    .timeline-title { font-size: 13px; font-weight: 600; }
+    .timeline-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .raw-json {
+      background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+      font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; overflow-x: auto; max-height: 500px;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-secondary); display: none;
+    }
+    .hidden { display: none !important; }
+    .hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .empty-state { text-align: center; padding: 24px; color: var(--text-muted); font-size: 13px; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .tag-blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .tag-green { background: rgba(34,197,94,0.15); color: #4ade80; }
+    .tag-purple { background: rgba(168,85,247,0.15); color: #c084fc; }
+    .tag-orange { background: rgba(245,158,11,0.15); color: #fbbf24; }
+
+    /* Live metrics counter */
+    .live-metrics {
+      display: flex; gap: 16px; padding: 8px 12px; margin-bottom: 12px;
+      background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+    }
+    .live-metric { display: flex; gap: 4px; align-items: center; }
+    .live-metric .lm-val { font-weight: 700; color: var(--accent); }
+    .live-metric .lm-label { color: var(--text-muted); }
+
+    /* Elapsed timer */
+    .elapsed-timer {
+      font-family: 'SF Mono','Fira Code',monospace;
+      font-size: 18px; font-weight: 700; color: var(--orange);
+      letter-spacing: 0.5px;
+    }
+    .elapsed-timer.done { color: var(--green); }
+    .elapsed-timer.error { color: var(--red); }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      MARBLE Benchmark
+    </h1>
+    <nav class="header-links">
+      <a href="../">Home</a>
+      <a href="../chat/">Classic Chat</a>
+      <a href="../agentverse/">AgentVerse</a>
+      <a href="https://arxiv.org/abs/2503.01935" target="_blank">Paper</a>
+      <a href="https://github.com/ulab-uiuc/MARBLE" target="_blank">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="container">
+    <div class="layout">
+      <!-- Left Panel -->
+      <div>
+        <div class="card">
+          <h2>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Configuration
+          </h2>
+          <label for="domain">Domain</label>
+          <select id="domain">
+            <option value="research" selected>Research (5 agents, full mesh)</option>
+            <option value="coding">Coding (3 agents, collaborative)</option>
+            <option value="bargaining">Bargaining (4 agents, hierarchical)</option>
+          </select>
+          <label>Topology</label>
+          <div class="topology-grid">
+            <div class="topology-card" data-topo="star" onclick="selectTopology('star')">
+              <svg width="64" height="50" viewBox="0 0 80 50"><circle cx="40" cy="12" r="7" fill="var(--accent)" opacity="0.9"/><circle cx="14" cy="42" r="6" fill="var(--teal)" opacity="0.7"/><circle cx="40" cy="42" r="6" fill="var(--teal)" opacity="0.7"/><circle cx="66" cy="42" r="6" fill="var(--teal)" opacity="0.7"/><line x1="40" y1="19" x2="14" y2="36" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="40" y1="19" x2="40" y2="36" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="40" y1="19" x2="66" y2="36" stroke="var(--text-muted)" stroke-width="1.5"/><text x="40" y="15" fill="white" font-size="8" text-anchor="middle">A</text></svg>
+              <div class="topo-name">Star</div><div class="topo-desc">Hub-spoke fan-out</div>
+            </div>
+            <div class="topology-card" data-topo="chain" onclick="selectTopology('chain')">
+              <svg width="64" height="50" viewBox="0 0 80 50"><circle cx="10" cy="25" r="6" fill="var(--accent)" opacity="0.9"/><circle cx="33" cy="25" r="6" fill="var(--teal)" opacity="0.7"/><circle cx="56" cy="25" r="6" fill="var(--teal)" opacity="0.7"/><circle cx="72" cy="25" r="5" fill="var(--purple)" opacity="0.7"/><line x1="16" y1="25" x2="27" y2="25" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="39" y1="25" x2="50" y2="25" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="62" y1="25" x2="67" y2="25" stroke="var(--text-muted)" stroke-width="1.5"/><text x="10" y="28" fill="white" font-size="7" text-anchor="middle">A</text></svg>
+              <div class="topo-name">Chain</div><div class="topo-desc">Sequential handoff</div>
+            </div>
+            <div class="topology-card" data-topo="tree" onclick="selectTopology('tree')">
+              <svg width="64" height="50" viewBox="0 0 80 50"><circle cx="40" cy="8" r="6" fill="var(--accent)" opacity="0.9"/><circle cx="22" cy="28" r="5" fill="var(--teal)" opacity="0.7"/><circle cx="58" cy="28" r="5" fill="var(--teal)" opacity="0.7"/><circle cx="12" cy="45" r="4" fill="var(--purple)" opacity="0.6"/><circle cx="32" cy="45" r="4" fill="var(--purple)" opacity="0.6"/><circle cx="48" cy="45" r="4" fill="var(--purple)" opacity="0.6"/><circle cx="68" cy="45" r="4" fill="var(--purple)" opacity="0.6"/><line x1="40" y1="14" x2="22" y2="23" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="40" y1="14" x2="58" y2="23" stroke="var(--text-muted)" stroke-width="1.5"/><line x1="22" y1="33" x2="12" y2="41" stroke="var(--text-muted)" stroke-width="1"/><line x1="22" y1="33" x2="32" y2="41" stroke="var(--text-muted)" stroke-width="1"/><line x1="58" y1="33" x2="48" y2="41" stroke="var(--text-muted)" stroke-width="1"/><line x1="58" y1="33" x2="68" y2="41" stroke="var(--text-muted)" stroke-width="1"/><text x="40" y="11" fill="white" font-size="7" text-anchor="middle">A</text></svg>
+              <div class="topo-name">Tree</div><div class="topo-desc">Hierarchical delegation</div>
+            </div>
+            <div class="topology-card selected" data-topo="graph" onclick="selectTopology('graph')">
+              <svg width="64" height="50" viewBox="0 0 80 50"><circle cx="40" cy="8" r="6" fill="var(--accent)" opacity="0.9"/><circle cx="14" cy="30" r="5" fill="var(--teal)" opacity="0.7"/><circle cx="66" cy="30" r="5" fill="var(--teal)" opacity="0.7"/><circle cx="24" cy="46" r="5" fill="var(--purple)" opacity="0.6"/><circle cx="56" cy="46" r="5" fill="var(--purple)" opacity="0.6"/><line x1="40" y1="14" x2="14" y2="25" stroke="var(--text-muted)" stroke-width="1"/><line x1="40" y1="14" x2="66" y2="25" stroke="var(--text-muted)" stroke-width="1"/><line x1="14" y1="35" x2="24" y2="41" stroke="var(--text-muted)" stroke-width="1"/><line x1="66" y1="35" x2="56" y2="41" stroke="var(--text-muted)" stroke-width="1"/><line x1="14" y1="30" x2="66" y2="30" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="3,3"/><line x1="24" y1="46" x2="56" y2="46" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="3,3"/><text x="40" y="11" fill="white" font-size="7" text-anchor="middle">A</text></svg>
+              <div class="topo-name">Graph</div><div class="topo-desc">Decentralized + peer comm</div>
+            </div>
+          </div>
+          <label for="maxIterations">Max Iterations</label>
+          <select id="maxIterations">
+            <option value="1">1 iteration</option>
+            <option value="2">2 iterations</option>
+            <option value="3" selected>3 iterations (default)</option>
+          </select>
+          <label for="taskId">Task ID (optional)</label>
+          <input id="taskId" type="number" min="1" max="100" placeholder="Random task (1-100)">
+          <div class="hint">Leave empty to pick a random task from the domain.</div>
+          <label for="endpoint">Agent A Endpoint</label>
+          <input id="endpoint" type="text" placeholder="http://localhost:8101">
+          <label>Skip LLM-as-Judge Scoring</label>
+          <select id="skipJudge">
+            <option value="false" selected>No (score results)</option>
+            <option value="true">Yes (topology only, faster)</option>
+          </select>
+          <div class="button-row">
+            <button id="runBtn" class="btn-primary" onclick="runMarble()">Run MARBLE Task</button>
+            <button class="btn-secondary" onclick="clearResults()">Clear</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Agent Preview
+          </h2>
+          <div id="agentPreview" class="agent-list"><div class="empty-state">Select a domain to preview agents</div></div>
+        </div>
+      </div>
+
+      <!-- Right Panel -->
+      <div>
+        <div class="status-bar">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText" style="font-size:14px;">Ready</span>
+          <span id="statusDetail" style="margin-left:auto;font-size:12px;color:var(--text-muted);"></span>
+          <span class="elapsed-timer" id="elapsedTimer"></span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+
+        <!-- Live topology visualization -->
+        <div id="liveTopologySection">
+          <div class="live-metrics">
+            <div class="live-metric"><span class="lm-val" id="lmCalls">0</span><span class="lm-label">calls</span></div>
+            <div class="live-metric"><span class="lm-val" id="lmTokens">0</span><span class="lm-label">tokens</span></div>
+            <div class="live-metric"><span class="lm-val" id="lmComms">0</span><span class="lm-label">comms</span></div>
+            <div class="live-metric"><span class="lm-val" id="lmIter">0</span><span class="lm-label">iteration</span></div>
+          </div>
+          <div id="phaseBar" class="phase-bar"></div>
+          <div class="topo-viz-container"><svg id="topoSvg" width="580" height="200"></svg></div>
+          <div class="card" style="margin-top:12px">
+            <h2 style="margin-bottom:8px">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              Live Event Feed
+            </h2>
+            <div id="eventFeed" class="event-feed"></div>
+          </div>
+        </div>
+
+        <div id="scoresSection" class="result-section hidden">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Evaluation Scores</h3>
+          <div class="score-grid" id="scoreGrid"></div>
+          <div id="metricsTable"></div>
+        </div>
+        <div id="agentOutputsSection" class="result-section hidden">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> Agent Outputs</h3>
+          <div id="agentOutputs"></div>
+        </div>
+        <div id="finalOutputSection" class="result-section hidden">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Final Output</h3>
+          <div id="finalOutput" class="output-box"></div>
+        </div>
+        <div class="result-section" style="margin-top:16px">
+          <h3 style="cursor:pointer" onclick="toggleRawJson()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            Raw JSON Response <span id="rawToggle" style="font-size:12px;font-weight:normal;color:var(--text-muted);margin-left:8px;">(show)</span>
+          </h3>
+          <pre class="raw-json" id="rawJson"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ===== State ===== */
+    let selectedTopology = 'graph';
+    let currentResult = null;
+    let abortController = null;
+    let liveState = { calls: 0, tokens: 0, comms: 0, iteration: 0, phases: [], agentNodes: {}, startTime: null };
+    let elapsedInterval = null;
+
+    const AGENT_COLORS = ['#3b82f6','#14b8a6','#a855f7','#f59e0b','#ef4444','#ec4899','#06b6d4'];
+    const DOMAIN_INFO = {
+      research: {
+        agents: [
+          { id:'agent1', label:'Lead Researcher', color:AGENT_COLORS[0] },
+          { id:'agent2', label:'Researcher 2', color:AGENT_COLORS[1] },
+          { id:'agent3', label:'Researcher 3', color:AGENT_COLORS[2] },
+          { id:'agent4', label:'Researcher 4', color:AGENT_COLORS[3] },
+          { id:'agent5', label:'Researcher 5', color:AGENT_COLORS[4] },
+        ],
+      },
+      coding: {
+        agents: [
+          { id:'agent1', label:'Senior Dev', color:AGENT_COLORS[0] },
+          { id:'agent2', label:'Code Reviewer', color:AGENT_COLORS[1] },
+          { id:'agent3', label:'Test Engineer', color:AGENT_COLORS[2] },
+        ],
+      },
+      bargaining: {
+        agents: [
+          { id:'agent1', label:'Seller/Lead', color:AGENT_COLORS[0] },
+          { id:'agent2', label:'Buyer 1', color:AGENT_COLORS[1] },
+          { id:'agent3', label:'Buyer 2', color:AGENT_COLORS[2] },
+          { id:'agent4', label:'Buyer 3', color:AGENT_COLORS[3] },
+        ],
+      },
+    };
+
+    const PHASE_LABELS = {
+      plan:'Plan', execute:'Execute', act:'Act', synthesize:'Synthesize',
+      communicate:'Communicate', continue_check:'Check', handoff:'Handoff', scoring:'Scoring',
+    };
+
+    /* ===== Helpers ===== */
+    function getEndpoint() {
+      const el = document.getElementById('endpoint');
+      if (el.value.trim()) return el.value.trim();
+      const proto = location.protocol === 'file:' ? 'http:' : location.protocol;
+      const host = location.hostname || 'localhost';
+      return `${proto}//${host}:8101`;
+    }
+    function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+    function setStatus(state, text, detail) {
+      document.getElementById('statusDot').className = 'status-dot ' + state;
+      document.getElementById('statusText').textContent = text;
+      document.getElementById('statusDetail').textContent = detail || '';
+    }
+    function setProgress(pct) { document.getElementById('progressFill').style.width = pct + '%'; }
+
+    function formatElapsed(ms) {
+      const totalSec = Math.floor(ms / 1000);
+      const min = Math.floor(totalSec / 60);
+      const sec = totalSec % 60;
+      const tenths = Math.floor((ms % 1000) / 100);
+      return min > 0
+        ? `${min}:${String(sec).padStart(2,'0')}.${tenths}`
+        : `${sec}.${tenths}s`;
+    }
+
+    function startElapsedTimer() {
+      const el = document.getElementById('elapsedTimer');
+      el.className = 'elapsed-timer';
+      el.textContent = '0.0s';
+      if (elapsedInterval) clearInterval(elapsedInterval);
+      const t0 = Date.now();
+      elapsedInterval = setInterval(() => {
+        el.textContent = formatElapsed(Date.now() - t0);
+      }, 100);
+    }
+
+    function stopElapsedTimer(state) {
+      if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = null; }
+      const el = document.getElementById('elapsedTimer');
+      el.classList.add(state === 'error' ? 'error' : 'done');
+    }
+    function selectTopology(t) {
+      selectedTopology = t;
+      document.querySelectorAll('.topology-card').forEach(c => c.classList.toggle('selected', c.dataset.topo === t));
+    }
+    function updateAgentPreview() {
+      const info = DOMAIN_INFO[document.getElementById('domain').value];
+      if (!info) return;
+      document.getElementById('agentPreview').innerHTML = info.agents.map((a,i) =>
+        `<div class="agent-chip"><div class="agent-dot" style="background:${a.color}"></div><span>${esc(a.id)}</span><span class="agent-role">${esc(a.label)}</span><span class="tag ${i===0?'tag-blue':'tag-green'}" style="margin-left:4px">${i===0?'Agent A':'Agent B-'+i}</span></div>`
+      ).join('');
+    }
+    document.getElementById('domain').addEventListener('change', updateAgentPreview);
+
+    /* ===== Live topology SVG ===== */
+    function buildTopoSvg(agents, topology) {
+      const svg = document.getElementById('topoSvg');
+      const W = 580, H = 200;
+      svg.setAttribute('width', W);
+      svg.setAttribute('height', H);
+      const n = agents.length;
+      const positions = {};
+
+      if (topology === 'star') {
+        positions[agents[0].id] = { x: W/2, y: 40 };
+        const leafs = agents.slice(1);
+        leafs.forEach((a,i) => {
+          const angle = Math.PI * (0.2 + 0.6 * i / Math.max(leafs.length-1,1));
+          positions[a.id] = { x: W/2 + Math.cos(angle-Math.PI/2)*200, y: 150 };
+        });
+      } else if (topology === 'chain') {
+        agents.forEach((a,i) => { positions[a.id] = { x: 60 + i*(W-120)/Math.max(n-1,1), y: H/2 }; });
+      } else if (topology === 'tree') {
+        positions[agents[0].id] = { x: W/2, y: 35 };
+        const rest = agents.slice(1);
+        rest.forEach((a,i) => { positions[a.id] = { x: 80 + i*(W-160)/Math.max(rest.length-1,1), y: 150 }; });
+      } else {
+        agents.forEach((a,i) => {
+          const angle = -Math.PI/2 + (2*Math.PI*i)/n;
+          positions[a.id] = { x: W/2 + Math.cos(angle)*180, y: H/2 + Math.sin(angle)*70 };
+        });
+      }
+
+      liveState.agentNodes = positions;
+
+      let html = '<defs><marker id="arrowM" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="var(--text-muted)" opacity="0.6"/></marker></defs>';
+
+      // Draw base edges
+      if (topology === 'star') {
+        agents.slice(1).forEach(a => {
+          const p0 = positions[agents[0].id], p1 = positions[a.id];
+          html += `<line class="edge-line" id="edge-${agents[0].id}-${a.id}" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrowM)"/>`;
+        });
+      } else if (topology === 'chain') {
+        for (let i=0; i<agents.length-1; i++) {
+          const p0 = positions[agents[i].id], p1 = positions[agents[i+1].id];
+          html += `<line class="edge-line" id="edge-${agents[i].id}-${agents[i+1].id}" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrowM)"/>`;
+        }
+      } else if (topology === 'tree') {
+        agents.slice(1).forEach(a => {
+          const p0 = positions[agents[0].id], p1 = positions[a.id];
+          html += `<line class="edge-line" id="edge-${agents[0].id}-${a.id}" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" marker-end="url(#arrowM)"/>`;
+        });
+      } else {
+        for (let i=0; i<agents.length; i++) {
+          for (let j=i+1; j<agents.length; j++) {
+            const p0 = positions[agents[i].id], p1 = positions[agents[j].id];
+            html += `<line class="edge-line" id="edge-${agents[i].id}-${agents[j].id}" x1="${p0.x}" y1="${p0.y}" x2="${p1.x}" y2="${p1.y}" stroke-dasharray="4,4" opacity="0.3"/>`;
+          }
+        }
+      }
+
+      // Draw agent nodes
+      agents.forEach((a,i) => {
+        const p = positions[a.id];
+        const r = i===0 ? 22 : 18;
+        const color = AGENT_COLORS[i % AGENT_COLORS.length];
+        html += `<g class="agent-node node-idle" id="node-${a.id}">`;
+        html += `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${color}" opacity="0.85" stroke="${color}" stroke-width="2"/>`;
+        html += `<text class="agent-label" x="${p.x}" y="${p.y+4}">${a.id.replace('agent','A')}</text>`;
+        const label = i===0 ? 'Orchestrator' : (a.role || a.id).substring(0,16);
+        html += `<text class="agent-role-label" x="${p.x}" y="${p.y+r+12}">${esc(label)}</text>`;
+        html += `</g>`;
+      });
+
+      svg.innerHTML = html;
+    }
+
+    function activateEdge(fromId, toId, type) {
+      const id1 = `edge-${fromId}-${toId}`, id2 = `edge-${toId}-${fromId}`;
+      const el = document.getElementById(id1) || document.getElementById(id2);
+      if (el) {
+        el.classList.remove('edge-line');
+        el.classList.add(type === 'comm' ? 'edge-comm' : 'edge-active', 'edge-flowing');
+        el.style.opacity = '1';
+        setTimeout(() => {
+          el.classList.remove('edge-flowing');
+          setTimeout(() => { el.classList.remove('edge-active','edge-comm'); el.classList.add('edge-line'); el.style.opacity = ''; }, 2000);
+        }, 1500);
+      }
+    }
+
+    function setNodeState(agentId, state) {
+      const el = document.getElementById('node-' + agentId);
+      if (el) { el.className = 'agent-node node-' + state; }
+    }
+
+    /* ===== Phase bar ===== */
+    function resetPhaseBar(topology) {
+      const phases = topology === 'chain'
+        ? ['act','handoff','synthesize']
+        : topology === 'graph'
+          ? ['act','communicate','synthesize','continue_check']
+          : ['plan','execute','synthesize','continue_check'];
+      const bar = document.getElementById('phaseBar');
+      bar.innerHTML = phases.map(p => `<div class="phase-pill" id="phase-${p}">${PHASE_LABELS[p]||p}</div>`).join('');
+      liveState.phases = phases;
+    }
+
+    function setPhaseActive(phase) {
+      liveState.phases.forEach(p => {
+        const el = document.getElementById('phase-' + p);
+        if (!el) return;
+        if (p === phase) { el.className = 'phase-pill active'; }
+      });
+    }
+    function setPhaseComplete(phase) {
+      const el = document.getElementById('phase-' + phase);
+      if (el && !el.classList.contains('active')) return;
+      if (el) el.className = 'phase-pill completed';
+    }
+
+    /* ===== Event feed ===== */
+    function addEvent(type, cls, detail) {
+      const feed = document.getElementById('eventFeed');
+      const elapsed = liveState.startTime ? ((Date.now() - liveState.startTime)/1000).toFixed(1)+'s' : '';
+      feed.innerHTML += `<div class="event-line"><span class="event-time">${elapsed}</span><span class="event-type ${cls}">${type}</span><span class="event-detail">${esc(detail)}</span></div>`;
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    function updateLiveMetrics() {
+      document.getElementById('lmCalls').textContent = liveState.calls;
+      document.getElementById('lmTokens').textContent = liveState.tokens.toLocaleString();
+      document.getElementById('lmComms').textContent = liveState.comms;
+      document.getElementById('lmIter').textContent = liveState.iteration;
+    }
+
+    /* ===== SSE event handlers ===== */
+    function handleStreamEvent(eventType, data) {
+      switch (eventType) {
+        case 'topology_start':
+          const agents = (data.agents || []).map(a => ({id:a.id, role:a.role, is_agent_a:a.is_agent_a}));
+          buildTopoSvg(agents, data.topology);
+          resetPhaseBar(data.topology);
+          addEvent('START', '', `${data.topology} / ${data.domain} — ${agents.length} agents`);
+          break;
+
+        case 'iteration_start':
+          liveState.iteration = data.iteration || 0;
+          updateLiveMetrics();
+          addEvent('ITER ' + data.iteration, '', `Starting iteration ${data.iteration}/${data.max_iterations||'?'}`);
+          // Reset phases for new iteration
+          liveState.phases.forEach(p => {
+            const el = document.getElementById('phase-'+p);
+            if (el) el.className = 'phase-pill';
+          });
+          break;
+
+        case 'phase_start':
+          setPhaseActive(data.phase);
+          addEvent(data.phase.toUpperCase(), 'phase', 'Starting ' + (PHASE_LABELS[data.phase]||data.phase).toLowerCase() + (data.agent_count ? ` (${data.agent_count} agents)` : '') + (data.pair_count ? ` (${data.pair_count} pairs)` : ''));
+          break;
+
+        case 'phase_complete':
+          setPhaseComplete(data.phase);
+          break;
+
+        case 'agent_call_start':
+          if (data.to_id && data.to_id !== 'coordinator') setNodeState(data.to_id, 'active');
+          if (data.from_id && data.from_id !== 'coordinator') activateEdge(data.from_id, data.to_id, 'call');
+          addEvent(data.call_type||'call', 'call', `${data.from_id||'?'} → ${data.to_id||'?'}`);
+          break;
+
+        case 'agent_call_complete':
+          liveState.calls++;
+          liveState.tokens += data.tokens || 0;
+          updateLiveMetrics();
+          if (data.agent_id) setNodeState(data.agent_id, 'done');
+          if (data.to_id && data.to_id !== 'coordinator') activateEdge(data.from_id || data.agent_id, data.to_id, 'call');
+          const preview = (data.output_preview||'').substring(0,60);
+          addEvent('done', 'call', `${data.agent_id||data.from_id||'?'} +${data.tokens||0}tok` + (preview ? ` — ${preview}...` : ''));
+          break;
+
+        case 'agent_call_error':
+          if (data.agent_id) setNodeState(data.agent_id, 'error');
+          addEvent('ERROR', 'err', `${data.agent_id||'?'}: ${data.error||'unknown'}`);
+          break;
+
+        case 'comm_session_start':
+          liveState.comms++;
+          updateLiveMetrics();
+          addEvent('COMM', 'comm', `${data.agent1_id} ↔ ${data.agent2_id}`);
+          activateEdge(data.agent1_id, data.agent2_id, 'comm');
+          break;
+
+        case 'comm_message':
+          activateEdge(data.from_id, data.to_id, 'comm');
+          addEvent('msg', 'comm', `${data.from_id} → ${data.to_id}: ${(data.message_preview||'').substring(0,50)}`);
+          break;
+
+        case 'iteration_complete':
+          addEvent('ITER DONE', '', `Iteration ${data.iteration} — ${data.total_calls||0} calls, ${(data.total_tokens||0).toLocaleString()} tokens`);
+          break;
+
+        case 'topology_error':
+          addEvent('FATAL', 'err', data.error || 'Unknown error');
+          break;
+      }
+    }
+
+    /* ===== Run with SSE streaming ===== */
+    async function runMarble() {
+      const domain = document.getElementById('domain').value;
+      const topology = selectedTopology;
+      const maxIterations = parseInt(document.getElementById('maxIterations').value);
+      const taskIdEl = document.getElementById('taskId');
+      const taskId = taskIdEl.value ? parseInt(taskIdEl.value) : null;
+      const skipJudge = document.getElementById('skipJudge').value === 'true';
+      const endpoint = getEndpoint();
+      const btn = document.getElementById('runBtn');
+
+      btn.disabled = true;
+      setStatus('running', 'Running...', `${domain} / ${topology}`);
+      setProgress(5);
+      clearResults(true);
+      liveState = { calls:0, tokens:0, comms:0, iteration:0, phases:[], agentNodes:{}, startTime: Date.now() };
+      updateLiveMetrics();
+      startElapsedTimer();
+
+      const liveSection = document.getElementById('liveTopologySection');
+      liveSection.classList.add('active');
+      document.getElementById('eventFeed').innerHTML = '';
+      document.getElementById('phaseBar').innerHTML = '';
+
+      const payload = { domain, topology, max_iterations: maxIterations, skip_judge: skipJudge, stream: true };
+      if (taskId) payload.task_id = taskId;
+
+      try {
+        abortController = new AbortController();
+        const resp = await fetch(`${endpoint}/marble`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: resp.statusText }));
+          throw new Error(err.error || `HTTP ${resp.status}`);
+        }
+
+        setProgress(10);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let currentEvent = '';
+        let eventDataStr = '';
+        let progressPct = 10;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.slice(7).trim();
+              eventDataStr = '';
+            } else if (line.startsWith('data: ')) {
+              eventDataStr += line.slice(6);
+            } else if (line === '' && currentEvent) {
+              try {
+                const data = JSON.parse(eventDataStr);
+
+                if (currentEvent === 'complete') {
+                  currentResult = data;
+                  renderResults(data);
+                  stopElapsedTimer('done');
+                  setStatus('done', 'Complete', `${data.duration_s?.toFixed(1)||'?'}s`);
+                  setProgress(100);
+                } else if (currentEvent === 'error') {
+                  stopElapsedTimer('error');
+                  throw new Error(data.error || 'Unknown error');
+                } else {
+                  handleStreamEvent(currentEvent, data);
+                  progressPct = Math.min(95, progressPct + 1);
+                  setProgress(progressPct);
+                }
+              } catch (e) {
+                if (e.message && !e.message.startsWith('Unexpected')) throw e;
+              }
+              currentEvent = '';
+              eventDataStr = '';
+            }
+          }
+        }
+
+        if (!currentResult) {
+          setStatus('done', 'Done (no result)', '');
+          setProgress(100);
+        }
+      } catch (err) {
+        stopElapsedTimer('error');
+        if (err.name === 'AbortError') {
+          setStatus('ready', 'Cancelled', '');
+        } else {
+          setStatus('error', 'Error', err.message);
+          addEvent('ERROR', 'err', err.message);
+        }
+      } finally {
+        btn.disabled = false;
+        abortController = null;
+      }
+    }
+
+    /* ===== Render final results ===== */
+    function renderResults(data) {
+      if (data.score !== undefined && data.score !== null) {
+        const sec = document.getElementById('scoresSection');
+        sec.classList.remove('hidden');
+        document.getElementById('scoreGrid').innerHTML = [
+          {label:'Aggregate',value:data.score,color:'var(--accent)'},
+          {label:'Task Quality',value:data.task_quality,color:'var(--green)'},
+          {label:'Collaboration',value:data.collaboration_quality,color:'var(--teal)'},
+          {label:'Communication',value:data.communication_quality,color:'var(--purple)'},
+          {label:'Planning',value:data.planning_quality,color:'var(--orange)'},
+        ].map(s => `<div class="score-card"><div class="score-value" style="color:${s.color}">${((s.value||0)*100).toFixed(0)}%</div><div class="score-label">${s.label}</div></div>`).join('');
+
+        document.getElementById('metricsTable').innerHTML = [
+          ['Topology',data.coordinate_mode],['Domain',data.benchmark_domain],['Agents',data.agent_count],
+          ['Agent Calls',data.total_agent_calls],['LLM Calls',data.total_llm_calls],
+          ['Total Tokens',data.total_tokens?.toLocaleString()],['Iterations',data.iterations],
+          ['Comm Sessions',data.communication_sessions],['Duration',(data.duration_s?.toFixed(1)||'?')+'s'],
+        ].map(([l,v]) => `<div class="metric-row"><span class="metric-label">${l}</span><span class="metric-value">${v??'-'}</span></div>`).join('');
+      }
+
+      if (data.agent_outputs && Object.keys(data.agent_outputs).length) {
+        document.getElementById('agentOutputsSection').classList.remove('hidden');
+        const agentColors = {};
+        (DOMAIN_INFO[data.benchmark_domain]?.agents||[]).forEach(a => { agentColors[a.id] = a.color; });
+        document.getElementById('agentOutputs').innerHTML = Object.entries(data.agent_outputs).map(([aid,text]) =>
+          `<div style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><div class="agent-dot" style="background:${agentColors[aid]||'#64748b'}"></div><strong style="font-size:13px">${esc(aid)}</strong></div><div class="output-box" style="max-height:150px;font-size:12px">${esc(text.substring(0,2000))}</div></div>`
+        ).join('');
+      }
+
+      if (data.final_output) {
+        document.getElementById('finalOutputSection').classList.remove('hidden');
+        document.getElementById('finalOutput').textContent = data.final_output;
+      }
+      document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+    }
+
+    /* ===== Clear ===== */
+    function clearResults(keepConfig) {
+      ['scoresSection','agentOutputsSection','finalOutputSection'].forEach(id => document.getElementById(id).classList.add('hidden'));
+      document.getElementById('rawJson').textContent = '';
+      document.getElementById('rawJson').style.display = 'none';
+      document.getElementById('rawToggle').textContent = '(show)';
+      if (!keepConfig) {
+        setStatus('ready', 'Ready', '');
+        setProgress(0);
+        currentResult = null;
+        document.getElementById('liveTopologySection').classList.remove('active');
+      }
+    }
+    function toggleRawJson() {
+      const el = document.getElementById('rawJson'), tg = document.getElementById('rawToggle');
+      if (el.style.display === 'none' || !el.style.display) { el.style.display = 'block'; tg.textContent = '(hide)'; }
+      else { el.style.display = 'none'; tg.textContent = '(show)'; }
+    }
+
+    /* ===== Init ===== */
+    updateAgentPreview();
+    const _proto = location.protocol === 'file:' ? 'http:' : location.protocol;
+    const _host = location.hostname || 'localhost';
+    document.getElementById('endpoint').placeholder = `${_proto}//${_host}:8101`;
+  </script>
+</body>
+</html>

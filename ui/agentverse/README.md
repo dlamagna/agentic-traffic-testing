@@ -14,7 +14,8 @@ A modern, modular web interface for the AgentVerse multi-agent collaboration sys
 
 ```
 ui/agentverse/
-├── index.html              # Main HTML (monolithic, for compatibility)
+├── index.html              # Main HTML for live runner UI
+├── viewer.html             # Offline/local run response.json viewer
 ├── index-modular.html      # Modular HTML (uses separate JS/CSS files)
 ├── css/
 │   └── styles.css          # All CSS styles
@@ -24,7 +25,8 @@ ui/agentverse/
 │   ├── utils.js            # Utility functions
 │   ├── renderers.js        # HTML rendering functions
 │   ├── ui-state.js         # UI state management
-│   └── streaming.js        # SSE streaming handler
+│   ├── streaming.js        # SSE streaming handler
+│   └── viewer.js           # response.json file/URL viewer logic
 └── README.md               # This file
 ```
 
@@ -124,6 +126,52 @@ For production deployment, use the self-contained version:
 ```html
 <!-- index.html has everything inline -->
 ```
+
+### Run Viewer (load saved response.json)
+
+`viewer.html` lets you inspect already-completed runs in the browser with:
+- stage cards
+- detailed flow graph/table
+- full request/response expansion
+- iteration history
+
+Recommended startup (from repo root):
+
+```bash
+python3 -m http.server 8080
+```
+
+Then open:
+
+```text
+http://localhost:8080/ui/agentverse/viewer/
+```
+
+You can load data in two ways:
+
+1. **Drag & drop** a `response.json` file into the viewer.
+2. **Direct URL query param**:
+
+```text
+http://localhost:8080/ui/agentverse/viewer/?json=/data/runs/<run_dir>/response.json
+```
+
+3. **Load by persisted task ID (fixed backend endpoint)**:
+
+```text
+http://localhost:8080/ui/agentverse/viewer/?task_id=<task_id>
+```
+
+Optional custom backend endpoint:
+
+```text
+http://localhost:8080/ui/agentverse/viewer/?task_id=<task_id>&endpoint=http://localhost:8101/agentverse
+```
+
+Notes:
+- The `json` path is fetched by the browser, so serve from the repo root (or another root that contains both `ui/` and `data/`).
+- `task_id` mode calls `GET <endpoint>/<task_id>` (defaults to `http://<current-host>:8101/agentverse/<task_id>`).
+- Opening `viewer.html` directly via `file://` may block module loading in some browsers; prefer a local HTTP server.
 
 ### Switching Between Versions
 
