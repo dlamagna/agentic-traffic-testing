@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -69,13 +70,19 @@ _ctx_domain: str = ""
 _progress_cb: ProgressCallback = None
 _trace_headers: Dict[str, str] = {}
 
+# Locks for thread-safe SSE emission and result counter updates when
+# communication sessions run in parallel.
+_emit_lock = threading.Lock()
+_result_lock = threading.Lock()
+
 
 def _emit(event: str, data: Dict[str, Any]) -> None:
     """Fire a progress event to the streaming callback (if set)."""
     cb = _progress_cb
     if cb is not None:
         try:
-            cb(event, data)
+            with _emit_lock:
+                cb(event, data)
         except Exception:
             pass
 
@@ -1038,14 +1045,29 @@ def run_graph(
             if comm_pair_list:
                 _emit("phase_start", {"phase": "communicate", "iteration": iteration + 1,
                                       "pair_count": len(comm_pair_list)})
-                for a1, a2 in comm_pair_list:
-                    _emit("comm_session_start", {"agent1_id": a1, "agent2_id": a2})
-                    comm = _run_communication_session(
-                        a1, a2, agent_map, agent_results,
-                        task.task_content, task_id, result,
-                    )
-                    if comm:
-                        result.communications.append(comm)
+                with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL, len(comm_pair_list))) as pool:
+                    comm_futures = {}
+                    for a1, a2 in comm_pair_list:
+                        _emit("comm_session_start", {"agent1_id": a1, "agent2_id": a2})
+                        fut = pool.submit(
+                            _run_communication_session,
+                            a1, a2, agent_map, agent_results,
+                            task.task_content, task_id, result,
+                        )
+                        comm_futures[fut] = (a1, a2)
+
+                    for fut in as_completed(comm_futures):
+                        a1, a2 = comm_futures[fut]
+                        try:
+                            comm = fut.result()
+                            if comm:
+                                with _result_lock:
+                                    result.communications.append(comm)
+                        except Exception as exc:
+                            _emit("agent_call_error", {
+                                "agent_id": f"{a1},{a2}", "call_type": "communicate",
+                                "error": str(exc),
+                            })
                 _emit("phase_complete", {"phase": "communicate", "sessions": len(result.communications)})
 
             # --- Phase 3: Synthesis ---
@@ -1142,9 +1164,7 @@ def _run_communication_session(
                 m2.endpoint_url, resp_prompt,
                 role=m2.marble_agent.profile[:300], task_id=task_id,
             )
-        result.total_llm_calls += 1
-        result.total_agent_calls += 1
-        _accumulate_tokens(result, resp)
+        _record_call(result, resp)
         reply = resp.get("output", "")
         _emit("agent_call_complete", {"call_id": _cid, "from_id": agent2_id, "to_id": agent1_id,
                                       "agent_id": agent2_id, "call_type": "communicate",
@@ -1174,9 +1194,7 @@ def _run_communication_session(
                     m1.endpoint_url, resp_prompt_2,
                     role=m1.marble_agent.profile[:300], task_id=task_id,
                 )
-            result.total_llm_calls += 1
-            result.total_agent_calls += 1
-            _accumulate_tokens(result, resp2)
+            _record_call(result, resp2)
             current_message = resp2.get("output", "")
             _emit("agent_call_complete", {"call_id": _cid2, "from_id": agent1_id, "to_id": agent2_id,
                                           "agent_id": agent1_id, "call_type": "communicate",
@@ -1209,6 +1227,20 @@ def _accumulate_tokens(result: TopologyResult, resp: Dict[str, Any]) -> None:
     meta = resp.get("llm_meta") or resp.get("meta") or {}
     if isinstance(meta, dict):
         result.total_tokens += int(meta.get("total_tokens", 0))
+
+
+def _record_call(result: TopologyResult, resp: Dict[str, Any]) -> None:
+    """Thread-safe increment of call counters and token accumulation.
+
+    Used by parallelised communication sessions where multiple threads
+    mutate the shared *result* object concurrently.
+    """
+    with _result_lock:
+        result.total_llm_calls += 1
+        result.total_agent_calls += 1
+        meta = resp.get("llm_meta") or resp.get("meta") or {}
+        if isinstance(meta, dict):
+            result.total_tokens += int(meta.get("total_tokens", 0))
 
 
 def _parse_assignments(
