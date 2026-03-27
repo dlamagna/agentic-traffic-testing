@@ -186,6 +186,56 @@
     .tag-green { background: rgba(34,197,94,0.15); color: #4ade80; }
     .tag-purple { background: rgba(168,85,247,0.15); color: #c084fc; }
     .tag-orange { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .tag-red { background: rgba(239,68,68,0.15); color: #f87171; }
+    .tag-teal { background: rgba(20,184,166,0.15); color: #2dd4bf; }
+
+    /* Request Inspector */
+    .inspector-tabs { display: flex; gap: 2px; background: var(--bg-tertiary); border-radius: 8px; padding: 2px; }
+    .inspector-tab { flex: 1; padding: 8px; border: none; background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 600; cursor: pointer; border-radius: 6px; transition: all 0.2s; font-family: inherit; }
+    .inspector-tab:hover { color: var(--text-secondary); }
+    .inspector-tab.active { background: var(--accent); color: white; }
+
+    /* Sequence Diagram */
+    .seq-diagram { overflow-x: auto; overflow-y: auto; max-height: 350px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px; }
+    .seq-lanes { display: flex; position: sticky; top: 0; z-index: 2; background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 10px 0 8px; }
+    .seq-lane { flex: 1; min-width: 80px; text-align: center; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    .seq-lane-dot { width: 10px; height: 10px; border-radius: 50%; margin: 0 auto 4px; }
+    .seq-lane-line { width: 2px; background: var(--border); margin: 0 auto; height: 100%; }
+    .seq-arrows { padding: 4px 0; min-height: 40px; }
+    .seq-row { position: relative; height: 28px; animation: seqFadeIn 0.3s ease; }
+    @keyframes seqFadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Request Table */
+    .req-table-wrap { max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); }
+    .req-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .req-table th { text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
+    .req-table td { padding: 8px 12px; border-bottom: 1px solid rgba(51,65,85,0.3); vertical-align: middle; }
+    .req-table tr.req-pending td { opacity: 0.7; }
+    .req-table tr.req-error td { color: var(--red); }
+    .req-table tr.req-row:hover { background: rgba(59,130,246,0.04); }
+    .req-table tr.req-row { cursor: pointer; transition: background 0.15s; }
+    .req-expand-btn { background: none; border: 1px solid var(--border); color: var(--text-secondary); padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit; transition: all 0.2s; }
+    .req-expand-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .req-detail { display: none; }
+    .req-detail.open { display: table-row; }
+    .req-detail td { padding: 16px; background: rgba(15,23,42,0.6); border-bottom: 2px solid var(--border); }
+    .prompt-response-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .prompt-response-grid { grid-template-columns: 1fr; } }
+    .pr-box { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .pr-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+    .pr-label-in { color: var(--orange); }
+    .pr-label-out { color: var(--green); }
+    .pr-content { font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 250px; overflow-y: auto; color: var(--text-secondary); }
+    .req-meta-bar { display: flex; gap: 16px; margin-top: 10px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }
+    .req-meta-bar span { display: flex; align-items: center; gap: 4px; }
+    .req-status { font-family: 'SF Mono','Fira Code',monospace; font-size: 11px; }
+    .req-status-pending { color: var(--orange); }
+    .req-status-done { color: var(--green); }
+    .req-status-error { color: var(--red); }
+    .req-tokens { font-family: 'SF Mono','Fira Code',monospace; color: var(--accent); font-size: 11px; }
+    .inspector-summary { display: flex; gap: 16px; padding: 10px 0; margin-bottom: 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+    .inspector-summary .is-val { font-weight: 700; color: var(--accent); }
+    .inspector-summary .is-label { color: var(--text-muted); }
 
     /* Live metrics counter */
     .live-metrics {
@@ -301,9 +351,9 @@
         <!-- Live topology visualization -->
         <div id="liveTopologySection">
           <div class="live-metrics">
-            <div class="live-metric"><span class="lm-val" id="lmCalls">0</span><span class="lm-label">calls</span></div>
+            <div class="live-metric"><span class="lm-val" id="lmCalls">0</span><span class="lm-label">LLM calls</span></div>
             <div class="live-metric"><span class="lm-val" id="lmTokens">0</span><span class="lm-label">tokens</span></div>
-            <div class="live-metric"><span class="lm-val" id="lmComms">0</span><span class="lm-label">comms</span></div>
+            <div class="live-metric" title="Communication sessions: multi-turn conversations between connected agent pairs (graph topology)"><span class="lm-val" id="lmComms">0</span><span class="lm-label">comm sessions</span></div>
             <div class="live-metric"><span class="lm-val" id="lmIter">0</span><span class="lm-label">iteration</span></div>
           </div>
           <div id="phaseBar" class="phase-bar"></div>
@@ -314,6 +364,57 @@
               Live Event Feed
             </h2>
             <div id="eventFeed" class="event-feed"></div>
+          </div>
+        </div>
+
+        <!-- LLM Request Inspector -->
+        <div id="requestInspectorSection" style="display:none; margin-top:16px">
+          <div class="card" style="padding:0; overflow:hidden">
+            <div style="padding:16px 20px 12px">
+              <h2 style="margin-bottom:12px">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                LLM Request Inspector
+                <span id="reqInspectorCount" style="font-size:12px;font-weight:normal;color:var(--text-muted);margin-left:auto">0 requests</span>
+              </h2>
+              <div class="inspector-summary">
+                <span><span class="is-val" id="isReqTotal">0</span> <span class="is-label">total</span></span>
+                <span><span class="is-val" id="isReqPending">0</span> <span class="is-label">in-flight</span></span>
+                <span><span class="is-val" id="isReqDone">0</span> <span class="is-label">complete</span></span>
+                <span><span class="is-val" id="isReqTokens">0</span> <span class="is-label">tokens</span></span>
+              </div>
+              <div class="inspector-tabs">
+                <button class="inspector-tab active" id="tabFlow" onclick="switchInspectorTab('flow')">Request Flow</button>
+                <button class="inspector-tab" id="tabTable" onclick="switchInspectorTab('table')">Request Details</button>
+              </div>
+            </div>
+
+            <!-- Flow View (Sequence Diagram) -->
+            <div id="flowView" style="padding:0 20px 16px">
+              <div class="seq-diagram" id="seqDiagram">
+                <div class="seq-lanes" id="seqLanes"></div>
+                <div class="seq-arrows" id="seqArrows"></div>
+              </div>
+            </div>
+
+            <!-- Table View -->
+            <div id="tableView" style="padding:0 20px 16px; display:none">
+              <div class="req-table-wrap">
+                <table class="req-table">
+                  <thead>
+                    <tr>
+                      <th style="width:36px">#</th>
+                      <th style="width:60px">Time</th>
+                      <th>From &rarr; To</th>
+                      <th style="width:90px">Phase</th>
+                      <th style="width:80px">Status</th>
+                      <th style="width:70px">Tokens</th>
+                      <th style="width:56px"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="reqTableBody"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -349,6 +450,12 @@
     let liveState = { calls: 0, tokens: 0, comms: 0, iteration: 0, phases: [], agentNodes: {}, startTime: null };
     let elapsedInterval = null;
 
+    /* Request Inspector state */
+    let reqLog = [];
+    let reqSeqNum = 0;
+    let reqAgents = [];
+    let reqTotalTokens = 0;
+
     const AGENT_COLORS = ['#3b82f6','#14b8a6','#a855f7','#f59e0b','#ef4444','#ec4899','#06b6d4'];
     const DOMAIN_INFO = {
       research: {
@@ -379,7 +486,7 @@
 
     const PHASE_LABELS = {
       plan:'Plan', execute:'Execute', act:'Act', synthesize:'Synthesize',
-      communicate:'Communicate', continue_check:'Check', handoff:'Handoff', scoring:'Scoring',
+      communicate:'Communicate', continue_check:'Continue Check', handoff:'Handoff', scoring:'Scoring',
     };
 
     /* ===== Helpers ===== */
@@ -570,6 +677,251 @@
       document.getElementById('lmIter').textContent = liveState.iteration;
     }
 
+    /* ===== Request Inspector ===== */
+    function resetRequestInspector() {
+      reqLog = []; reqSeqNum = 0; reqAgents = []; reqTotalTokens = 0;
+      document.getElementById('reqTableBody').innerHTML = '';
+      document.getElementById('seqArrows').innerHTML = '';
+      document.getElementById('seqLanes').innerHTML = '';
+      updateInspectorSummary();
+    }
+
+    function initInspectorLanes(agents) {
+      reqAgents = [
+        { id: 'coordinator', label: 'Coordinator', color: '#64748b' },
+        ...agents.map((a, i) => ({ id: a.id, label: a.id, color: AGENT_COLORS[i % AGENT_COLORS.length] }))
+      ];
+      const lanes = document.getElementById('seqLanes');
+      lanes.innerHTML = reqAgents.map(a =>
+        `<div class="seq-lane"><div class="seq-lane-dot" style="background:${a.color}"></div>${esc(a.label)}</div>`
+      ).join('');
+    }
+
+    function getReqAgentIdx(agentId) { return reqAgents.findIndex(a => a.id === agentId); }
+    function getReqAgentColor(agentId) {
+      const a = reqAgents.find(x => x.id === agentId);
+      return a ? a.color : 'var(--text-secondary)';
+    }
+    function getPhaseTag(type) {
+      const m = { plan:'blue', execute:'green', act:'green', synthesize:'purple', handoff:'orange', communicate:'teal', comm:'teal', continue_check:'orange' };
+      return m[type] || 'blue';
+    }
+
+    function addRequestStart(data) {
+      reqSeqNum++;
+      const req = {
+        seq: reqSeqNum,
+        call_id: data.call_id || `auto-${reqSeqNum}`,
+        from_id: data.from_id || '?',
+        to_id: data.to_id || '?',
+        call_type: data.call_type || 'call',
+        prompt: data.prompt || '',
+        status: 'pending',
+        startTime: Date.now(),
+        tokens: 0,
+        response: '',
+        error: '',
+        latencyMs: 0,
+      };
+      reqLog.push(req);
+      renderReqRow(req);
+      renderSeqArrow(req);
+      updateInspectorSummary();
+      return req;
+    }
+
+    function completeRequest(data) {
+      const cid = data.call_id;
+      let req;
+      if (cid) req = [...reqLog].reverse().find(r => r.call_id === cid && r.status === 'pending');
+      if (!req) req = [...reqLog].reverse().find(r => r.status === 'pending' &&
+        (r.to_id === (data.agent_id || data.to_id) || r.from_id === (data.from_id || data.agent_id)));
+      if (!req) req = [...reqLog].reverse().find(r => r.status === 'pending');
+      if (!req) return;
+
+      req.status = 'done';
+      req.tokens = data.tokens || 0;
+      req.response = data.response || data.output_preview || '';
+      req.endTime = Date.now();
+      req.latencyMs = req.endTime - req.startTime;
+      reqTotalTokens += req.tokens;
+      updateReqRow(req);
+      updateSeqArrow(req);
+      updateInspectorSummary();
+    }
+
+    function errorRequest(data) {
+      const req = [...reqLog].reverse().find(r => r.status === 'pending' &&
+        (r.to_id === (data.agent_id || '') || (data.call_id && r.call_id === data.call_id)));
+      if (!req) return;
+      req.status = 'error';
+      req.error = data.error || 'Unknown error';
+      req.endTime = Date.now();
+      req.latencyMs = req.endTime - req.startTime;
+      updateReqRow(req);
+      updateSeqArrow(req);
+      updateInspectorSummary();
+    }
+
+    function updateInspectorSummary() {
+      const total = reqLog.length;
+      const pending = reqLog.filter(r => r.status === 'pending').length;
+      const done = reqLog.filter(r => r.status === 'done').length;
+      document.getElementById('isReqTotal').textContent = total;
+      document.getElementById('isReqPending').textContent = pending;
+      document.getElementById('isReqDone').textContent = done;
+      document.getElementById('isReqTokens').textContent = reqTotalTokens.toLocaleString();
+      document.getElementById('reqInspectorCount').textContent =
+        `${total} request${total !== 1 ? 's' : ''}${pending > 0 ? ` (${pending} in flight)` : ''}`;
+    }
+
+    function renderReqRow(req) {
+      const tbody = document.getElementById('reqTableBody');
+      const elapsed = liveState.startTime ? ((req.startTime - liveState.startTime) / 1000).toFixed(1) + 's' : '';
+
+      const row = document.createElement('tr');
+      row.id = `rr-${req.seq}`;
+      row.className = 'req-row req-pending';
+      row.onclick = () => toggleReqDetail(req.seq);
+      row.innerHTML = `
+        <td style="font-weight:600;color:var(--text-muted)">${req.seq}</td>
+        <td style="font-family:'SF Mono',monospace;font-size:11px;color:var(--text-muted)">${elapsed}</td>
+        <td><span style="color:${getReqAgentColor(req.from_id)};font-weight:600">${esc(req.from_id)}</span> <span style="color:var(--text-muted)">&rarr;</span> <span style="color:${getReqAgentColor(req.to_id)};font-weight:600">${esc(req.to_id)}</span></td>
+        <td><span class="tag tag-${getPhaseTag(req.call_type)}">${esc(req.call_type)}</span></td>
+        <td><span class="req-status req-status-pending" id="rs-${req.seq}">&#9203; pending</span></td>
+        <td class="req-tokens" id="rt-${req.seq}">&mdash;</td>
+        <td><button class="req-expand-btn" onclick="event.stopPropagation();toggleReqDetail(${req.seq})">inspect</button></td>
+      `;
+      tbody.appendChild(row);
+
+      const detail = document.createElement('tr');
+      detail.id = `rd-${req.seq}`;
+      detail.className = 'req-detail';
+      detail.innerHTML = `
+        <td colspan="7">
+          <div class="prompt-response-grid">
+            <div class="pr-box">
+              <div class="pr-label pr-label-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg> Prompt / Input</div>
+              <div class="pr-content" id="rp-${req.seq}">${esc(req.prompt || 'Waiting for prompt data...')}</div>
+            </div>
+            <div class="pr-box">
+              <div class="pr-label pr-label-out"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Response / Output</div>
+              <div class="pr-content" id="ro-${req.seq}">${esc('Waiting for response...')}</div>
+            </div>
+          </div>
+          <div class="req-meta-bar" id="rm-${req.seq}">
+            <span>Call ID: ${req.call_id}</span>
+            <span>Type: ${req.call_type}</span>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(detail);
+
+      const wrap = tbody.closest('.req-table-wrap');
+      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    }
+
+    function updateReqRow(req) {
+      const row = document.getElementById(`rr-${req.seq}`);
+      if (row) row.className = req.status === 'error' ? 'req-row req-error' : 'req-row';
+
+      const statusEl = document.getElementById(`rs-${req.seq}`);
+      if (statusEl) {
+        if (req.status === 'done') {
+          statusEl.className = 'req-status req-status-done';
+          statusEl.innerHTML = `&#10003; ${req.latencyMs ? (req.latencyMs / 1000).toFixed(1) + 's' : 'done'}`;
+        } else if (req.status === 'error') {
+          statusEl.className = 'req-status req-status-error';
+          statusEl.innerHTML = '&#10007; error';
+        }
+      }
+
+      const tokensEl = document.getElementById(`rt-${req.seq}`);
+      if (tokensEl && req.tokens) tokensEl.textContent = req.tokens.toLocaleString();
+
+      const respEl = document.getElementById(`ro-${req.seq}`);
+      if (respEl) respEl.textContent = req.status === 'error' ? `ERROR: ${req.error}` : (req.response || 'No response data');
+
+      const metaEl = document.getElementById(`rm-${req.seq}`);
+      if (metaEl) {
+        let parts = [`Call ID: ${req.call_id}`, `Type: ${req.call_type}`];
+        if (req.latencyMs) parts.push(`Latency: ${(req.latencyMs / 1000).toFixed(2)}s`);
+        if (req.tokens) parts.push(`Tokens: ${req.tokens.toLocaleString()}`);
+        metaEl.innerHTML = parts.map(p => `<span>${p}</span>`).join('');
+      }
+    }
+
+    function toggleReqDetail(seq) {
+      const el = document.getElementById(`rd-${seq}`);
+      if (el) el.classList.toggle('open');
+    }
+
+    /* Sequence diagram */
+    function renderSeqArrow(req) {
+      const container = document.getElementById('seqArrows');
+      const fromIdx = getReqAgentIdx(req.from_id);
+      const toIdx = getReqAgentIdx(req.to_id);
+      if (fromIdx < 0 || toIdx < 0) return;
+
+      const n = reqAgents.length;
+      const leftIdx = Math.min(fromIdx, toIdx);
+      const rightIdx = Math.max(fromIdx, toIdx);
+      const goingRight = toIdx > fromIdx;
+
+      const leftPct = ((leftIdx + 0.5) / n * 100);
+      const widthPct = ((rightIdx - leftIdx) / n * 100);
+
+      const colors = { plan:'var(--accent)', execute:'var(--green)', act:'var(--green)', synthesize:'var(--purple)', handoff:'var(--orange)', communicate:'var(--teal)', comm:'var(--teal)', continue_check:'var(--orange)' };
+      const color = colors[req.call_type] || 'var(--accent)';
+
+      const row = document.createElement('div');
+      row.className = 'seq-row';
+      row.id = `sa-${req.seq}`;
+      row.title = `#${req.seq} ${req.from_id} → ${req.to_id} (${req.call_type})`;
+      row.style.cursor = 'pointer';
+      row.onclick = () => {
+        switchInspectorTab('table');
+        const detail = document.getElementById(`rd-${req.seq}`);
+        if (detail && !detail.classList.contains('open')) detail.classList.add('open');
+        const rowEl = document.getElementById(`rr-${req.seq}`);
+        if (rowEl) rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      };
+
+      const arrowDir = goingRight ? 'right' : 'left';
+      const arrowEdge = goingRight
+        ? `right:-1px;border-left:6px solid ${color};border-top:4px solid transparent;border-bottom:4px solid transparent`
+        : `left:-1px;border-right:6px solid ${color};border-top:4px solid transparent;border-bottom:4px solid transparent`;
+
+      row.innerHTML = `
+        <div style="position:absolute;left:${leftPct}%;width:${widthPct}%;top:50%;height:2px;background:${color};opacity:${req.status === 'pending' ? '0.4' : '0.8'};transform:translateY(-50%);transition:opacity 0.3s" id="sal-${req.seq}">
+          <div style="position:absolute;${arrowEdge};top:-3px"></div>
+        </div>
+        <div style="position:absolute;left:${((leftIdx + rightIdx + 1) / (2 * n) * 100)}%;transform:translateX(-50%);top:1px;font-size:9px;color:${color};font-weight:600;white-space:nowrap;pointer-events:none;opacity:0.9" id="sat-${req.seq}">${req.call_type}${req.status === 'pending' ? ' ⏳' : ''}</div>
+      `;
+
+      container.appendChild(row);
+      const diagram = document.getElementById('seqDiagram');
+      diagram.scrollTop = diagram.scrollHeight;
+    }
+
+    function updateSeqArrow(req) {
+      const line = document.getElementById(`sal-${req.seq}`);
+      if (line) line.style.opacity = req.status === 'done' ? '0.9' : '0.3';
+
+      const label = document.getElementById(`sat-${req.seq}`);
+      if (label) {
+        const suffix = req.status === 'done' ? (req.tokens ? ` ${req.tokens}tok` : ' ✓') : ' ✗';
+        label.textContent = `${req.call_type}${suffix}`;
+      }
+    }
+
+    function switchInspectorTab(tab) {
+      document.getElementById('tabFlow').classList.toggle('active', tab === 'flow');
+      document.getElementById('tabTable').classList.toggle('active', tab === 'table');
+      document.getElementById('flowView').style.display = tab === 'flow' ? '' : 'none';
+      document.getElementById('tableView').style.display = tab === 'table' ? '' : 'none';
+    }
+
     /* ===== SSE event handlers ===== */
     function handleStreamEvent(eventType, data) {
       switch (eventType) {
@@ -577,6 +929,7 @@
           const agents = (data.agents || []).map(a => ({id:a.id, role:a.role, is_agent_a:a.is_agent_a}));
           buildTopoSvg(agents, data.topology);
           resetPhaseBar(data.topology);
+          initInspectorLanes(agents);
           addEvent('START', '', `${data.topology} / ${data.domain} — ${agents.length} agents`);
           break;
 
@@ -600,25 +953,36 @@
           setPhaseComplete(data.phase);
           break;
 
-        case 'agent_call_start':
+        case 'agent_call_start': {
+          const isComm = data.call_type === 'communicate';
+          const edgeType = isComm ? 'comm' : 'call';
+          const feedCls = isComm ? 'comm' : 'call';
           if (data.to_id && data.to_id !== 'coordinator') setNodeState(data.to_id, 'active');
-          if (data.from_id && data.from_id !== 'coordinator') activateEdge(data.from_id, data.to_id, 'call');
-          addEvent(data.call_type||'call', 'call', `${data.from_id||'?'} → ${data.to_id||'?'}`);
+          if (data.from_id && data.from_id !== 'coordinator') activateEdge(data.from_id, data.to_id, edgeType);
+          addEvent(data.call_type||'call', feedCls, `${data.from_id||'?'} → ${data.to_id||'?'}`);
+          addRequestStart(data);
           break;
+        }
 
-        case 'agent_call_complete':
+        case 'agent_call_complete': {
+          const isComm2 = data.call_type === 'communicate';
+          const edgeType2 = isComm2 ? 'comm' : 'call';
+          const feedCls2 = isComm2 ? 'comm' : 'call';
           liveState.calls++;
           liveState.tokens += data.tokens || 0;
           updateLiveMetrics();
           if (data.agent_id) setNodeState(data.agent_id, 'done');
-          if (data.to_id && data.to_id !== 'coordinator') activateEdge(data.from_id || data.agent_id, data.to_id, 'call');
+          if (data.to_id && data.to_id !== 'coordinator') activateEdge(data.from_id || data.agent_id, data.to_id, edgeType2);
           const preview = (data.output_preview||'').substring(0,60);
-          addEvent('done', 'call', `${data.agent_id||data.from_id||'?'} +${data.tokens||0}tok` + (preview ? ` — ${preview}...` : ''));
+          addEvent('done', feedCls2, `${data.agent_id||data.from_id||'?'} +${data.tokens||0}tok` + (preview ? ` — ${preview}...` : ''));
+          completeRequest(data);
           break;
+        }
 
         case 'agent_call_error':
           if (data.agent_id) setNodeState(data.agent_id, 'error');
           addEvent('ERROR', 'err', `${data.agent_id||'?'}: ${data.error||'unknown'}`);
+          errorRequest(data);
           break;
 
         case 'comm_session_start':
@@ -666,6 +1030,8 @@
       liveSection.classList.add('active');
       document.getElementById('eventFeed').innerHTML = '';
       document.getElementById('phaseBar').innerHTML = '';
+      resetRequestInspector();
+      document.getElementById('requestInspectorSection').style.display = 'block';
 
       const payload = { domain, topology, max_iterations: maxIterations, skip_judge: skipJudge, stream: true };
       if (taskId) payload.task_id = taskId;
@@ -799,6 +1165,8 @@
         setProgress(0);
         currentResult = null;
         document.getElementById('liveTopologySection').classList.remove('active');
+        document.getElementById('requestInspectorSection').style.display = 'none';
+        resetRequestInspector();
       }
     }
     function toggleRawJson() {
