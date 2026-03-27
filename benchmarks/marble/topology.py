@@ -446,13 +446,16 @@ def run_star(
                 agent_profiles=agent_profiles_str,
                 agent_ids=", ".join(leaf_agents.keys()),
             )
-            _emit("agent_call_start", {"from_id": "coordinator", "to_id": "agent1", "call_type": "plan"})
+            _cid = str(uuid.uuid4())[:8]
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1", "call_type": "plan",
+                                       "prompt": plan_prompt[:3000]})
             plan_resp = _call_agent_a_llm(plan_prompt, task_id=task_id, scenario="marble_star_plan")
             result.total_llm_calls += 1
             result.total_agent_calls += 1
             _accumulate_tokens(result, plan_resp)
-            _emit("agent_call_complete", {"from_id": "coordinator", "to_id": "agent1", "call_type": "plan",
-                                          "tokens": _resp_tokens(plan_resp), "output_preview": plan_resp.get("output", "")[:200]})
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1", "call_type": "plan",
+                                          "tokens": _resp_tokens(plan_resp), "output_preview": plan_resp.get("output", "")[:200],
+                                          "response": plan_resp.get("output", "")[:3000]})
 
             assignments = _parse_assignments(
                 plan_resp.get("output", ""),
@@ -465,13 +468,17 @@ def run_star(
             # --- Execution: Fan out to Agent B instances ---
             _emit("phase_start", {"phase": "execute", "iteration": iteration + 1, "agent_count": len(assignments)})
             agent_results: Dict[str, str] = {}
+            _exec_cids: Dict[str, str] = {}
             with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL, len(leaf_agents))) as pool:
                 futures = {}
                 for aid, subtask_text in assignments.items():
                     if aid not in leaf_agents:
                         continue
                     m = leaf_agents[aid]
-                    _emit("agent_call_start", {"from_id": "agent1", "to_id": aid, "call_type": "execute"})
+                    _cid = str(uuid.uuid4())[:8]
+                    _exec_cids[aid] = _cid
+                    _emit("agent_call_start", {"call_id": _cid, "from_id": "agent1", "to_id": aid, "call_type": "execute",
+                                               "prompt": subtask_text[:3000]})
                     fut = pool.submit(
                         _call_agent_b,
                         endpoint_url=m.endpoint_url,
@@ -489,12 +496,13 @@ def run_star(
                         result.total_llm_calls += 1
                         result.total_agent_calls += 1
                         _accumulate_tokens(result, resp)
-                        _emit("agent_call_complete", {"from_id": aid, "to_id": "agent1", "call_type": "execute",
+                        _emit("agent_call_complete", {"call_id": _exec_cids.get(aid, ""), "from_id": aid, "to_id": "agent1", "call_type": "execute",
                                                       "agent_id": aid, "tokens": _resp_tokens(resp),
-                                                      "output_preview": resp.get("output", "")[:200]})
+                                                      "output_preview": resp.get("output", "")[:200],
+                                                      "response": resp.get("output", "")[:3000]})
                     except Exception as exc:
                         agent_results[aid] = f"[ERROR: {exc}]"
-                        _emit("agent_call_error", {"agent_id": aid, "call_type": "execute", "error": str(exc)})
+                        _emit("agent_call_error", {"call_id": _exec_cids.get(aid, ""), "agent_id": aid, "call_type": "execute", "error": str(exc)})
 
             iter_data["results"] = agent_results
             result.agent_outputs.update(agent_results)
@@ -509,14 +517,17 @@ def run_star(
                 task=task.task_content[:2000],
                 results=results_str,
             )
-            _emit("agent_call_start", {"from_id": "coordinator", "to_id": "agent1", "call_type": "synthesize"})
+            _cid = str(uuid.uuid4())[:8]
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1", "call_type": "synthesize",
+                                       "prompt": synth_prompt[:3000]})
             synth_resp = _call_agent_a_llm(synth_prompt, task_id=task_id, scenario="marble_star_synth")
             result.total_llm_calls += 1
             result.total_agent_calls += 1
             _accumulate_tokens(result, synth_resp)
             result.final_output = synth_resp.get("output", "")
-            _emit("agent_call_complete", {"from_id": "agent1", "to_id": "coordinator", "call_type": "synthesize",
-                                          "tokens": _resp_tokens(synth_resp), "output_preview": result.final_output[:200]})
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": "agent1", "to_id": "coordinator", "call_type": "synthesize",
+                                          "tokens": _resp_tokens(synth_resp), "output_preview": result.final_output[:200],
+                                          "response": result.final_output[:3000]})
             iter_data["summary"] = result.final_output[:1000]
             result.iterations.append(iter_data)
             _emit("phase_complete", {"phase": "synthesize"})
@@ -593,18 +604,23 @@ def run_chain(
 
             # --- Act: current agent processes the task ---
             _emit("phase_start", {"phase": "act", "iteration": step + 1})
-            _emit("agent_call_start", {"from_id": "coordinator", "to_id": current_agent_id, "call_type": "act"})
+            _cid = str(uuid.uuid4())[:8]
+            if m.is_agent_a:
+                _act_prompt = f"You are {m.marble_agent.agent_id}: {m.marble_agent.profile[:300]}\n\nTask: {current_task[:2000]}"
+            else:
+                _act_prompt = current_task[:2000]
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": current_agent_id, "call_type": "act",
+                                       "prompt": _act_prompt[:3000]})
             if m.is_agent_a:
                 resp = _call_agent_a_llm(
-                    f"You are {m.marble_agent.agent_id}: {m.marble_agent.profile[:300]}\n\n"
-                    f"Task: {current_task[:2000]}",
+                    _act_prompt,
                     task_id=task_id,
                     scenario="marble_chain_act",
                 )
             else:
                 resp = _call_agent_b(
                     endpoint_url=m.endpoint_url,
-                    subtask=current_task[:2000],
+                    subtask=_act_prompt,
                     role=m.marble_agent.profile[:500],
                     task_id=task_id,
                 )
@@ -616,9 +632,10 @@ def run_chain(
             result.agent_outputs[current_agent_id] = current_result
             chain_history.append(f"{current_agent_id}: {current_result[:200]}")
             iter_data["result"] = current_result[:500]
-            _emit("agent_call_complete", {"from_id": current_agent_id, "to_id": "coordinator", "call_type": "act",
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": current_agent_id, "to_id": "coordinator", "call_type": "act",
                                           "agent_id": current_agent_id, "tokens": _resp_tokens(resp),
-                                          "output_preview": current_result[:200]})
+                                          "output_preview": current_result[:200],
+                                          "response": current_result[:3000]})
             _emit("phase_complete", {"phase": "act", "agent_id": current_agent_id})
 
             # --- Handoff: Agent A decides the next agent ---
@@ -642,7 +659,9 @@ def run_chain(
                 available_agents=available_str,
                 chain_history=" → ".join(h[:80] for h in chain_history[-5:]),
             )
-            _emit("agent_call_start", {"from_id": "coordinator", "to_id": "agent1", "call_type": "handoff"})
+            _cid = str(uuid.uuid4())[:8]
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1", "call_type": "handoff",
+                                       "prompt": handoff_prompt[:3000]})
             handoff_resp = _call_agent_a_llm(
                 handoff_prompt, task_id=task_id, scenario="marble_chain_handoff",
             )
@@ -654,8 +673,9 @@ def run_chain(
             next_agent_id, instruction = _parse_handoff(handoff_text, agent_map)
             iter_data["next_agent"] = next_agent_id
             result.iterations.append(iter_data)
-            _emit("agent_call_complete", {"from_id": "agent1", "to_id": "coordinator", "call_type": "handoff",
-                                          "next_agent": next_agent_id})
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": "agent1", "to_id": "coordinator", "call_type": "handoff",
+                                          "next_agent": next_agent_id,
+                                          "response": handoff_text[:3000]})
             _emit("phase_complete", {"phase": "handoff", "next_agent": next_agent_id})
 
             if next_agent_id == "DONE" or next_agent_id is None:
@@ -678,10 +698,14 @@ def run_chain(
             results_str = "\n\n".join(
                 f"[{aid}]: {txt[:500]}" for aid, txt in result.agent_outputs.items()
             )
+            _cid = str(uuid.uuid4())[:8]
+            _synth_prompt = _SYNTHESIZE_PROMPT.format(
+                task=task.task_content[:2000], results=results_str,
+            )
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1",
+                                       "call_type": "synthesize", "prompt": _synth_prompt[:3000]})
             synth_resp = _call_agent_a_llm(
-                _SYNTHESIZE_PROMPT.format(
-                    task=task.task_content[:2000], results=results_str,
-                ),
+                _synth_prompt,
                 task_id=task_id,
                 scenario="marble_chain_synth",
             )
@@ -689,6 +713,10 @@ def run_chain(
             result.total_agent_calls += 1
             _accumulate_tokens(result, synth_resp)
             result.final_output = synth_resp.get("output", "")
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": "agent1", "to_id": "coordinator",
+                                          "call_type": "synthesize", "tokens": _resp_tokens(synth_resp),
+                                          "output_preview": result.final_output[:200],
+                                          "response": result.final_output[:3000]})
             _emit("phase_complete", {"phase": "synthesize"})
 
     except Exception as exc:
@@ -934,6 +962,8 @@ def run_graph(
             # --- Phase 1: All agents act on the global task independently ---
             _emit("phase_start", {"phase": "act", "iteration": iteration + 1, "agent_count": len(agent_map)})
             agent_results: Dict[str, str] = {}
+            _act_cids: Dict[str, str] = {}
+            _act_prompts: Dict[str, str] = {}
             with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL, len(agent_map))) as pool:
                 futures = {}
                 for aid, m in agent_map.items():
@@ -956,7 +986,11 @@ def run_graph(
                         )
                         act_prompt += f"\nPrevious round results from others:\n{prev_results}\n"
 
-                    _emit("agent_call_start", {"from_id": "coordinator", "to_id": aid, "call_type": "act"})
+                    _cid = str(uuid.uuid4())[:8]
+                    _act_cids[aid] = _cid
+                    _act_prompts[aid] = act_prompt
+                    _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": aid, "call_type": "act",
+                                               "prompt": act_prompt[:3000]})
                     if m.is_agent_a:
                         fut = pool.submit(
                             _call_agent_a_llm, act_prompt,
@@ -977,12 +1011,13 @@ def run_graph(
                         result.total_llm_calls += 1
                         result.total_agent_calls += 1
                         _accumulate_tokens(result, resp)
-                        _emit("agent_call_complete", {"from_id": aid, "to_id": "coordinator", "call_type": "act",
+                        _emit("agent_call_complete", {"call_id": _act_cids.get(aid, ""), "from_id": aid, "to_id": "coordinator", "call_type": "act",
                                                       "agent_id": aid, "tokens": _resp_tokens(resp),
-                                                      "output_preview": resp.get("output", "")[:200]})
+                                                      "output_preview": resp.get("output", "")[:200],
+                                                      "response": resp.get("output", "")[:3000]})
                     except Exception as exc:
                         agent_results[aid] = f"[ERROR: {exc}]"
-                        _emit("agent_call_error", {"agent_id": aid, "call_type": "act", "error": str(exc)})
+                        _emit("agent_call_error", {"call_id": _act_cids.get(aid, ""), "agent_id": aid, "call_type": "act", "error": str(exc)})
 
             result.agent_outputs.update(agent_results)
             iter_data["results"] = {k: v[:500] for k, v in agent_results.items()}
@@ -1018,11 +1053,14 @@ def run_graph(
             all_results_str = "\n\n".join(
                 f"[{aid}]: {txt[:500]}" for aid, txt in agent_results.items()
             )
-            _emit("agent_call_start", {"from_id": "coordinator", "to_id": "agent1", "call_type": "synthesize"})
+            _cid = str(uuid.uuid4())[:8]
+            _synth_prompt = _SYNTHESIZE_PROMPT.format(
+                task=task.task_content[:2000], results=all_results_str,
+            )
+            _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1", "call_type": "synthesize",
+                                       "prompt": _synth_prompt[:3000]})
             synth_resp = _call_agent_a_llm(
-                _SYNTHESIZE_PROMPT.format(
-                    task=task.task_content[:2000], results=all_results_str,
-                ),
+                _synth_prompt,
                 task_id=task_id,
                 scenario="marble_graph_synth",
             )
@@ -1030,8 +1068,9 @@ def run_graph(
             result.total_agent_calls += 1
             _accumulate_tokens(result, synth_resp)
             result.final_output = synth_resp.get("output", "")
-            _emit("agent_call_complete", {"from_id": "agent1", "to_id": "coordinator", "call_type": "synthesize",
-                                          "tokens": _resp_tokens(synth_resp), "output_preview": result.final_output[:200]})
+            _emit("agent_call_complete", {"call_id": _cid, "from_id": "agent1", "to_id": "coordinator", "call_type": "synthesize",
+                                          "tokens": _resp_tokens(synth_resp), "output_preview": result.final_output[:200],
+                                          "response": result.final_output[:3000]})
             iter_data["summary"] = result.final_output[:1000]
             result.iterations.append(iter_data)
             _emit("phase_complete", {"phase": "synthesize"})
@@ -1093,6 +1132,9 @@ def _run_communication_session(
             task=task_content[:500],
             incoming_message=current_message[:500],
         )
+        _cid = str(uuid.uuid4())[:8]
+        _emit("agent_call_start", {"call_id": _cid, "from_id": agent1_id, "to_id": agent2_id,
+                                   "call_type": "communicate", "prompt": resp_prompt[:3000]})
         if m2.is_agent_a:
             resp = _call_agent_a_llm(resp_prompt, task_id=task_id, scenario="marble_graph_comm")
         else:
@@ -1104,6 +1146,10 @@ def _run_communication_session(
         result.total_agent_calls += 1
         _accumulate_tokens(result, resp)
         reply = resp.get("output", "")
+        _emit("agent_call_complete", {"call_id": _cid, "from_id": agent2_id, "to_id": agent1_id,
+                                      "agent_id": agent2_id, "call_type": "communicate",
+                                      "tokens": _resp_tokens(resp), "output_preview": reply[:200],
+                                      "response": reply[:3000]})
         messages.append({"from": agent2_id, "to": agent1_id, "message": reply[:500]})
         _emit("comm_message", {"from_id": agent2_id, "to_id": agent1_id, "turn": turn + 1,
                                 "message_preview": reply[:120]})
@@ -1118,6 +1164,9 @@ def _run_communication_session(
                 task=task_content[:500],
                 incoming_message=reply[:500],
             )
+            _cid2 = str(uuid.uuid4())[:8]
+            _emit("agent_call_start", {"call_id": _cid2, "from_id": agent2_id, "to_id": agent1_id,
+                                       "call_type": "communicate", "prompt": resp_prompt_2[:3000]})
             if m1.is_agent_a:
                 resp2 = _call_agent_a_llm(resp_prompt_2, task_id=task_id, scenario="marble_graph_comm")
             else:
@@ -1129,6 +1178,10 @@ def _run_communication_session(
             result.total_agent_calls += 1
             _accumulate_tokens(result, resp2)
             current_message = resp2.get("output", "")
+            _emit("agent_call_complete", {"call_id": _cid2, "from_id": agent1_id, "to_id": agent2_id,
+                                          "agent_id": agent1_id, "call_type": "communicate",
+                                          "tokens": _resp_tokens(resp2), "output_preview": current_message[:200],
+                                          "response": current_message[:3000]})
             messages.append({"from": agent1_id, "to": agent2_id, "message": current_message[:500]})
             _emit("comm_message", {"from_id": agent1_id, "to_id": agent2_id, "turn": turn + 1,
                                     "message_preview": current_message[:120]})
@@ -1209,11 +1262,15 @@ def _should_stop(
     result: TopologyResult,
 ) -> bool:
     """Ask Agent A whether the task is complete."""
+    _cid = str(uuid.uuid4())[:8]
+    _check_prompt = _CONTINUE_PROMPT.format(
+        task=task_content[:1000],
+        results=current_output[:1000],
+    )
+    _emit("agent_call_start", {"call_id": _cid, "from_id": "coordinator", "to_id": "agent1",
+                               "call_type": "continue_check", "prompt": _check_prompt[:3000]})
     resp = _call_agent_a_llm(
-        _CONTINUE_PROMPT.format(
-            task=task_content[:1000],
-            results=current_output[:1000],
-        ),
+        _check_prompt,
         task_id=task_id,
         scenario="marble_continue_check",
     )
@@ -1221,6 +1278,10 @@ def _should_stop(
     result.total_agent_calls += 1
     _accumulate_tokens(result, resp)
     output = resp.get("output", "").strip().upper()
+    _emit("agent_call_complete", {"call_id": _cid, "from_id": "agent1", "to_id": "coordinator",
+                                  "call_type": "continue_check", "tokens": _resp_tokens(resp),
+                                  "output_preview": output[:200],
+                                  "response": resp.get("output", "")[:3000]})
     return "DONE" in output
 
 
