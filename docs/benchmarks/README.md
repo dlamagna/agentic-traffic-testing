@@ -11,7 +11,7 @@ This directory documents how each benchmark is wired into the Agentic Traffic Te
 | [AgentBench](agentbench.md) | Liu et al. 2024 | OS / SQL / KG / Embodied / Shopping | Multi-turn tool-use (function calling) | SR, F1 | Iterative bursts (one LLM call + one TCP flow per turn) | Phase 1 — planned |
 | [OOLONG](oolong.md) | Bertsch et al. 2025 | Long-context aggregation (classification) | Single-shot | Exponential decay, exact match | One large LLM call per task; fan-out with `agentic_parallel` | Phase 2 — loader + scorer done |
 | [MCP-Universe](mcp_universe.md) | SalesforceAI 2025 | Real-world MCP tool execution (6 domains) | Multi-turn ReAct via MCP protocol | SR, AE, AS | Agent ↔ MCP server ↔ LLM round-trips | Integrated |
-| MultiAgentBench (MARBLE) | Zhu et al. 2025 | Multi-agent collaboration + competition | Multi-agent (star / chain / graph) | Milestone-based KPIs | Agent-to-agent + LLM fan-out; topology-dependent | Phase 3 — planned |
+| [MultiAgentBench (MARBLE)](marble.md) | Zhu et al. 2025 | Multi-agent collaboration + competition | Multi-agent (star / chain / tree / graph) | LLM-as-judge (task, comm, planning, collab) | Agent-to-agent + LLM fan-out; topology-dependent | Phase 3 — loader + topology + scorer + runner done |
 
 ---
 
