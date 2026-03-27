@@ -15,6 +15,9 @@ set -euo pipefail
 #   uses the correct docker-compose file.
 #
 # WHAT IT DOES (by default):
+#   - Kills any running experiment processes (run_experiment.sh, marble, etc.)
+#   - Removes experiment cron jobs (agentic-experiment-monitor, marble-experiment-monitor)
+#   - Cleans up experiment state files (.experiment_state, .marble_experiment_state)
 #   - Stops all running containers
 #   - Removes the stopped containers
 #   - Keeps Docker images (cached for faster redeploy)
@@ -119,6 +122,104 @@ echo "============================================================"
 echo "Deployment mode: ${DEPLOYMENT_MODE}"
 echo "============================================================"
 echo
+
+# ---------------------------------------------------------------
+# Stop any running experiment processes
+# ---------------------------------------------------------------
+
+SCRIPT_DIR_AGENTVERSE="${ROOT_DIR}/scripts/experiment/agentverse"
+SCRIPT_DIR_MARBLE="${ROOT_DIR}/scripts/experiment/marble"
+
+EXPERIMENT_PATTERNS=(
+  "run_experiment.sh"
+  "run_aggregated_experiment.sh"
+  "run_marble_experiment.sh"
+  "run_marble_aggregated_experiment.sh"
+  "run_rlm_benchmark.sh"
+  "run_agentbench.sh"
+  "run_oolong_benchmark.sh"
+  "run_marble_benchmark.sh"
+  "monitor_experiment.sh"
+  "monitor_marble_experiment.sh"
+  "benchmarks.marble.runner"
+)
+
+CRON_TAGS=(
+  "# agentic-experiment-monitor"
+  "# marble-experiment-monitor"
+)
+
+STATE_FILES=(
+  "${SCRIPT_DIR_AGENTVERSE}/.experiment_state"
+  "${SCRIPT_DIR_MARBLE}/.marble_experiment_state"
+)
+
+echo "[*] Checking for running experiment processes..."
+FOUND_PIDS=()
+for PATTERN in "${EXPERIMENT_PATTERNS[@]}"; do
+  while IFS= read -r PID; do
+    [[ -z "$PID" || "$PID" == "$$" ]] && continue
+    FOUND_PIDS+=("$PID")
+    CMD=$(ps -p "$PID" -o args= 2>/dev/null || true)
+    echo "    Found: PID ${PID} — ${CMD}"
+  done < <(pgrep -f "$PATTERN" 2>/dev/null || true)
+done
+
+if [[ ${#FOUND_PIDS[@]} -gt 0 ]]; then
+  echo "[*] Sending SIGTERM to experiment processes..."
+  for PID in "${FOUND_PIDS[@]}"; do
+    kill -TERM "$PID" 2>/dev/null || true
+  done
+  sleep 3
+  echo "[*] Sending SIGKILL to any remaining experiment processes..."
+  for PID in "${FOUND_PIDS[@]}"; do
+    if ps -p "$PID" > /dev/null 2>&1; then
+      kill -KILL "$PID" 2>/dev/null || true
+    fi
+  done
+  echo "[✓] Experiment processes stopped."
+else
+  echo "    No running experiment processes found."
+fi
+
+echo
+echo "[*] Checking for experiment cron jobs..."
+CURRENT_CRON=$(crontab -l 2>/dev/null || true)
+CLEAN_CRON="$CURRENT_CRON"
+CRON_REMOVED=false
+
+for TAG in "${CRON_TAGS[@]}"; do
+  if echo "$CURRENT_CRON" | grep -qF "$TAG"; then
+    echo "    Found cron job: $TAG"
+    CLEAN_CRON=$(echo "$CLEAN_CRON" | grep -vF "$TAG" || true)
+    CRON_REMOVED=true
+  fi
+done
+
+if [[ "$CRON_REMOVED" == "true" ]]; then
+  echo "$CLEAN_CRON" | crontab -
+  echo "[✓] Experiment cron jobs removed."
+else
+  echo "    No experiment cron jobs found."
+fi
+
+echo
+echo "[*] Cleaning up experiment state files..."
+STATE_FOUND=false
+for STATE_FILE in "${STATE_FILES[@]}"; do
+  if [[ -f "$STATE_FILE" ]]; then
+    echo "    Removing: $STATE_FILE"
+    rm -f "$STATE_FILE"
+    STATE_FOUND=true
+  fi
+done
+[[ "$STATE_FOUND" == "false" ]] && echo "    No state files found."
+
+echo
+
+# ---------------------------------------------------------------
+# Stop Docker services
+# ---------------------------------------------------------------
 
 cd "${COMPOSE_DIR}"
 
