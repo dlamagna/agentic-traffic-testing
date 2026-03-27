@@ -96,6 +96,9 @@ if _METRICS_READY:
         ["status"],
     )
     _LLM_LATENCY_BUCKETS = [0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0]
+    # Fine-grained buckets for TTFT: most values are sub-second, so we need
+    # resolution at the 10ms–2s range rather than the coarser latency buckets.
+    _TTFT_BUCKETS = [0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
     REQUEST_LATENCY = Histogram(
         f"{LLM_METRICS_PREFIX}_request_latency_seconds",
         "End-to-end LLM request latency",
@@ -103,8 +106,8 @@ if _METRICS_READY:
     )
     QUEUE_WAIT = Histogram(
         f"{LLM_METRICS_PREFIX}_queue_wait_seconds",
-        "Time spent waiting in vLLM queue",
-        buckets=_LLM_LATENCY_BUCKETS,
+        "Time-to-first-token (TTFT): time from request queuing to first token",
+        buckets=_TTFT_BUCKETS,
     )
     INFLIGHT = Gauge(
         f"{LLM_METRICS_PREFIX}_inflight_requests",
