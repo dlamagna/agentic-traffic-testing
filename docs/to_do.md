@@ -324,28 +324,75 @@ and competition. It provides milestone-based KPIs and supports multiple coordina
 topologies (star, chain, tree, graph). This is the most relevant benchmark for
 validating that your agent-to-agent traffic patterns are realistic.
 
+Reference: https://arxiv.org/abs/2503.01935 / https://github.com/ulab-uiuc/MARBLE
+Local clone: `/home/dlamagna/projects/MARBLE`
+Implementation: `benchmarks/marble/`
+
 ### 3.1 — Evaluate MARBLE compatibility
 
-- [ ] Clone https://github.com/ulab-uiuc/MARBLE
-- [ ] Review its task format, required agent interfaces, and coordination protocols
-- [ ] Determine which MARBLE scenarios can run on a local LLM (some may require stronger models)
+- [x] Clone https://github.com/ulab-uiuc/MARBLE (at `../MARBLE`)
+- [x] Review its task format, required agent interfaces, and coordination protocols
+- [x] Determine which MARBLE scenarios can run on a local LLM
+  - **Viable domains**: research (5 agents, discussion), coding (3 agents, collaboration),
+    bargaining (4 agents, negotiation)
+  - **Avoid**: minecraft (JS bridge + game server), database (needs Prometheus/Alertmanager)
+  - MARBLE agents are in-process Python objects using LiteLLM; no HTTP agent framework
+  - LLM layer is `litellm.completion` via `model_prompting()` — can point at vLLM via
+    `OPENAI_API_BASE` but this skips Docker agent traffic
+  - **Decision**: reimplement coordination over Docker HTTP agents for traffic generation,
+    reuse MARBLE's task definitions and topology configs
 - [ ] Write a compatibility assessment in `benchmarks/marble/COMPATIBILITY.md`
 
-### 3.2 — Integrate a subset of MARBLE tasks
+### 3.2 — Integrate MARBLE tasks (distributed adapter)
 
-- [ ] Pick 2–3 MARBLE scenarios that are most relevant to your testbed (e.g. collaborative research, task decomposition, information aggregation)
-- [ ] Create adapter code in `benchmarks/marble/adapter.py` that translates MARBLE task format into Agent A / Agent B requests
-- [ ] Implement MARBLE's milestone-based scoring: tasks are scored not just on final output but on whether intermediate milestones were achieved (e.g. "agent correctly identified sub-task", "agent successfully delegated to partner")
-- [ ] Wire into the same metrics pipeline from Phase 0
+- [x] Create `benchmarks/marble/loader.py`:
+  - `MarbleTask` / `MarbleAgent` dataclasses matching the JSONL schema
+  - `load_marble_tasks(domain, max_tasks, task_ids, topology_override)` generator
+  - Reads from `MARBLE_ROOT/multiagentbench/<domain>/<domain>_main.jsonl`
+  - Handles empty `coordinate_mode` with per-domain defaults (matching `jsonl2yaml.py`)
+- [x] Create `benchmarks/marble/topology.py` — four coordination modes over HTTP agents:
+  - **Star** (`run_star`): Agent A as central planner → fan out to Agent B workers →
+    synthesize. Maps to MARBLE's `Engine.star_coordinate()`.
+  - **Chain** (`run_chain`): Sequential handoff between agents, Agent A mediating
+    with LLM-driven `plan_next_agent` decisions. Maps to `Engine.chain_coordinate()`.
+  - **Tree** (`run_tree`): Hierarchical delegation from root (Agent A) to children
+    (Agent B), recursive with `plan_tasks_for_children`. Maps to
+    `Engine.tree_coordinate()` + `_execute_agent_task_recursive()`.
+  - **Graph** (`run_graph`): All agents act independently, then Agent A mediates
+    communication sessions between connected pairs (3-turn dialogues). Maps to
+    `Engine.graph_coordinate()` + `BaseAgent.new_communication_session`.
+  - Agent mapping: first MARBLE agent → Agent A, remaining → Agent B endpoints
+    (round-robin across 8102–8106). Agent profiles injected as `agent_b_role`.
+- [x] Create `benchmarks/marble/scorer.py` — LLM-as-judge evaluation:
+  - Task quality, communication quality, planning quality, collaboration scores
+  - Weighted aggregate (task 40%, collaboration 25%, communication 20%, planning 15%)
+  - Judge calls routed through Agent A `/task` for telemetry capture
+- [x] Create `benchmarks/marble/runner.py` — CLI runner:
+  - `python -m benchmarks.marble.runner --domain research --topology graph --max-tasks 5`
+  - JSONL output following common schema (`benchmark_source=marble`)
+  - Supports `--skip-judge` for topology-only runs (no scoring overhead)
+- [x] Create `scripts/experiment/run_marble_benchmark.sh` — shell wrapper
+- [ ] Wire into the same metrics pipeline from Phase 0 (MetricsLogger + task-level aggregation)
 
 ### 3.3 — Coordination topology experiments
 
 MARBLE explicitly supports different multi-agent topologies. Map these to your scenarios:
 
-- [ ] **Star topology** → `agentic_simple` (Agent A as hub, tools as spokes)
-- [ ] **Chain topology** → `agentic_multi_hop` (Agent A → Agent B → tool → response)
-- [ ] **Graph topology** → `agentic_parallel` (Agent A fans out to multiple Agent B + tools)
-- [ ] Run the same MARBLE tasks across all topologies and record how network telemetry differs
+- [x] **Star topology** → Agent A as hub, Agent B instances as spoke workers
+- [x] **Chain topology** → Sequential handoff mediated by Agent A
+- [x] **Tree topology** → Hierarchical delegation (Agent A root → Agent B children)
+- [x] **Graph topology** → All agents act + peer communication sessions
+- [ ] Run the same MARBLE tasks across all four topologies and record how network
+  telemetry differs:
+  ```bash
+  for topo in star chain tree graph; do
+      ./scripts/experiment/run_marble_benchmark.sh \
+          --domain research --topology "$topo" --task-ids 1,2,3 \
+          --output "logs/benchmarks/marble_research_${topo}.jsonl"
+  done
+  ```
+- [ ] Correlate with TCP telemetry: star→hub-spoke flows, chain→sequential flows,
+  tree→recursive flows, graph→concurrent parallel flows
 
 ---
 
@@ -571,3 +618,7 @@ If time/resources are limited, work through phases in this order:
 8. **Phase 3** (MARBLE) — adds multi-agent validation
 9. **Phase 6** (reporting) — makes it publishable
 10. **Phase 7** (stretch) — deepens the results
+
+
+
+Ok thanks ! Can you also create a UI page, as a sub page of my landing page for the whole UI, which shows the MultiAgentBench workflow, and gives me options for topologies etc that I can run, as well as different type of agents, and a drop down for the different prompts I can select ?

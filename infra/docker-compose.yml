@@ -75,6 +75,8 @@ services:
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
       # RLM integration — path inside the container where the RLM repo is mounted.
       - RLM_ROOT=${RLM_ROOT:-/rlm}
+      # MARBLE integration — path inside the container where the MARBLE repo is mounted.
+      - MARBLE_ROOT=/MARBLE
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -90,6 +92,8 @@ services:
       - ../agents:/app/agents:ro
       # RLM repo — mounted read-only so the orchestrator can import it via RLM_ROOT.
       - ${RLM_REPO_PATH:-/home/dlamagna/projects/rlm}:/rlm:ro
+      # MARBLE repo — mounted read-only so /marble UI endpoint can load JSONL tasks.
+      - ${MARBLE_REPO_PATH:-/home/dlamagna/projects/MARBLE}:/MARBLE:ro
       # Persist logs (llm_calls.jsonl, telemetry logs, benchmark JSONL) to the host.
       - ../logs:/app/logs
 

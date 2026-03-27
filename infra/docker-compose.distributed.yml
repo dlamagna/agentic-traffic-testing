@@ -26,7 +26,7 @@ services:
     build:
       context: ..
       dockerfile: llm/Dockerfile
-    container_name: llm-backend
+    container_name: ${USER:-unknown}-llm-backend
     hostname: llm-backend
     environment:
       - NODE_NAME=node3_llm
@@ -100,6 +100,8 @@ services:
       - LOG_LLM_REQUESTS=${LOG_LLM_REQUESTS:-0}
       - LLM_LOG_MAX_CHARS=${LLM_LOG_MAX_CHARS:-500}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://${JAEGER_IP:-172.23.0.60}:4318/v1/traces
+      # MARBLE integration — path inside the container where the MARBLE repo is mounted.
+      - MARBLE_ROOT=/MARBLE
     depends_on:
       llm-backend:
         condition: service_healthy
@@ -121,6 +123,9 @@ services:
       - "agent-b-4:${AGENT_B_4_INTER_IP:-172.23.0.23}"
       - "agent-b-5:${AGENT_B_5_INTER_IP:-172.23.0.24}"
       - "jaeger:${JAEGER_IP:-172.23.0.60}"
+    volumes:
+      # MARBLE repo — mounted read-only so /marble UI endpoint can load JSONL tasks.
+      - ${MARBLE_REPO_PATH:-/home/dlamagna/projects/MARBLE}:/MARBLE:ro
 
   # ---------------------------------------------------------------------------
   # Agent B instances (Node 2)
